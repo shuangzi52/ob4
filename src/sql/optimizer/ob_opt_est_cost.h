@@ -108,7 +108,7 @@ public:
   static double cost_hash_distinct(double rows,
                                    double res_rows,
                                    double width,
-                                   const ObIArray<ObRawExpr *> &disinct_columns,
+                                   const ObIArray<ObRawExpr *> &distinct_columns,
                                    MODEL_TYPE model_type);
 
   static double cost_get_rows(double rows, MODEL_TYPE model_type);
