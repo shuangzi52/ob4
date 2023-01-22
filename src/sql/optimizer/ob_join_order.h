@@ -102,7 +102,7 @@ namespace sql
 
     virtual ~ConflictDetector() {}
 
-    static int build_confict(common::ObIAllocator &allocator, ConflictDetector* &detector);
+    static int build_conflict(common::ObIAllocator &allocator, ConflictDetector* &detector);
 
     TO_STRING_KV(K_(join_info),
                  K_(CR),
@@ -128,7 +128,7 @@ namespace sql
     ObRelIds R_TES_;
     //left degenerate set，用于检查join condition为退化谓词的合法性，存放的是左子树的所有表集
     ObRelIds L_DS_;
-    //right degnerate set，存放的是右子树的所有表集
+    //right degenerate set，存放的是右子树的所有表集
     ObRelIds R_DS_;
     bool is_degenerate_pred_;
     //当前join是否可交换左右表
@@ -642,8 +642,8 @@ struct EstimateCostInfo {
                                 ObCostTableScanInfo &est_cost_info,
                                 const SampleInfo &sample_info,
                                 const ObOptEstCost::MODEL_TYPE model_type,
-                                const double orign_phy_query_range_row_count,
-                                const double orign_query_range_row_count,
+                                const double origin_phy_query_range_row_count,
+                                const double origin_query_range_row_count,
                                 double &card,
                                 double &index_back_cost,
                                 double &cost);
@@ -1608,7 +1608,7 @@ struct NullAwareAntiJoinInfo {
                       bool &sort_match);
 
     /**
-     * 检查是否是intersting order
+     * 检查是否是interesting order
      * @keys 索引列
      * @stmt
      * @interest_column_ids 匹配的索引列的id
@@ -1753,7 +1753,7 @@ struct NullAwareAntiJoinInfo {
                                      const ValidPathInfo &reverse_path_info);
     int classify_paths_based_on_sharding(const ObIArray<Path*> &input_paths,
                                          const EqualSets &equal_sets,
-                                         ObIArray<ObSEArray<Path*, 16>> &ouput_list);
+                                         ObIArray<ObSEArray<Path*, 16>> &output_list);
     int generate_nl_paths(const EqualSets &equal_sets,
                           const ObIArray<ObSEArray<Path*, 16>> &left_paths,
                           const ObIArray<ObSEArray<Path*, 16>> &right_paths,
@@ -2002,7 +2002,7 @@ struct NullAwareAntiJoinInfo {
                                      const ObJoinOrder &right_tree,
                                      const ObJoinType join_type,
                                      const common::ObIArray<ObRawExpr*> &on_conditions,
-                                     const common::ObIArray<ObRawExpr*> &where_conditionss,
+                                     const common::ObIArray<ObRawExpr*> &where_conditions,
                                      common::ObIArray<ObRawExpr*> &equal_join_conditions,
                                      common::ObIArray<ObRawExpr*> &other_join_conditions,
                                      common::ObIArray<ObRawExpr*> &filters,
@@ -2351,7 +2351,7 @@ struct NullAwareAntiJoinInfo {
                                ObIArray<ObRawExpr *> &subquery_exprs,
                                bool &is_valid);
 
-    int remove_redudant_filter(ObJoinOrder &left_tree,
+    int remove_redundant_filter(ObJoinOrder &left_tree,
                               ObJoinOrder &right_tree,
                               const ObIArray<ObRawExpr *> &join_conditions,
                               ObIArray<ObRawExpr *> &filters,
@@ -2360,7 +2360,7 @@ struct NullAwareAntiJoinInfo {
     int check_filter_is_redundant(ObJoinOrder &left_tree,
                                   ObRawExpr *expr,
                                   ObExprParamCheckContext &context,
-                                  bool &is_redunant);
+                                  bool &is_redundant);
 
     int generate_inner_subquery_paths(const ObIArray<ObRawExpr *> &join_conditions,
                                       const ObRelIds &join_relids,
