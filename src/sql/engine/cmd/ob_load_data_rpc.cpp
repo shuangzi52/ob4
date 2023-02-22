@@ -296,7 +296,7 @@ int ObRpcLoadDataTaskExecuteP::process()
       succ_row_count = affected_rows;
     }
 
-    //2. if failed, try insert seperately
+    //2. if failed, try insert separately
     if (OB_SUCC(ret) && OB_SUCCESS != exec_ret) {
       ObSqlString seperate_insert_sql_head;
       ObSqlString seperate_insert_sql;
@@ -378,7 +378,7 @@ int ObRpcLoadDataTaskExecuteP::process()
   if (OB_SUCC(ret) && OB_SUCCESS != memory_check_ret) {
     ret = memory_check_ret; //cover ret
   }
-  //sumarize return value
+  //summarize return value
   if (OB_FAIL(ret)) {
     ObLoadDataUtils::set_flag(result.task_flags_,
                               static_cast<int64_t>(ObLoadTaskResultFlag::RPC_REMOTE_PROCESS_ERROR));
@@ -480,7 +480,7 @@ int ObRpcLoadDataTaskCallBack::process()
     }
     MEM_BARRIER();
     if (OB_SUCCESS != (second_ret = task_controller_.on_task_finished())) {
-      //signal main thread failed, fetal error. TODO wjh: handle this error
+      //signal main thread failed, fatal error. TODO wjh: handle this error
       if (OB_SUCCESS == ret) {
         ret = second_ret;
       }
@@ -537,7 +537,7 @@ void ObParallelTaskController::wait_all_task_finish(const char *task_name, int64
     }
   }
   if (is_too_long) {
-    LOG_WARN_RET(OB_ERR_UNEXPECTED, "LOAD DATA finish waitting long task", K(wait_duration_ms));
+    LOG_WARN_RET(OB_ERR_UNEXPECTED, "LOAD DATA finish waiting long task", K(wait_duration_ms));
   }
 }
 
