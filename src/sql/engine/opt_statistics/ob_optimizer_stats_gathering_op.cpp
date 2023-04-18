@@ -390,7 +390,7 @@ int ObOptimizerStatsGatheringOp::calc_column_stats(ObExpr *expr,
   } else if (OB_FAIL(get_col_stats_by_partinfo(part_ids, column_id, all_stats))) {
     LOG_WARN("fail to get column stat", K(ret));
   } else if (!ObColumnStatParam::is_valid_opt_col_type(expr->obj_meta_.get_type())) {
-    // do nothing yet, shoul use the plain stats.
+    // do nothing yet, should use the plain stats.
   } else if (OB_FAIL(expr->eval(eval_ctx_, datum))) {
     LOG_WARN("failed to eval expr", K(*expr));
   } else if (OB_ISNULL(datum) ) {
@@ -660,7 +660,7 @@ int ObOptimizerStatsGatheringOp::msg_end()
   int ret = OB_SUCCESS;
   if (MY_SPEC.type_ == OSG_TYPE::GATHER_OSG) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("gather osg shouln't reach here", K(ret));
+    LOG_WARN("gather osg shouldn't reach here", K(ret));
   } else {
     share::schema::ObSchemaGetterGuard *schema_guard = nullptr;
     ObTableStatParam param;
