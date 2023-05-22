@@ -38,7 +38,7 @@
 .project
 .pydevproject
 .review/
-.vscode/
+#.vscode/
 /.obdev
 /.settings/
 BROWSE

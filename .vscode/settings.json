@@ -1,0 +1,14 @@
+{
+    "ccls.launch.command": "/home/admin/csch/ccls/Release/ccls",
+    "ccls.cache.directory": "/home/admin/.ccls-cache",
+    "ccls.misc.compilationDatabaseDirectory": "${workspaceFolder}/build_debug",
+    "ccls.index.threads": 128,
+    "ccls.index.onChange": false,
+    "ccls.completion.detailedLabel": true,
+    "C_Cpp.autocomplete": "disabled",
+    "C_Cpp.formatting": "disabled",
+    "C_Cpp.errorSquiggles": "disabled",
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "editor.tabSize": 2,
+    "debug.autoExpandLazyVariables": true
+}
