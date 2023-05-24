@@ -74,7 +74,7 @@ public:
   int64_t row_deleted_count_;
 };
 
-// keep for compatiablity. never should be used anymore
+// keep for compatiblity. never should be used anymore
 class ObPxTaskMonitorInfo
 {
   OB_UNIS_VERSION(1);
@@ -400,7 +400,7 @@ public:
   int64_t sqc_id_;
   int rc_; // 错误码
   transaction::ObTxExecResult trans_result_;
-  ObPxTaskMonitorInfoArray task_monitor_info_array_; // deprecated, keep for compatiablity
+  ObPxTaskMonitorInfoArray task_monitor_info_array_; // deprecated, keep for compatiblity
   int64_t sqc_affected_rows_; // pdml情况下，一个sqc 影响的行数
   ObPxDmlRowInfo dml_row_info_; // SQC存在DML算子时, 需要统计行 信息
   uint64_t temp_table_id_;

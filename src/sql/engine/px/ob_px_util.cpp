@@ -156,7 +156,7 @@ int ObPXServerAddrUtil::get_external_table_loc(
     if (OB_FAIL(ObSQLUtils::extract_pre_query_range(
                                     pre_query_range, ctx.get_allocator(), ctx, ranges,
                                     ObBasicSessionInfo::create_dtc_params(ctx.get_my_session())))) {
-      LOG_WARN("failed to extract external file fiter", K(ret));
+      LOG_WARN("failed to extract external file filter", K(ret));
     } else if (OB_FAIL(ObExternalTableFileManager::get_instance().get_external_files(
                             tenant_id, ref_table_id, is_external_files_on_disk,
                             ctx.get_allocator(), ext_file_urls, ranges.empty() ? NULL : &ranges))) {
@@ -1168,7 +1168,7 @@ int ObPXServerAddrUtil::reorder_all_partitions(int64_t table_location_key,
     ObTabletIdxMap tablet_order_map;
     if (OB_FAIL(dst_locations.reserve(src_locations.size()))) {
       LOG_WARN("fail reserve locations", K(ret), K(src_locations.size()));
-    // virtual table is list parttion now,
+    // virtual table is list partition now,
     // no actual partition define, can't traverse
     // table schema for partition info
     } else if (!is_virtual_table(ref_table_id) &&
@@ -2855,7 +2855,7 @@ int ObPxEstimateSizeUtil::get_px_size(
     }
   }
   if (ret_size > total_size || OB_FAIL(ret)) {
-    LOG_WARN("unpexpect status: estimate size is greater than total size",
+    LOG_WARN("unexpect status: estimate size is greater than total size",
       K(ret_size), K(total_size), K(ret));
     ret_size = total_size;
     ret = OB_SUCCESS;
@@ -3193,7 +3193,7 @@ int ObSlaveMapUtil::build_pkey_affinitized_ch_mn_map(ObDfo &parent,
     LOG_WARN("unexpected dfo", K(ret), K(parent));
   } else if (ObPQDistributeMethod::PARTITION_HASH == child.get_dist_method()
       || ObPQDistributeMethod::PARTITION_RANGE == child.get_dist_method()) {
-    LOG_TRACE("build pkey affinitiezed channel map",
+    LOG_TRACE("build pkey affinitized channel map",
       K(parent.get_dfo_id()), K(parent.get_sqcs_count()),
       K(child.get_dfo_id()), K(child.get_sqcs_count()));
       //  .....
