@@ -22,6 +22,7 @@ ob_set_subtarget(oblib_common common
   ob_tablet_id.cpp
   ob_timeout_ctx.cpp
   ob_zone_type.cpp
+  ob_csch_debug.cpp
 )
 
 ob_set_subtarget(oblib_common common_mixed
