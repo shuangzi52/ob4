@@ -1,4 +1,4 @@
-ob_define(DEBUG_PREFIX "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=.")
+#ob_define(DEBUG_PREFIX "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=.")
 set(DEBUG_PREFIX "-DCMAKE_EXPORT_COMPILE_COMMANDS=1")
 ob_define(OB_LD_BIN ld)
 ob_define(ASAN_IGNORE_LIST "${CMAKE_SOURCE_DIR}/asan_ignore_list.txt")
