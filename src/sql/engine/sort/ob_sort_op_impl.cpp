@@ -1742,9 +1742,9 @@ int ObSortOpImpl::sort()
   if (!is_inited()) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  } else if (!rows_->empty()) {
+  } else if (!rows_->empty()) { // csch 记录数量：rows_.count_
     // in memory sort
-    if (sort_chunks_.is_empty()) {
+    if (sort_chunks_.is_empty()) { // csch chunk 数量：sort_chunks_.get_size()
       iter_.reset();
       if (OB_FAIL(sort_inmem_data())) {
         LOG_WARN("sort in-memory data failed", K(ret));
