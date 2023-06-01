@@ -411,7 +411,8 @@ private:
   int fill_sort_funcs(
     const ObSortCollations &collations,
     ObSortFuncs &sort_funcs,
-    const ObIArray<ObExpr*> &sort_exprs);
+    const ObIArray<ObExpr*> &sort_exprs,
+    const ObIArray<OrderItem> &sort_keys = common::ObSEArray<OrderItem, 1, common::ModulePageAllocator, true>());
   int recursive_get_column_expr(const ObColumnRefRawExpr *&column, const TableItem &table_item);
   int fill_aggr_infos(ObLogGroupBy &op,
                       ObGroupBySpec &spec,

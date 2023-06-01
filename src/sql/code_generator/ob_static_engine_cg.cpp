@@ -1647,7 +1647,7 @@ int ObStaticEngineCG::fill_sort_info(
           LOG_DEBUG("succ to push back field collation", K(field_collation), K(start_pos), K(i), K(order_item));
         }
       }
-    }
+      }
   }
   return ret;
 }
@@ -1655,7 +1655,8 @@ int ObStaticEngineCG::fill_sort_info(
 int ObStaticEngineCG::fill_sort_funcs(
   const ObSortCollations &collations,
   ObSortFuncs &sort_funcs,
-  const ObIArray<ObExpr*> &sort_exprs)
+  const ObIArray<ObExpr*> &sort_exprs,
+  const ObIArray<OrderItem> &sort_keys)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(sort_funcs.init(collations.count()))) {
@@ -1672,13 +1673,23 @@ int ObStaticEngineCG::fill_sort_funcs(
         LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
       } else {
         ObSortCmpFunc cmp_func;
+        // csch 目录只有 ObStaticEngineCG::generate_spec() 方法调用 fill_sort_funcs() 传递了 sort_keys
+        //      判断元素是否存在，如果存在，再进一步判断是否处理 tee 的逻辑
+        bool is_tee_field = false;
+        if (sort_keys.count() > i) {
+          OrderItem &order_item = sort_keys.at(i);
+          if (order_item.expr_.expr_name_.prefix_match("f_tee_")) {
+            is_tee_field = true;
+          }
+        }
         cmp_func.cmp_func_ = ObDatumFuncs::get_nullsafe_cmp_func(expr->datum_meta_.type_,
                                                                 expr->datum_meta_.type_,
                                                                 sort_collation.null_pos_,
                                                                 sort_collation.cs_type_,
                                                                 expr->datum_meta_.scale_,
                                                                 lib::is_oracle_mode(),
-                                                                expr->obj_meta_.has_lob_header());
+                                                                expr->obj_meta_.has_lob_header(),
+                                                                is_tee_field);
         if (OB_ISNULL(cmp_func.cmp_func_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("cmp_func is null, check datatype is valid", K(ret));
@@ -1763,7 +1774,7 @@ int ObStaticEngineCG::generate_spec(ObLogSort &op, ObSortSpec &spec, const bool 
           spec.sort_collations_, spec.all_exprs_))) {
         LOG_WARN("failed to sort info", K(ret));
       } else if (OB_FAIL(fill_sort_funcs(
-          spec.sort_collations_, spec.sort_cmp_funs_, spec.all_exprs_))) {
+          spec.sort_collations_, spec.sort_cmp_funs_, spec.all_exprs_, sortkeys))) {
         LOG_WARN("failed to sort funcs", K(ret));
       } else if (OB_FAIL(append_array_no_dup(spec.all_exprs_, spec.get_child()->output_))) {
         LOG_WARN("failed to append array no dup", K(ret));

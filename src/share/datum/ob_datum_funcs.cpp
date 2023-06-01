@@ -78,6 +78,24 @@ struct ObNullSafeDatumStrCmp
 };
 
 template <ObCollationType CS_TYPE, bool WITH_END_SPACE, bool NULL_FIRST>
+struct ObTeeNullSafeDatumStrCmp
+{
+  inline static int cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret) {
+    int ret = OB_SUCCESS;
+    if (OB_UNLIKELY(l.is_null()) && OB_UNLIKELY(r.is_null())) {
+      cmp_ret = 0;
+    } else if (OB_UNLIKELY(l.is_null())) {
+      cmp_ret = NULL_FIRST ? -1 : 1;
+    } else if (OB_UNLIKELY(r.is_null())) {
+      cmp_ret = NULL_FIRST ? 1 : -1;
+    } else {
+      ret = datum_cmp::ObDatumStrCmp<CS_TYPE, WITH_END_SPACE>::cmp(l, r, cmp_ret);
+    }
+    return ret;
+  }
+};
+
+template <ObCollationType CS_TYPE, bool WITH_END_SPACE, bool NULL_FIRST>
 struct ObNullSafeDatumTextCmp
 {
   inline static int cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret) {
@@ -243,6 +261,7 @@ int64_t g_fill_type_with_tc_cmp_func = fill_type_with_tc_cmp_func();
 // cs_type, tenant_mode, calc_with_end_space
 // now only RawTC, StringTC, TextTC defined str cmp funcs
 static ObDatumCmpFuncType NULLSAFE_STR_CMP_FUNCS[CS_TYPE_MAX][2][2];
+static ObDatumCmpFuncType NULLSAFE_TEE_STR_CMP_FUNCS[CS_TYPE_MAX][2][2];
 static ObDatumCmpFuncType NULLSAFE_TEXT_CMP_FUNCS[CS_TYPE_MAX][2][2];
 static ObDatumCmpFuncType NULLSAFE_TEXT_STR_CMP_FUNCS[CS_TYPE_MAX][2][2];
 static ObDatumCmpFuncType NULLSAFE_STR_TEXT_CMP_FUNCS[CS_TYPE_MAX][2][2];
@@ -253,6 +272,8 @@ struct InitStrCmpArray
 {
   template <bool... args>
   using StrCmp = ObNullSafeDatumStrCmp<static_cast<ObCollationType>(IDX), args...>;
+  template <bool... args>
+  using StrTeeCmp = ObTeeNullSafeDatumStrCmp<static_cast<ObCollationType>(IDX), args...>;
   using Def = datum_cmp::ObDatumStrCmp<static_cast<ObCollationType>(IDX), false>;
 
   template <bool... args>
@@ -274,6 +295,12 @@ struct InitStrCmpArray
     funcs[IDX][0][1] = Def::defined_ ? &StrCmp<0, 1>::cmp : NULL;
     funcs[IDX][1][0] = Def::defined_ ? &StrCmp<1, 0>::cmp : NULL;
     funcs[IDX][1][1] = Def::defined_ ? &StrCmp<1, 1>::cmp : NULL;
+
+    auto &tee_funcs = NULLSAFE_TEE_STR_CMP_FUNCS;
+    tee_funcs[IDX][0][0] = Def::defined_ ? &StrTeeCmp<0, 0>::cmp : NULL;
+    tee_funcs[IDX][0][1] = Def::defined_ ? &StrTeeCmp<0, 1>::cmp : NULL;
+    tee_funcs[IDX][1][0] = Def::defined_ ? &StrTeeCmp<1, 0>::cmp : NULL;
+    tee_funcs[IDX][1][1] = Def::defined_ ? &StrTeeCmp<1, 1>::cmp : NULL;
 
     // int texts compare function array
     auto &text_funcs = NULLSAFE_TEXT_CMP_FUNCS;
@@ -360,7 +387,7 @@ bool g_fixed_double_cmp_array_inited =
 ObDatumCmpFuncType ObDatumFuncs::get_nullsafe_cmp_func(
     const ObObjType type1, const ObObjType type2, const ObCmpNullPos null_pos,
     const ObCollationType cs_type, const ObScale max_scale, const bool is_oracle_mode,
-    const bool has_lob_header) {
+    const bool has_lob_header, const bool is_tee_field) {
   OB_ASSERT(type1 >= ObNullType && type1 < ObMaxType);
   OB_ASSERT(type2 >= ObNullType && type2 < ObMaxType);
   OB_ASSERT(cs_type > CS_TYPE_INVALID && cs_type < CS_TYPE_MAX);
@@ -380,7 +407,8 @@ ObDatumCmpFuncType ObDatumFuncs::get_nullsafe_cmp_func(
         func_ptr = NULLSAFE_STR_TEXT_CMP_FUNCS[cs_type][calc_with_end_space_idx][null_pos_idx];
       }
     } else { // no lob header or tinytext use original str cmp func
-      func_ptr = NULLSAFE_STR_CMP_FUNCS[cs_type][calc_with_end_space_idx][null_pos_idx];
+      func_ptr = is_tee_field ? NULLSAFE_TEE_STR_CMP_FUNCS[cs_type][calc_with_end_space_idx][null_pos_idx] 
+                              : NULLSAFE_STR_CMP_FUNCS[cs_type][calc_with_end_space_idx][null_pos_idx];
     }
   } else if (is_json(type1) && is_json(type2)) {
     func_ptr = NULLSAFE_JSON_CMP_FUNCS[null_pos_idx][has_lob_header];

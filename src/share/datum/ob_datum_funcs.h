@@ -34,7 +34,8 @@ public:
                                                   const ObCollationType cs_type,
                                                   const ObScale max_scale,
                                                   const bool is_oracle_mode,
-                                                  const bool has_lob_header);
+                                                  const bool has_lob_header,
+                                                  const bool is_tee_field = false);
 
   static bool is_string_type(const ObObjType type);
   static bool is_json(const ObObjType type);
