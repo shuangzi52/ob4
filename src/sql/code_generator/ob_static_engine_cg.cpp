@@ -1677,8 +1677,8 @@ int ObStaticEngineCG::fill_sort_funcs(
         //      判断元素是否存在，如果存在，再进一步判断是否处理 tee 的逻辑
         bool is_tee_field = false;
         if (sort_keys.count() > i) {
-          OrderItem &order_item = sort_keys.at(i);
-          if (order_item.expr_.expr_name_.prefix_match("f_tee_")) {
+          const OrderItem &order_item = sort_keys.at(i);
+          if (order_item.expr_->get_expr_name().prefix_match("f_tee_")) {
             is_tee_field = true;
           }
         }
