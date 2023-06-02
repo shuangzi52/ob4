@@ -12,6 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
+#include <string.h>
 #include "ob_static_engine_cg.h"
 #include "sql/optimizer/ob_logical_operator.h"
 #include "sql/optimizer/ob_log_group_by.h"
@@ -1677,8 +1678,13 @@ int ObStaticEngineCG::fill_sort_funcs(
         //      判断元素是否存在，如果存在，再进一步判断是否处理 tee 的逻辑
         bool is_tee_field = false;
         if (sort_keys.count() > i) {
+          char buf[128];
+          int64_t pos = 0;
+          memset(buf, 0, 128);
           const OrderItem &order_item = sort_keys.at(i);
-          if (order_item.expr_->get_expr_name().prefix_match("f_tee_")) {
+          order_item.expr_->get_name(buf, 128, pos);
+
+          if (strstr(buf, ".f_tee_")) {
             is_tee_field = true;
           }
         }
