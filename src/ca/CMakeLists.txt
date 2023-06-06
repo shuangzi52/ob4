@@ -1,20 +1,24 @@
 ob_set_subtarget(
-  ob_tee ta
+  ob_ca ca
   share/datum/ob_datum_funcs.cpp
 )
 
+# set(TEEC_EXPORT /opt/optee/optee_client/out/export/usr)
+message(STATUS ${TEEC_EXPORT})
 
-include_directories(
-  ob_tee PUBLIC
+ob_add_new_object_target(ob_ca ob_ca)
+
+target_include_directories(
+  ob_ca PUBLIC
   ta/include
-  $(TEEC_EXPORT)/include
+  ${TEEC_EXPORT}/include
 )
 
-link_directories(
-  ob_tee
-  $(TEEC_EXPORT)/lib
+target_link_directories(
+  ob_ca PUBLIC
+  ${TEEC_EXPORT}/lib
 )
 
-link_libraries(teec)
+target_link_libraries(ob_ca PUBLIC ob_base teec)
 
-ob_server_add_target(ob_tee)
+# target_link_libraries(ob_ca PUBLIC teec)

@@ -92,10 +92,13 @@ if (OB_USE_CLANG)
     "${DEVTOOLS_DIR}/bin"
       NO_DEFAULT_PATH)
   endif()
-
-  find_file(GCC9 devtools
-    PATHS ${CMAKE_SOURCE_DIR}/deps/3rd/usr/local/oceanbase
-    NO_DEFAULT_PATH)
+  if(CROSS_COMPILE)
+    set(GCC9 "${CROSS_COMPILE}")
+  else()
+    find_file(GCC9 devtools
+      PATHS ${CMAKE_SOURCE_DIR}/deps/3rd/usr/local/oceanbase
+      NO_DEFAULT_PATH)
+  endif()
   set(_CMAKE_TOOLCHAIN_PREFIX llvm-)
   set(_CMAKE_TOOLCHAIN_LOCATION "${DEVTOOLS_DIR}/bin")
 

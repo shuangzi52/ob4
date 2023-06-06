@@ -1,3 +1,9 @@
+#include "deps/oblib/src/lib/charset/ob_charset.h"
+#include "deps/oblib/src/lib/ob_errno.h"
+#include "deps/oblib/src/lib/encode/ob_base64_encode.h"
+#include "share/datum/ob_datum_cmp_func_def.h"
+#include "share/datum/ob_datum.h"
+
 namespace oceanbase {
 namespace common {
 namespace ca {
