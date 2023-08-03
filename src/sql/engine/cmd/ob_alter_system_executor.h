@@ -185,7 +185,7 @@ private:
   int wait_leader_switch_out_(
       ObISQLClient &sql_proxy,
       const obrpc::ObServerList &svr_list);
-  // construct sql to check waitint-result
+  // construct sql to check waiting-result
   // @params[in]  svr_list, which servers to stop
   // @params[in]  sql, the sql builded
   int construct_wait_leader_switch_sql_(
