@@ -47,6 +47,7 @@ class ObTestTx : public ::testing::Test
 public:
   virtual void SetUp() override
   {
+    oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
     ObMallocAllocator::get_instance()->create_and_add_tenant_allocator(1001);
     const uint64_t tv = ObTimeUtility::current_time();
     ObCurTraceId::set(&tv);
@@ -149,10 +150,10 @@ TEST_F(ObTestTx, rollback_savepoint_with_msg_lost)
   tx_param.cluster_id_ = 100;
   ObTxReadSnapshot snapshot;
   ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx, tx_param.isolation_, n1->ts_after_ms(5), snapshot));
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
-  int64_t sp2 = 0;
+  ObTxSEQ sp2;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp2));
   ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 101, 113));
   // inject link failure between scheduler to participant 2
@@ -182,6 +183,7 @@ TEST_F(ObTestTx, rollback_savepoint_with_msg_lost)
   ASSERT_EQ(OB_SUCCESS, n2->get_tx_ctx(ls_id, tx.tx_id_, part_ctx));
   // release tx, then part_ctx can detect txn was terminated
   ASSERT_EQ(OB_SUCCESS, guard.release());
+  part_ctx->last_ask_scheduler_status_ts_ = 0; // ensure check_scheduler_status will not be skipped
   ASSERT_EQ(OB_SUCCESS, part_ctx->check_scheduler_status());
   int i = 0;
   while(!part_ctx->is_exiting_ && i++ < 100) {
@@ -213,7 +215,7 @@ TEST_F(ObTestTx, rollback_savepoint_with_uncertain_participants)
   PREPARE_TX(n1, tx);
   PREPARE_TX_PARAM(tx_param);
   CREATE_IMPLICIT_SAVEPOINT(n1, tx, tx_param, sp);
-  ASSERT_NE(sp, 0);
+  ASSERT_TRUE(sp.is_valid());
   share::ObLSArray uncertain_parts;
   ASSERT_EQ(OB_SUCCESS, uncertain_parts.push_back(share::ObLSID(1001)));
   ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_us(100000), &uncertain_parts));
@@ -242,7 +244,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully)
   ASSERT_EQ(OB_SUCCESS, n1->acquire_tx(tx_ptr));
   ObTxDesc &tx = *tx_ptr;
 
-  int64_t sp1 = 0, sp2 = 0;
+  ObTxSEQ sp1, sp2;
 
   { // prepare snapshot for write
     ObTxReadSnapshot snapshot;
@@ -326,7 +328,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_fail)
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp = 0;
+    ObTxSEQ sp;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 1000 + i, 2000 + i));
   }
@@ -387,7 +389,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_fail)
                              snapshot));
     ASSERT_EQ(OB_SUCCESS, n1->read(snapshot, 1000 + i, val1));
     ASSERT_EQ(2000 + i, val1);
-    int64_t sp = 0;
+    ObTxSEQ sp;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 1000 + i, 3000 + i));
   }
@@ -433,7 +435,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_then_forcedly)
   ASSERT_EQ(OB_SUCCESS, n1->acquire_tx(tx_ptr));
   ObTxDesc &tx = *tx_ptr;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   { // prepare snapshot for write
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -507,7 +509,7 @@ TEST_F(ObTestTx, switch_to_follower_forcedly)
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   { // prepare snapshot for write
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -565,7 +567,7 @@ TEST_F(ObTestTx, resume_leader)
   tx_param.access_mode_ = ObTxAccessMode::RW;
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   { // prepare snapshot for write
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -634,7 +636,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_in_stmt_then_resume_leader)
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
 
   ObStoreCtx write_store_ctx;
   { // prepare snapshot for write
@@ -734,7 +736,7 @@ TEST_F(ObTestTx, replay_basic)
                                tx_param.isolation_,
                                n1->ts_after_ms(100),
                                snapshot));
-      int64_t sp1 = 0;
+      ObTxSEQ sp1;
       ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
       ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
     }
@@ -830,7 +832,7 @@ TEST_F(ObTestTx, replay_then_commit)
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   }
@@ -862,7 +864,7 @@ TEST_F(ObTestTx, replay_then_commit)
     ASSERT_EQ(OB_SUCCESS, n2->read(snapshot, 100, val1));
     ASSERT_EQ(112, val1);
 
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 100, 113));
   }
@@ -927,7 +929,7 @@ TEST_F(ObTestTx, wait_commit_version_elapse_block)
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 113));
   }
@@ -1029,7 +1031,7 @@ TEST_F(ObTestTx, wait_commit_version_elapse_block_and_switch_to_follower_forcedl
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 113));
   }
@@ -1130,7 +1132,7 @@ TEST_F(ObTestTx, get_gts_block_and_switch_to_follower_gracefully)
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   }
@@ -1199,7 +1201,7 @@ TEST_F(ObTestTx, get_gts_block_and_switch_to_follower_forcedly)
                              tx_param.isolation_,
                              n1->ts_after_ms(100),
                              snapshot));
-    int64_t sp1 = 0;
+    ObTxSEQ sp1;
     ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   }
@@ -1255,7 +1257,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_in_stmt_rollback_to_last_savepoin
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ObStoreCtx write_store_ctx;
   {
     ObTxReadSnapshot snapshot;
@@ -1352,7 +1354,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_in_stmt_then_commit)
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ObStoreCtx write_store_ctx;
   {
     ObTxReadSnapshot snapshot;
@@ -1364,7 +1366,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_in_stmt_then_commit)
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 1000, 1111));
   }
 
-  int64_t sp2 = 0;
+  ObTxSEQ sp2;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1398,7 +1400,7 @@ TEST_F(ObTestTx, switch_to_follower_gracefully_in_stmt_then_commit)
     ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp2, n1->ts_after_ms(100), nullptr));
   }
 
-  int64_t sp3 = -1;
+  ObTxSEQ sp3;
   { // prepare snapshot for read
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n2->get_read_snapshot(tx,
@@ -1469,7 +1471,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_gracefully_in_stm
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1480,7 +1482,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_gracefully_in_stm
     ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 1000, 1111));
   }
 
-  int64_t sp2 = 0;
+  ObTxSEQ sp2;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1492,7 +1494,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_gracefully_in_stm
   }
 
   ObStoreCtx write_store_ctx;
-  int64_t sp3 = 0;
+  ObTxSEQ sp3;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1526,7 +1528,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_gracefully_in_stm
     ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp3, n1->ts_after_ms(100), nullptr));
   }
 
-  int64_t sp4 = -1;
+  ObTxSEQ sp4;
   { // prepare snapshot for read
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1602,7 +1604,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_gracefully_in_stm
   tx_param.isolation_ = ObTxIsolationLevel::RC;
   tx_param.cluster_id_ = 100;
 
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1615,7 +1617,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_gracefully_in_stm
   }
 
   ObStoreCtx write_store_ctx;
-  int64_t sp3 = 0;
+  ObTxSEQ sp3;
   {
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1649,7 +1651,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_gracefully_in_stm
     ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp3, n1->ts_after_ms(100), nullptr));
   }
 
-  int64_t sp4 = -1;
+  ObTxSEQ sp4;
   { // prepare snapshot for read
     ObTxReadSnapshot snapshot;
     ASSERT_EQ(OB_SUCCESS, n1->get_read_snapshot(tx,
@@ -1727,7 +1729,7 @@ TEST_F(ObTestTx, distributed_tx_switch_to_follower_forcedly_in_prepare_state)
                              n1->ts_after_ms(100),
                              snapshot));
   }
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 101, 113));
@@ -1825,7 +1827,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_forcedly_in_prepa
                              n1->ts_after_ms(100),
                              snapshot));
   }
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 101, 113));
@@ -1916,7 +1918,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_forcedly_in_pre_c
                                tx_param.isolation_,
                                n2->ts_after_ms(100),
                                snapshot));
-      int64_t sp1 = 0;
+      ObTxSEQ sp1;
       ASSERT_EQ(OB_SUCCESS, n2->create_implicit_savepoint(tx, tx_param, sp1));
       ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 200, 112));
     }
@@ -1938,7 +1940,7 @@ TEST_F(ObTestTx, distributed_tx_participant_switch_to_follower_forcedly_in_pre_c
                              n1->ts_after_ms(100),
                              snapshot));
   }
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 101, 112));
@@ -2047,7 +2049,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_forcedly_in_pre_c
                                tx_param.isolation_,
                                n1->ts_after_ms(100),
                                snapshot));
-      int64_t sp1 = 0;
+      ObTxSEQ sp1;
       ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
       ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
     }
@@ -2069,7 +2071,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_forcedly_in_pre_c
                              n1->ts_after_ms(100),
                              snapshot));
   }
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 113));
   ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 200, 113));
@@ -2176,7 +2178,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_forcedly_in_parti
                                tx_param.isolation_,
                                n1->ts_after_ms(100),
                                snapshot));
-      int64_t sp1 = 0;
+      ObTxSEQ sp1;
       ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
       ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
     }
@@ -2198,7 +2200,7 @@ TEST_F(ObTestTx, distributed_tx_coordinator_switch_to_follower_forcedly_in_parti
                              n1->ts_after_ms(100),
                              snapshot));
   }
-  int64_t sp1 = 0;
+  ObTxSEQ sp1;
   ASSERT_EQ(OB_SUCCESS, n1->create_implicit_savepoint(tx, tx_param, sp1));
   ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 113));
   ASSERT_EQ(OB_SUCCESS, n2->write(tx, snapshot, 200, 113));

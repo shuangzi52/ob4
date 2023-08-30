@@ -15,6 +15,7 @@
 
 #include "lib/utility/ob_unify_serialize.h"                    // OB_UNIS_VERSION
 #include "lib/utility/ob_print_utils.h"                        // TO_STRING_KV
+#include "log_define.h"
 #include "log_meta_info.h"
 #include "log_learner.h"                             // LogLearner, LogLearnerList
 #include "logservice/palf/lsn.h"                                     // LSN
@@ -32,6 +33,20 @@ enum PushLogType
   FETCH_LOG_RESP = 1,
 };
 
+inline const char *push_log_type_2_str(const PushLogType type)
+{
+#define EXTRACT_PUSH_LOG_TYPE(type_var) ({ case(type_var): return #type_var; })
+  switch(type)
+  {
+    EXTRACT_PUSH_LOG_TYPE(PUSH_LOG);
+    EXTRACT_PUSH_LOG_TYPE(FETCH_LOG_RESP);
+
+    default:
+      return "Invalid Type";
+  }
+#undef EXTRACT_PUSH_LOG_TYPE
+}
+
 struct LogPushReq {
   OB_UNIS_VERSION(1);
 public:
@@ -45,7 +60,7 @@ public:
   ~LogPushReq();
   bool is_valid() const;
   void reset();
-  TO_STRING_KV(K_(push_log_type), K_(msg_proposal_id), K_(prev_log_proposal_id),
+  TO_STRING_KV("push_log_type", push_log_type_2_str((PushLogType)push_log_type_), K_(msg_proposal_id), K_(prev_log_proposal_id),
                K_(prev_lsn), K_(curr_lsn), K_(write_buf));
   int16_t push_log_type_;
   int64_t msg_proposal_id_;
@@ -78,6 +93,21 @@ enum FetchLogType
   FETCH_MODE_META = 2,
 };
 
+inline const char *fetch_type_2_str(const FetchLogType type)
+{
+#define EXTRACT_FETCH_TYPE(type_var) ({ case(type_var): return #type_var; })
+  switch(type)
+  {
+    EXTRACT_FETCH_TYPE(FETCH_LOG_FOLLOWER);
+    EXTRACT_FETCH_TYPE(FETCH_LOG_LEADER_RECONFIRM);
+    EXTRACT_FETCH_TYPE(FETCH_MODE_META);
+
+    default:
+      return "Invalid Type";
+  }
+#undef EXTRACT_FETCH_TYPE
+}
+
 struct LogFetchReq {
   OB_UNIS_VERSION(1);
 public:
@@ -94,7 +124,7 @@ public:
   ~LogFetchReq();
   bool is_valid() const;
   void reset();
-  TO_STRING_KV(K_(msg_proposal_id), K_(fetch_type), K_(prev_lsn), K_(lsn), K_(fetch_log_size),
+  TO_STRING_KV(K_(msg_proposal_id), "fetch_type", fetch_type_2_str((FetchLogType)fetch_type_), K_(prev_lsn), K_(lsn), K_(fetch_log_size),
       K_(fetch_log_count), K_(accepted_mode_pid));
   int16_t fetch_type_;
   int64_t msg_proposal_id_;
@@ -103,6 +133,26 @@ public:
   int64_t fetch_log_size_;
   int64_t fetch_log_count_;
   int64_t accepted_mode_pid_;
+};
+
+struct LogBatchFetchResp {
+  OB_UNIS_VERSION(1);
+public:
+  LogBatchFetchResp();
+  LogBatchFetchResp(const int64_t msg_proposal_id,
+                    const int64_t prev_log_proposal_id,
+                    const LSN &prev_lsn,
+                    const LSN &curr_lsn,
+                    const LogWriteBuf &write_buf);
+  ~LogBatchFetchResp();
+  bool is_valid() const;
+  void reset();
+  TO_STRING_KV(K_(msg_proposal_id), K_(prev_log_proposal_id), K_(prev_lsn), K_(curr_lsn), K_(write_buf));
+  int64_t msg_proposal_id_;
+  int64_t prev_log_proposal_id_;
+  LSN prev_lsn_;
+  LSN curr_lsn_;
+  LogWriteBuf write_buf_;
 };
 
 struct NotifyRebuildReq {
@@ -396,6 +446,67 @@ public:
   LSN end_lsn_;
 };
 
+#ifdef OB_BUILD_ARBITRATION
+struct LogGetArbMemberInfoReq {
+  OB_UNIS_VERSION(1);
+public:
+  LogGetArbMemberInfoReq();
+  LogGetArbMemberInfoReq(const int64_t palf_id);
+  ~LogGetArbMemberInfoReq();
+  bool is_valid() const;
+  void reset();
+  TO_STRING_KV(K_(palf_id));
+  int64_t palf_id_;
+};
+
+struct ArbMemberInfo {
+  OB_UNIS_VERSION(1);
+public:
+  ArbMemberInfo();
+  ~ArbMemberInfo() { reset(); }
+  bool is_valid() const;
+  void reset();
+  ArbMemberInfo &operator=(const ArbMemberInfo &other)
+  {
+    this->palf_id_ = other.palf_id_;
+    this->arb_server_ = other.arb_server_;
+    this->log_proposal_id_ = other.log_proposal_id_;
+    this->config_version_ = other.config_version_;
+    this->mode_version_ = other.mode_version_;
+    this->access_mode_ = other.access_mode_;
+    this->paxos_member_list_ = other.paxos_member_list_;
+    this->paxos_replica_num_ = other.paxos_replica_num_;
+    this->arbitration_member_ = other.arbitration_member_;
+    this->degraded_list_ = other.degraded_list_;
+    return *this;
+  }
+  TO_STRING_KV(K_(palf_id), K_(arb_server), K_(log_proposal_id), K_(config_version), K_(mode_version),
+      K_(access_mode), K_(paxos_member_list), K_(paxos_replica_num), K_(arbitration_member),
+      K_(degraded_list));
+public:
+  int64_t palf_id_;
+  common::ObAddr arb_server_;
+  int64_t log_proposal_id_;
+  LogConfigVersion config_version_;
+  int64_t mode_version_;
+  AccessMode access_mode_;
+  ObMemberList paxos_member_list_;
+  int64_t paxos_replica_num_;
+  common::ObMember arbitration_member_;
+  common::GlobalLearnerList degraded_list_;
+};
+
+struct LogGetArbMemberInfoResp {
+  OB_UNIS_VERSION(1);
+public:
+  LogGetArbMemberInfoResp();
+  ~LogGetArbMemberInfoResp();
+  bool is_valid() const;
+  void reset();
+  TO_STRING_KV(K_(arb_member_info));
+  ArbMemberInfo arb_member_info_;
+};
+#endif
 
 } // end namespace palf
 } // end namespace oceanbase

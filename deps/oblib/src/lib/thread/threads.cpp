@@ -19,7 +19,7 @@
 #include "lib/oblog/ob_log.h"
 #include "lib/signal/ob_signal_struct.h"
 #include "lib/worker.h"
-
+using namespace oceanbase;
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
 
@@ -67,11 +67,7 @@ int Threads::do_set_thread_count(int64_t n_threads)
         MEMCPY(new_threads, threads_, sizeof (Thread*) * n_threads_);
         for (auto i = n_threads_; i < n_threads; i++) {
           Thread *thread = nullptr;
-          if (this->run_wrapper_ == nullptr) {
-            ret = create_thread(thread, [this, i]() { this->run(i); });
-          } else {
-            ret = create_thread(thread, [this, i]() { this->run_wrapper_->pre_run(this); this->run(i); this->run_wrapper_->end_run(this); });
-          }
+          ret = create_thread(thread, i);
           if (OB_FAIL(ret)) {
             n_threads = i;
             break;
@@ -182,11 +178,7 @@ int Threads::start()
     MEMSET(threads_, 0, sizeof (Thread*) * n_threads_);
     for (int i = 0; i < n_threads_; i++) {
       Thread *thread = nullptr;
-      if (this->run_wrapper_ == nullptr) {
-        ret = create_thread(thread, [this, i]() { this->run(i); });
-      } else {
-        ret = create_thread(thread, [this, i]() { this->run_wrapper_->pre_run(this); this->run(i); this->run_wrapper_->end_run(this); });
-      }
+      ret = create_thread(thread, i);
       if (OB_FAIL(ret)) {
         break;
       } else {
@@ -213,7 +205,7 @@ void Threads::run(int64_t idx)
   run1();
 }
 
-int Threads::create_thread(Thread *&thread, std::function<void()> entry)
+int Threads::create_thread(Thread *&thread, int64_t idx)
 {
   int ret = OB_SUCCESS;
   thread = nullptr;
@@ -221,7 +213,7 @@ int Threads::create_thread(Thread *&thread, std::function<void()> entry)
   if (buf == nullptr) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    thread = new (buf) Thread(entry, stack_size_);
+    thread = new (buf) Thread(this, idx, stack_size_);
     if (OB_FAIL(thread->start())) {
       thread->~Thread();
       ob_free(thread);
@@ -279,3 +271,51 @@ void Threads::destroy()
     threads_ = nullptr;
   }
 }
+
+
+extern "C" {
+int ob_pthread_create(void **ptr, void *(*start_routine) (void *), void *arg)
+{
+  int ret = OB_SUCCESS;
+  ObPThread *thread = NULL;
+  // Temporarily set expect_run_wrapper to NULL for creating normal thread
+  IRunWrapper *expect_run_wrapper = Threads::get_expect_run_wrapper();
+  Threads::get_expect_run_wrapper() = NULL;
+  DEFER(Threads::get_expect_run_wrapper() = expect_run_wrapper);
+  OB_LOG(INFO, "ob_pthread_create start");
+  if (OB_ISNULL(thread = OB_NEW(ObPThread, SET_USE_500("PThread"), start_routine, arg))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    OB_LOG(WARN, "alloc memory failed", K(ret));
+  } else if (OB_FAIL(thread->start())) {
+    OB_LOG(WARN, "failed to start thread", K(ret));
+  }
+  if (OB_FAIL(ret)) {
+    if (OB_NOT_NULL(thread)) {
+      OB_DELETE(ObPThread, SET_USE_500("PThread"), thread);
+    }
+  } else {
+    *ptr = thread;
+    OB_LOG(INFO, "ob_pthread_create succeed", KP(thread));
+  }
+  return ret;
+}
+void ob_pthread_join(void *ptr)
+{
+  if (OB_NOT_NULL(ptr)) {
+    ObPThread *thread = (ObPThread*) ptr;
+    thread->wait();
+    OB_LOG(INFO, "ob_pthread_join succeed", KP(thread));
+    OB_DELETE(ObPThread, SET_USE_500("PThread"), thread);
+  }
+}
+
+pthread_t ob_pthread_get_pth(void *ptr)
+{
+  pthread_t pth = 0;
+  if (OB_NOT_NULL(ptr)) {
+    ObPThread *thread = (ObPThread*) ptr;
+    pth = thread->get_pthread(0);
+  }
+  return pth;
+}
+} /* extern "C" */

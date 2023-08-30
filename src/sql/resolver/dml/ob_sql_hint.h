@@ -216,10 +216,6 @@ struct ObStmtHint
   int set_simple_view_hint(const ObStmtHint *other = NULL);
   int remove_normal_hints(const ObItemType *hint_array, const int64_t num);
   int merge_stmt_hint(const ObStmtHint &other, ObHintMergePolicy policy = HINT_DOMINATED_EQUAL);
-  int merge_other_opt_hint(const ObIArray<ObHint*> &hints,
-                           const bool dominated,
-                           ObIArray<ObItemType> &hint_types,
-                           ObIArray<ObHint*> &final_hints);
   int merge_hint(ObHint &hint, ObHintMergePolicy policy, ObIArray<ObItemType> &conflict_hints);
   int merge_normal_hint(ObHint &hint, ObHintMergePolicy policy, ObIArray<ObItemType> &conflict_hints);
   int reset_explicit_trans_hint(ObItemType hint_type);
@@ -386,9 +382,16 @@ struct ObLogPlanHint
   ObLogPlanHint() { reset(); }
   void reset();
   int init_normal_hints(const ObIArray<ObHint*> &normal_hints);
+#ifndef OB_BUILD_SPM
   int init_log_plan_hint(ObSqlSchemaGuard &schema_guard,
                          const ObDMLStmt &stmt,
                          const ObQueryHint &query_hint);
+#else
+  int init_log_plan_hint(ObSqlSchemaGuard &schema_guard,
+                         const ObDMLStmt &stmt,
+                         const ObQueryHint &query_hint,
+                         const bool is_spm_evolution);
+#endif
   int init_other_opt_hints(ObSqlSchemaGuard &schema_guard,
                            const ObDMLStmt &stmt,
                            const ObQueryHint &query_hint,
@@ -462,7 +465,7 @@ struct ObLogPlanHint
   bool pushdown_distinct() const { return has_enable_hint(T_DISTINCT_PUSHDOWN); }
   bool no_pushdown_distinct() const { return has_disable_hint(T_DISTINCT_PUSHDOWN); }
   bool use_distributed_dml() const { return has_enable_hint(T_USE_DISTRIBUTED_DML); }
-  bool no_use_distributed_dml() const { return has_disable_hint(T_NO_USE_DISTRIBUTED_DML); }
+  bool no_use_distributed_dml() const { return has_disable_hint(T_USE_DISTRIBUTED_DML); }
 
   const ObWindowDistHint *get_window_dist() const;
 
@@ -471,6 +474,9 @@ struct ObLogPlanHint
                K_(normal_hints));
 
   bool is_outline_data_;
+#ifdef OB_BUILD_SPM
+  bool is_spm_evolution_;
+#endif
   LogLeadingHint join_order_;
   common::ObSEArray<LogTableHint, 4, common::ModulePageAllocator, true> table_hints_;
   common::ObSEArray<LogJoinHint, 8, common::ModulePageAllocator, true> join_hints_;

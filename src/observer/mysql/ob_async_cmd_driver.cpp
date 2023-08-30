@@ -18,6 +18,7 @@
 #include "obsm_row.h"
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "observer/mysql/obmp_query.h"
+#include "observer/mysql/obmp_stmt_prexecute.h"
 
 namespace oceanbase
 {
@@ -46,7 +47,7 @@ ObAsyncCmdDriver::~ObAsyncCmdDriver()
  */
 int ObAsyncCmdDriver::response_result(ObMySQLResultSet &result)
 {
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_execution);
   int ret = OB_SUCCESS;
   ObSqlEndTransCb &sql_end_cb = session_.get_mysql_end_trans_cb();
   ObEndTransCbPacketParam pkt_param;
@@ -55,7 +56,8 @@ int ObAsyncCmdDriver::response_result(ObMySQLResultSet &result)
   if (OB_ISNULL(cur_trace_id = ObCurTraceId::get_trace_id())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("current trace id is NULL", K(ret));
-  } else if (is_prexecute_ && OB_FAIL(sender_.flush_buffer(false))) {
+  } else if (is_prexecute_
+    && OB_FAIL(response_query_header(result, false, false, true))) {
     LOG_WARN("flush buffer fail before send async ok packet.", K(ret));
   } else if (OB_FAIL(sql_end_cb.set_packet_param(pkt_param.fill(result, session_, *cur_trace_id)))) {
     LOG_ERROR("fail to set packet param", K(ret));
@@ -100,7 +102,6 @@ int ObAsyncCmdDriver::response_result(ObMySQLResultSet &result)
       LOG_WARN("close result failed", K(close_ret));
     }
   }
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = false;
   return ret;
 }
 

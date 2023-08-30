@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -8,12 +16,14 @@
 #include "observer/table_load/ob_table_load_struct.h"
 #include "share/table/ob_table_load_array.h"
 #include "share/table/ob_table_load_define.h"
+#include "share/table/ob_table_load_sql_statistics.h"
 #include "share/table/ob_table_load_row_array.h"
 
 namespace oceanbase
 {
 namespace observer
 {
+class ObTableLoadExecCtx;
 class ObTableLoadTableCtx;
 class ObTableLoadCoordinatorCtx;
 class ObTableLoadCoordinatorTrans;
@@ -26,7 +36,7 @@ public:
   ObTableLoadCoordinator(ObTableLoadTableCtx *ctx);
   static bool is_ctx_inited(ObTableLoadTableCtx *ctx);
   static int init_ctx(ObTableLoadTableCtx *ctx, const common::ObIArray<int64_t> &idx_array,
-                      uint64_t user_id);
+                      ObTableLoadExecCtx *exec_ctx);
   static void abort_ctx(ObTableLoadTableCtx *ctx);
   int init();
   bool is_valid() const { return is_inited_; }
@@ -39,8 +49,8 @@ private:
 public:
   int begin();
   int finish();
-  int commit(sql::ObExecContext *exec_ctx, table::ObTableLoadResultInfo &result_info);
-  int px_commit_data(sql::ObExecContext *exec_ctx);
+  int commit(table::ObTableLoadResultInfo &result_info);
+  int px_commit_data();
   int px_commit_ddl();
   int get_status(table::ObTableLoadStatusType &status, int &error_code);
 private:
@@ -48,9 +58,9 @@ private:
   int confirm_begin_peers();
   int pre_merge_peers();
   int start_merge_peers();
-  int commit_peers(table::ObTableLoadSqlStatistics &sql_statistics);
+  int commit_peers();
   int commit_redef_table();
-  int drive_sql_stat(sql::ObExecContext &ctx, table::ObTableLoadSqlStatistics &sql_statistics);
+  int drive_sql_stat(sql::ObExecContext *ctx);
 private:
   int add_check_merge_result_task();
   int check_peers_merge_result(bool &is_finish);
@@ -88,6 +98,8 @@ private:
 public:
   int write(const table::ObTableLoadTransId &trans_id, int32_t session_id, uint64_t sequence_no,
             const table::ObTableLoadObjRowArray &obj_rows);
+  // for client
+  int write(const table::ObTableLoadTransId &trans_id, const table::ObTableLoadObjRowArray &obj_rows);
   int flush(ObTableLoadCoordinatorTrans *trans);
   // 只写到主节点
   int write_peer_leader(const table::ObTableLoadTransId &trans_id, int32_t session_id,

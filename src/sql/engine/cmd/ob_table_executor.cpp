@@ -95,70 +95,30 @@ int ObCreateTableExecutor::prepare_stmt(ObCreateTableStmt &stmt,
   return ret;
 }
 
-//准备查询插入的脚本
-int ObCreateTableExecutor::prepare_ins_arg(ObCreateTableStmt &stmt,
-                                           const ObSQLSessionInfo *my_session,
-                                           ObSchemaGetterGuard *schema_guard,
-                                           const ParamStore *param_store,
-                                           ObSqlString &ins_sql) //out, 最终的查询插入语句
+int ObCreateTableExecutor::ObInsSQLPrinter::inner_print(char *buf, int64_t buf_len, int64_t &res_len)
 {
   int ret = OB_SUCCESS;
-  ObArenaAllocator allocator("CreateTableExec");
-  char *buf = static_cast<char*>(allocator.alloc(OB_MAX_SQL_LENGTH));
-  int64_t buf_len = OB_MAX_SQL_LENGTH;
+  const char sep_char = lib::is_oracle_mode()? '"': '`';
+  const ObSelectStmt *select_stmt = NULL;
   int64_t pos1 = 0;
-  bool is_set_subquery = false;
-  bool is_oracle_mode = lib::is_oracle_mode();
-  bool no_osg_hint = false;
-  bool online_sys_var = false;
-  const ObString &db_name = stmt.get_database_name();
-  const ObString &tab_name = stmt.get_table_name();
-  const char sep_char = is_oracle_mode? '"': '`';
-  ObSelectStmt *select_stmt = stmt.get_sub_select();
-  ObObjPrintParams obj_print_params(select_stmt->get_query_ctx()->get_timezone_info());
-  obj_print_params.print_origin_stmt_ = true;
-  ObSelectStmtPrinter select_stmt_printer(buf, buf_len, &pos1, select_stmt,
-                                          schema_guard,
-                                          obj_print_params,
-                                          param_store,
-                                          true);
-  select_stmt_printer.set_is_first_stmt_for_hint(true);  // need print global hint
-  if (OB_ISNULL(buf)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_ERROR("allocate memory failed");
-  } else if (OB_ISNULL(select_stmt) || OB_ISNULL(select_stmt->get_query_ctx()) || OB_ISNULL(my_session)) {
+  if (OB_ISNULL(stmt_) || OB_ISNULL(select_stmt= stmt_->get_sub_select())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("select stmt should not be null", K(ret));
-  } else {
-    //get hint
-    no_osg_hint = select_stmt->get_query_ctx()->get_global_hint().has_no_gather_opt_stat_hint();
-
-    //get system variable
-    ObObj online_sys_var_obj;
-    if (OB_FAIL(OB_FAIL(my_session->get_sys_variable(SYS_VAR__OPTIMIZER_GATHER_STATS_ON_LOAD, online_sys_var_obj)))) {
-      LOG_WARN("fail to get sys var", K(ret));
-    } else {
-      online_sys_var = online_sys_var_obj.get_bool();
-      LOG_DEBUG("online opt stat gather", K(online_sys_var), K(no_osg_hint));
-    }
-  }
-
-  if (OB_FAIL(ret)) {
+    LOG_WARN("null stmt", K(ret));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos1,
-                                      (!no_osg_hint && online_sys_var)
-                                      ? "insert /*+GATHER_OPTIMIZER_STATISTICS*/ into %c%.*s%c.%c%.*s%c"
-                                      : "insert /*+NO_GATHER_OPTIMIZER_STATISTICS*/ into %c%.*s%c.%c%.*s%c",
-                                      sep_char,
-                                      db_name.length(),
-                                      db_name.ptr(),
-                                      sep_char,
-                                      sep_char,
-                                      tab_name.length(),
-                                      tab_name.ptr(),
-                                      sep_char))) {
-    LOG_WARN("fail to print insert into string", K(ret), K(db_name), K(tab_name));
+                              do_osg_
+                              ? "insert /*+GATHER_OPTIMIZER_STATISTICS*/ into %c%.*s%c.%c%.*s%c"
+                              : "insert /*+NO_GATHER_OPTIMIZER_STATISTICS*/ into %c%.*s%c.%c%.*s%c",
+                              sep_char,
+                              stmt_->get_database_name().length(),
+                              stmt_->get_database_name().ptr(),
+                              sep_char,
+                              sep_char,
+                              stmt_->get_table_name().length(),
+                              stmt_->get_table_name().ptr(),
+                              sep_char))) {
+    LOG_WARN("fail to print insert into string", K(ret));
   } else if (lib::is_oracle_mode()) {
-    ObTableSchema &table_schema = stmt.get_create_table_arg().schema_;
+    const ObTableSchema &table_schema = stmt_->get_create_table_arg().schema_;
     int64_t used_column_count = 0;
     for (int64_t i = 0; OB_SUCC(ret) && i < table_schema.get_column_count(); ++i) {
       const ObColumnSchemaV2 *column_schema = table_schema.get_column_schema_by_idx(i);
@@ -197,11 +157,67 @@ int ObCreateTableExecutor::prepare_ins_arg(ObCreateTableStmt &stmt,
   }
 
   if (OB_SUCC(ret)) {
+    ObSelectStmtPrinter select_stmt_printer(buf, buf_len, &pos1, select_stmt,
+                                            schema_guard_,
+                                            print_params_,
+                                            param_store_,
+                                            true);
+    select_stmt_printer.set_is_first_stmt_for_hint(true);  // need print global hint
     if (OB_FAIL(databuff_printf(buf, buf_len, pos1, ") "))) {
       LOG_WARN("fail to append ')'", K(ret));
     } else if (OB_FAIL(select_stmt_printer.do_print())) {
       LOG_WARN("fail to print select stmt", K(ret));
-    } else if (OB_FAIL(ins_sql.append(buf, pos1))){
+    } else {
+      res_len = pos1;
+    }
+  }
+  return ret;
+}
+
+//准备查询插入的脚本
+int ObCreateTableExecutor::prepare_ins_arg(ObCreateTableStmt &stmt,
+                                           const ObSQLSessionInfo *my_session,
+                                           ObSchemaGetterGuard *schema_guard,
+                                           const ParamStore *param_store,
+                                           ObSqlString &ins_sql) //out, 最终的查询插入语句
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator("CreateTableExec");
+  char *buf = static_cast<char*>(allocator.alloc(OB_MAX_SQL_LENGTH));
+  int64_t buf_len = OB_MAX_SQL_LENGTH;
+  int64_t pos1 = 0;
+  bool is_oracle_mode = lib::is_oracle_mode();
+  bool no_osg_hint = false;
+  bool online_sys_var = false;
+  ObSelectStmt *select_stmt = stmt.get_sub_select();
+  ObObjPrintParams obj_print_params(select_stmt->get_query_ctx()->get_timezone_info());
+  obj_print_params.print_origin_stmt_ = true;
+  if (OB_ISNULL(buf)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_ERROR("allocate memory failed");
+  } else if (OB_ISNULL(select_stmt) || OB_ISNULL(select_stmt->get_query_ctx()) || OB_ISNULL(my_session)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("select stmt should not be null", K(ret));
+  } else {
+    //get hint
+    no_osg_hint = select_stmt->get_query_ctx()->get_global_hint().has_no_gather_opt_stat_hint();
+
+    //get system variable
+    ObObj online_sys_var_obj;
+    if (OB_FAIL(OB_FAIL(my_session->get_sys_variable(SYS_VAR__OPTIMIZER_GATHER_STATS_ON_LOAD, online_sys_var_obj)))) {
+      LOG_WARN("fail to get sys var", K(ret));
+    } else {
+      online_sys_var = online_sys_var_obj.get_bool();
+      LOG_DEBUG("online opt stat gather", K(online_sys_var), K(no_osg_hint));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    ObInsSQLPrinter sql_printer(&stmt, schema_guard, obj_print_params, param_store, !no_osg_hint && online_sys_var);
+    ObString sql;
+    if (OB_FAIL(sql_printer.do_print(allocator, sql))) {
+      LOG_WARN("failed  to print", K(ret));
+    } else if (OB_FAIL(ins_sql.append(sql))){
       LOG_WARN("fail to append insert into string", K(ret));
     }
   }
@@ -303,12 +319,14 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
                                         obrpc::ObCommonRpcProxy *common_rpc_proxy)
 {
   int ret = OB_SUCCESS;
+  ObString cur_query;
   int64_t affected_rows = 0;
   ObMySQLProxy *sql_proxy = ctx.get_sql_proxy();
   common::ObCommonSqlProxy *user_sql_proxy;
   common::ObOracleSqlProxy oracle_sql_proxy;
   ObSQLSessionInfo *my_session = ctx.get_my_session();
   ObPhysicalPlanCtx *plan_ctx = ctx.get_physical_plan_ctx();
+  ObArenaAllocator allocator("CreateTableExec");
   HEAP_VAR(obrpc::ObAlterTableArg, alter_table_arg) {
     obrpc::ObDropTableArg drop_table_arg;
     obrpc::ObTableItem table_item;
@@ -325,6 +343,11 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
       OB_NOT_NULL(plan_ctx),
       OB_NOT_NULL(common_rpc_proxy),
       OB_NOT_NULL(ctx.get_sql_ctx()));
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(ob_write_string(allocator, my_session->get_current_query_string(), cur_query))) {
+        LOG_WARN("failed to write string to session", K(ret));
+      }
+    }
     if (OB_SUCC(ret)) {
       ObInnerSQLConnectionPool *pool = static_cast<observer::ObInnerSQLConnectionPool*>(sql_proxy->get_pool());
       if (OB_ISNULL(pool)) {
@@ -398,6 +421,14 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
               if (OB_LIKELY(OB_SUCCESS == ret)) {
                 tmp_ret = conn->commit();
               } else {
+                int64_t MIN_ROLLBACK_TIMEOUT = 10 * 1000 * 1000;// 10s
+                int64_t origin_timeout_ts = THIS_WORKER.get_timeout_ts();
+                if (INT64_MAX != origin_timeout_ts &&
+                    origin_timeout_ts < ObTimeUtility::current_time() + MIN_ROLLBACK_TIMEOUT) {
+                  THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + MIN_ROLLBACK_TIMEOUT);
+                  LOG_INFO("set timeout for rollback", K(origin_timeout_ts),
+                      K(ObTimeUtility::current_time() + MIN_ROLLBACK_TIMEOUT));
+                }
                 tmp_ret = conn->rollback();
               }
               if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
@@ -452,6 +483,7 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
         LOG_DEBUG("table exists, no need to CTAS", K(create_table_res.table_id_));
       }
     }
+    OZ(my_session->store_query_string(cur_query));
   }
   return ret;
 }
@@ -1207,21 +1239,15 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
     }
 
     if (OB_SUCC(ret)) {
-      const bool is_ddl_retry_task = is_drop_schema_block_concurrent_trans(res.ddl_type_);
       const bool need_wait_ddl_finish = is_double_table_long_running_ddl(res.ddl_type_)
-                                     || is_simple_table_long_running_ddl(res.ddl_type_)
-                                     || is_ddl_retry_task;
+                                     || is_simple_table_long_running_ddl(res.ddl_type_);
       if (OB_SUCC(ret) && need_wait_ddl_finish) {
         int64_t affected_rows = 0;
         if (OB_FAIL(refresh_schema_for_table(alter_table_arg.exec_tenant_id_))) {
           LOG_WARN("refresh_schema_for_table failed", K(ret));
-        } else if (!is_ddl_retry_task && OB_FAIL(ObDDLExecutorUtil::wait_ddl_finish(tenant_id, res.task_id_,
+        } else if (OB_FAIL(ObDDLExecutorUtil::wait_ddl_finish(tenant_id, res.task_id_,
                                                                                     *my_session, common_rpc_proxy))) {
           LOG_WARN("fail to wait ddl finish", K(ret), K(tenant_id), K(res));
-        } else if (is_ddl_retry_task && OB_FAIL(ObDDLExecutorUtil::wait_ddl_retry_task_finish(tenant_id, res.task_id_,
-                                                                                             *my_session, common_rpc_proxy,
-                                                                                             affected_rows))) {
-          LOG_WARN("fail to wait ddl retry task finish", K(ret), K(tenant_id), K(res));
         }
       }
     }
@@ -1525,6 +1551,13 @@ int ObAlterTableExecutor::calc_range_values_exprs(
                                        *sub_part,
                                        ctx));
       }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(ObPartitionExecutorUtils::check_increasing_range_value(part->get_subpart_array(),
+                                                                           part->get_subpartition_num(),
+                                                                           stmt::T_ALTER_TABLE))) {
+          LOG_WARN("check increasing range value failed", K(ret));
+        }
+      }
     }
   } else {
     const int64_t part_num = new_table_schema.get_partition_num();
@@ -1539,6 +1572,13 @@ int ObAlterTableExecutor::calc_range_values_exprs(
                                      dst_res_type,
                                      *part,
                                      ctx));
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(ObPartitionExecutorUtils::check_increasing_range_value(part_array,
+                                                                         part_num,
+                                                                         stmt::T_ALTER_TABLE))) {
+        LOG_WARN("check increasing range value failed", K(ret));
+      }
     }
   }
   return ret;
@@ -2027,6 +2067,36 @@ ObTruncateTableExecutor::~ObTruncateTableExecutor()
 {
 }
 
+int ObTruncateTableExecutor::check_use_parallel_truncate(const obrpc::ObTruncateTableArg &arg, bool &use_parallel_truncate)
+{
+  int ret = OB_SUCCESS;
+  uint64_t compat_version = 0;
+  use_parallel_truncate = false;
+  const ObTableSchema *table_schema = NULL;
+  const uint64_t tenant_id = arg.tenant_id_;
+  const ObString table_name = arg.table_name_;
+  const ObString database_name = arg.database_name_;
+  share::schema::ObSchemaGetterGuard schema_guard;
+  if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
+    LOG_WARN("get min data_version failed", K(ret), K(tenant_id));
+  } else if (OB_ISNULL(GCTX.schema_service_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("GCTX schema_service not init", K(ret));
+  } else if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
+    LOG_WARN("fail to get tenant schema guard", K(ret), K(tenant_id));
+  } else if (FALSE_IT(schema_guard.set_session_id(arg.session_id_))) {
+  } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, database_name, table_name, false, table_schema))) {
+    LOG_WARN("fail to get table schema", K(ret), K(database_name), K(table_name));
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("table is not exist", K(ret), K(database_name), K(table_name));
+  } else {
+    use_parallel_truncate = (table_schema->get_autoinc_column_id() == 0 && compat_version >= DATA_VERSION_4_1_0_0)
+                            || compat_version >= DATA_VERSION_4_1_0_2;
+  }
+  return ret;
+}
+
 int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &stmt)
 {
   int ret = OB_SUCCESS;
@@ -2059,33 +2129,16 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       //impossible
     } else if (!stmt.is_truncate_oracle_temp_table()) {
       int64_t foreign_key_checks = 0;
-      share::schema::ObSchemaGetterGuard schema_guard;
       my_session->get_foreign_key_checks(foreign_key_checks);
       tmp_arg.foreign_key_checks_ = is_oracle_mode() || (is_mysql_mode() && foreign_key_checks);
       tmp_arg.compat_mode_ = ORACLE_MODE == my_session->get_compatibility_mode()
         ? lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL;
       int64_t affected_rows = 0;
-      uint64_t compat_version = 0;
-      const ObTableSchema *table_schema = NULL;
+      bool use_parallel_truncate = false;
       const uint64_t tenant_id = truncate_table_arg.tenant_id_;
-      const ObString table_name = truncate_table_arg.table_name_;
-      const ObString database_name = truncate_table_arg.database_name_;
-      if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
-        LOG_WARN("get min data_version failed", K(ret), K(tenant_id));
-      } else if (OB_ISNULL(GCTX.schema_service_)) {
-        ret = OB_NOT_INIT;
-        LOG_WARN("GCTX schema_service not init", K(ret));
-      } else if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
-        LOG_WARN("fail to get tenant schema guard", K(ret), K(tenant_id));
-      } else if (FALSE_IT(schema_guard.set_session_id(truncate_table_arg.session_id_))) {
-      } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, database_name, table_name, false, table_schema))) {
-        LOG_WARN("fail to get table schema", K(ret), K(database_name), K(table_name));
-      } else if (OB_ISNULL(table_schema)) {
-        ret = OB_TABLE_NOT_EXIST;
-        LOG_WARN("table is not exist", K(ret), K(database_name), K(table_name));
-      // Avoiding the impact of new_truncate_table on mysql auotinc, then we need to execute the old logic
-      } else if (compat_version < DATA_VERSION_4_1_0_0
-                || table_schema->get_autoinc_column_id() != 0) {
+      if (OB_FAIL(check_use_parallel_truncate(truncate_table_arg, use_parallel_truncate))) {
+        LOG_WARN("fail to check use parallel trunate", KR(ret), K(truncate_table_arg));
+      } else if (!use_parallel_truncate) {
         if (OB_FAIL(common_rpc_proxy->truncate_table(truncate_table_arg, res))) {
           LOG_WARN("rpc proxy alter table failed", K(ret));
         } else if (res.is_valid()
@@ -2095,13 +2148,13 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       } else {
         // new parallel truncate
         ObTimeoutCtx ctx;
-        if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF._ob_ddl_timeout))) {
+        if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, (static_cast<obrpc::ObRpcProxy*>(common_rpc_proxy))->timeout()))) {
           LOG_WARN("fail to set timeout ctx", K(ret));
         } else {
           int64_t start_time = ObTimeUtility::current_time();
           while (OB_SUCC(ret)) {
             DEBUG_SYNC(BEFORE_PARELLEL_TRUNCATE);
-            if (OB_FAIL(common_rpc_proxy->truncate_table_v2(truncate_table_arg, res))) {
+            if (OB_FAIL(common_rpc_proxy->timeout(ctx.get_timeout()).truncate_table_v2(truncate_table_arg, res))) {
               LOG_WARN("rpc proxy truncate table failed", K(ret));
               if ((OB_TRY_LOCK_ROW_CONFLICT == ret || OB_TIMEOUT == ret || OB_NOT_MASTER == ret
                     || OB_RS_NOT_MASTER == ret || OB_RS_SHUTDOWN == ret || OB_TENANT_NOT_IN_SERVER == ret) && ctx.get_timeout() > 0) {
@@ -2133,7 +2186,7 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
                           && consensus_schema_version >= res.task_id_) {
                 break;
               } else if (refreshed_schema_version >= res.task_id_
-                          && ObTimeUtility::current_time() - step_time >= 10 * 1000 * 1000) { //10s
+                          && ObTimeUtility::current_time() - step_time >= GCONF._wait_interval_after_truncate) {
                 break;
               } else {
                 ob_usleep(10 * 1000);
@@ -2148,7 +2201,8 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
                                                 K(res));
         }
       }
-
+    } else if (stmt.get_oracle_temp_table_type() == share::schema::TMP_TABLE_ORA_TRX) {
+      //do nothing
     } else {
       ObSqlString sql;
       int64_t affect_rows = 0;
@@ -2156,14 +2210,15 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       uint64_t tenant_id = stmt.get_tenant_id();
       ObString db_name = stmt.get_database_name();
       ObString tab_name = stmt.get_table_name();
-      int64_t session_id = my_session->get_sessid_for_table();
+      uint64_t unique_id = my_session->get_gtt_session_scope_unique_id();
+
       if (OB_FAIL(oracle_sql_proxy.init(GCTX.sql_proxy_->get_pool()))) {
         LOG_WARN("init oracle sql proxy failed", K(ret));
       } else if (OB_FAIL(sql.assign_fmt("DELETE FROM \"%.*s\".\"%.*s\" WHERE "
                                         "%s = %ld",
                                         db_name.length(), db_name.ptr(),
                                         tab_name.length(), tab_name.ptr(),
-                                        OB_HIDDEN_SESSION_ID_COLUMN_NAME, session_id))) {
+                                        OB_HIDDEN_SESSION_ID_COLUMN_NAME, unique_id))) {
         LOG_WARN("fail to assign sql", K(ret));
       } else if (OB_FAIL(oracle_sql_proxy.write(tenant_id, sql.ptr(), affect_rows))) {
         LOG_WARN("execute sql failed", K(ret), K(sql), K(affect_rows));

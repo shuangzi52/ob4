@@ -939,6 +939,16 @@ int ObBackupMacroBlockIndexStore::get_macro_block_index_(const blocksstable::ObL
       LOG_WARN("no macro block index exist", K(ret), K(macro_id), K(range_index), K(index_list));
     }
   }
+#ifdef ERRSIM
+  if (macro_id.tablet_id_ == GCONF.errsim_backup_tablet_id) {
+    SERVER_EVENT_SYNC_ADD("backup_errsim", "get_macro_block_index",
+                         "logic_id", macro_id,
+                         "range_index", range_index,
+                         "macro_index", macro_index,
+                         "backup_path", backup_path,
+                         "result", ret);
+  }
+#endif
   return ret;
 }
 
@@ -1026,7 +1036,7 @@ int ObBackupIndexStoreWrapper::get_idx_(const share::ObBackupDataType &backup_da
 
 int ObRestoreMetaIndexStore::init(const ObBackupRestoreMode &mode, const ObBackupIndexStoreParam &param,
     const share::ObBackupDest &backup_dest, const share::ObBackupSetDesc &backup_set_desc, const bool is_sec_meta,
-    ObBackupIndexKVCache &index_kv_cache)
+    const uint64_t data_version, ObBackupIndexKVCache &index_kv_cache)
 {
   int ret = OB_SUCCESS;
   share::ObBackupPath backup_path;
@@ -1050,6 +1060,7 @@ int ObRestoreMetaIndexStore::init(const ObBackupRestoreMode &mode, const ObBacku
     backup_data_type_ = param.backup_data_type_;
     index_kv_cache_ = &index_kv_cache;
     is_sec_meta_ = is_sec_meta;
+    data_version_ = data_version;
     if (OB_FAIL(get_backup_file_path(backup_path))) {
       LOG_WARN("failed to get backup file path", K(ret));
     } else if (OB_FAIL(read_file_trailer_(backup_path.get_obstr(), backup_dest_.get_storage_info()))) {
@@ -1065,7 +1076,12 @@ int ObRestoreMetaIndexStore::get_backup_file_path(share::ObBackupPath &backup_pa
 {
   int ret = OB_SUCCESS;
   if (is_tenant_level_) {
-    if (OB_FAIL(share::ObBackupPathUtil::get_tenant_meta_index_backup_path(
+    if (DATA_VERSION_4_2_0_0 > data_version_) {
+      if (OB_FAIL(share::ObBackupPathUtilV_4_1::get_tenant_meta_index_backup_path(
+          backup_dest_, backup_data_type_, turn_id_, retry_id_, is_sec_meta_, backup_path))) {
+        LOG_WARN("failed to get tenant meta index file path", K(ret), K_(backup_dest), K_(backup_data_type), K_(turn_id));
+      }
+    } else if (OB_FAIL(share::ObBackupPathUtil::get_tenant_meta_index_backup_path(
         backup_dest_, backup_data_type_, turn_id_, retry_id_, is_sec_meta_, backup_path))) {
       LOG_WARN("failed to get tenant meta index file path", K(ret), K_(backup_dest), K_(backup_data_type),
           K_(turn_id));
@@ -1090,14 +1106,17 @@ ObBackupMetaIndexStoreWrapper::~ObBackupMetaIndexStoreWrapper()
 {}
 
 int ObBackupMetaIndexStoreWrapper::init(const ObBackupRestoreMode &mode, const ObBackupIndexStoreParam &param,
-    const share::ObBackupDest &backup_dest, const share::ObBackupSetDesc &backup_set_desc, const bool is_sec_meta,
-    ObBackupIndexKVCache &index_kv_cache)
+    const share::ObBackupDest &backup_dest, const share::ObBackupSetFileDesc &backup_set_info, const bool is_sec_meta,
+    const bool init_sys_tablet_index_store, ObBackupIndexKVCache &index_kv_cache)
 {
   int ret = OB_SUCCESS;
+  share::ObBackupSetDesc backup_set_desc;
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("index store init twice", K(ret));
   } else {
+    backup_set_desc.backup_set_id_ = backup_set_info.backup_set_id_;
+    backup_set_desc.backup_type_ = backup_set_info.backup_type_;
     ObBackupIndexStoreParam share_param = param;
     for (int64_t i = 0; OB_SUCC(ret) && i < ARRAY_SIZE; ++i) {
       ObBackupDataType backup_data_type;
@@ -1105,21 +1124,53 @@ int ObBackupMetaIndexStoreWrapper::init(const ObBackupRestoreMode &mode, const O
       int64_t retry_id = 0;
       if (OB_FAIL(get_type_by_idx_(i, backup_data_type))) {
         LOG_WARN("failed to get type by idx", K(ret), K(i));
+      } else if (backup_data_type.is_sys_backup() && !init_sys_tablet_index_store) {
+        continue;
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (backup_set_info.tenant_compatible_ < DATA_VERSION_4_2_0_0) {
+        // In 4.1.x, sys tablet only has 1 backup turn.
+        // minor and major both use the data turn id.
+        if (backup_data_type.is_sys_backup() && OB_FALSE_IT(share_param.turn_id_ = 1)) {
+        } else if (!backup_data_type.is_sys_backup() && OB_FALSE_IT(share_param.turn_id_ = backup_set_info.data_turn_id_)) {
+        }
+      } else if (backup_data_type.is_minor_backup() && OB_FALSE_IT(share_param.turn_id_ = backup_set_info.minor_turn_id_)) {
+      } else if (backup_data_type.is_major_backup() && OB_FALSE_IT(share_param.turn_id_ = backup_set_info.major_turn_id_)) {
+      }
+
+      if (OB_SUCC(ret) && !backup_data_type.is_sys_backup()) {
+        if (backup_set_info.tenant_compatible_ < DATA_VERSION_4_2_0_0) {
+          if (OB_FAIL(get_tenant_meta_index_retry_id_v_4_1_x_(
+              backup_dest, backup_data_type, share_param.turn_id_, is_sec_meta, retry_id))) {
+            LOG_WARN("failed to get tenant meta index retry id", K(ret));
+          }
+        } else if (OB_FAIL(get_tenant_meta_index_retry_id_(
+            backup_dest, backup_data_type, share_param.turn_id_, is_sec_meta, retry_id))) {
+          LOG_WARN("failed to get tenant meta index retry id", K(ret));
+        }
+
+        if (OB_SUCC(ret)) {
+          share_param.retry_id_ = retry_id;
+        }
+      }
+
+      if (OB_FAIL(ret)) {
       } else if (OB_FAIL(get_index_store_(backup_data_type, store))) {
         LOG_WARN("failed to get index store", K(ret), K(backup_data_type));
       } else if (OB_ISNULL(store)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("failed to get index store", K(ret), K(backup_data_type));
-      } else if (!backup_data_type.is_sys_backup() && OB_FAIL(get_tenant_meta_index_retry_id_(
-          backup_dest, backup_data_type, param.turn_id_, is_sec_meta, retry_id))) {
-        LOG_WARN("failed to get tenant meta index retry id", K(ret));
       } else {
         share_param.backup_data_type_ = backup_data_type;
         share_param.is_tenant_level_ = backup_data_type.is_sys_backup() ? false : true;
-        if (!backup_data_type.is_sys_backup()) {
-          share_param.retry_id_ = retry_id;
-        }
-        if (OB_FAIL(store->init(mode, share_param, backup_dest, backup_set_desc, is_sec_meta, index_kv_cache))) {
+        if (OB_FAIL(store->init(mode,
+                                share_param,
+                                backup_dest,
+                                backup_set_desc,
+                                is_sec_meta,
+                                backup_set_info.tenant_compatible_,
+                                index_kv_cache))) {
           LOG_WARN("failed to init store", K(ret), K(i));
         }
       }
@@ -1184,6 +1235,26 @@ int ObBackupMetaIndexStoreWrapper::get_tenant_meta_index_retry_id_(
       turn_id, is_restore, is_macro_index, is_sec_meta))) {
     LOG_WARN("failed to init retry id getter", K(ret), K(backup_dest), K(backup_data_type), K(turn_id));
   } else if (OB_FAIL(retry_id_getter.get_max_retry_id(retry_id))) {
+    LOG_WARN("failed to get max retry id", K(ret));
+  }
+  return ret;
+}
+
+int ObBackupMetaIndexStoreWrapper::get_tenant_meta_index_retry_id_v_4_1_x_(
+    const share::ObBackupDest &backup_dest, const share::ObBackupDataType &backup_data_type,
+    const int64_t turn_id, const int64_t is_sec_meta, int64_t &retry_id)
+{
+  int ret = OB_SUCCESS;
+  ObBackupTenantIndexRetryIDGetter retry_id_getter;
+  const bool is_restore = true;
+  const bool is_macro_index = false;
+  if (!backup_dest.is_valid() || !backup_data_type.is_valid() || turn_id <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid args", K(ret), K(backup_dest), K(backup_data_type), K(turn_id));
+  } else if (OB_FAIL(retry_id_getter.init(backup_dest, backup_data_type,
+      turn_id, is_restore, is_macro_index, is_sec_meta))) {
+    LOG_WARN("failed to init retry id getter", K(ret), K(backup_dest), K(backup_data_type), K(turn_id));
+  } else if (OB_FAIL(retry_id_getter.get_max_retry_id_v_4_1_x(retry_id))) {
     LOG_WARN("failed to get max retry id", K(ret));
   }
   return ret;
@@ -1367,18 +1438,50 @@ int ObBackupTenantIndexRetryIDGetter::get_max_retry_id(int64_t &retry_id)
   return ret;
 }
 
+int ObBackupTenantIndexRetryIDGetter::get_max_retry_id_v_4_1_x(int64_t &retry_id)
+{
+  int ret = OB_SUCCESS;
+  retry_id = 0;
+  ObArray<int64_t> id_list;
+  const char *file_name_prefix = NULL;
+  share::ObBackupPath backup_path;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("retry id getter not init", K(ret));
+  } else if (OB_FAIL(get_tenant_index_file_name_(file_name_prefix))) {
+    LOG_WARN("failed to get tenant index file name", K(ret));
+  } else if (is_restore_ &&
+      OB_FAIL(share::ObBackupPathUtilV_4_1::get_ls_info_data_info_dir_path(backup_dest_,
+                                                                              turn_id_,
+                                                                              backup_path))) {
+    LOG_WARN("failed to get ls info data info dir path",
+             K(ret), K_(backup_dest), K_(backup_data_type), K_(backup_set_desc), K_(turn_id));
+  } else if (OB_FAIL(list_files_(backup_path, backup_dest_.get_storage_info(), file_name_prefix, id_list))) {
+    LOG_WARN("failed to list files", K(ret), K(backup_path), K(backup_dest_), K(file_name_prefix));
+  } else if (OB_FAIL(find_largest_id_(id_list, retry_id))) {
+    LOG_WARN("failed to find largest id", K(ret), K(id_list));
+  } else {
+    LOG_INFO("get max tenant index retry id", K_(backup_dest), K_(backup_data_type),
+        K_(turn_id), K_(is_restore), K_(is_macro_index), K_(is_sec_meta), K(retry_id));
+  }
+  return ret;
+}
+
 int ObBackupTenantIndexRetryIDGetter::get_ls_info_data_info_dir_path_(ObBackupPath &backup_path)
 {
   int ret = OB_SUCCESS;
   backup_path.reset();
   if (is_restore_) {
-    if (OB_FAIL(share::ObBackupPathUtil::get_ls_info_data_info_dir_path(backup_dest_, turn_id_, backup_path))) {
-      LOG_WARN("failed to get ls info data info dir path", K(ret), K_(backup_dest), K_(backup_set_desc), K_(turn_id));
+    if (OB_FAIL(share::ObBackupPathUtil::get_ls_info_data_info_dir_path(
+        backup_dest_, backup_data_type_, turn_id_, backup_path))) {
+      LOG_WARN("failed to get ls info data info dir path",
+          K(ret), K_(backup_dest), K_(backup_data_type), K_(backup_set_desc), K_(turn_id));
     }
   } else {
     if (OB_FAIL(share::ObBackupPathUtil::get_ls_info_data_info_dir_path(
-        backup_dest_, backup_set_desc_, turn_id_, backup_path))) {
-      LOG_WARN("failed to get ls info data info dir path", K(ret), K_(backup_dest), K_(backup_set_desc), K_(turn_id));
+        backup_dest_, backup_set_desc_, backup_data_type_, turn_id_, backup_path))) {
+      LOG_WARN("failed to get ls info data info dir path",
+          K(ret), K_(backup_dest), K_(backup_set_desc), K_(backup_data_type), K_(turn_id));
     }
   }
   return ret;

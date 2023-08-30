@@ -24,7 +24,6 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/init_basic_struct.h"
 #include "storage/mock_ob_log_handler.h"
-#include "observer/ob_safe_destroy_thread.h"
 #include "share/scn.h"
 
 using namespace oceanbase;
@@ -111,7 +110,7 @@ public:
   {
     if (rec_scn < rec_scn_) {
       rec_scn_ = rec_scn;
-      check_can_move_to_active();
+      data_checkpoint_->transfer_from_new_create_to_active_without_src_lock_(this);
     }
   }
 
@@ -216,6 +215,7 @@ TestCheckpointExecutor::TestCheckpointExecutor()
 
 void TestCheckpointExecutor::SetUp()
 {
+  ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
   tenant_id_ = MTL_ID();
 }
 
@@ -226,16 +226,11 @@ void TestCheckpointExecutor::TearDown()
 void TestCheckpointExecutor::SetUpTestCase()
 {
   EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
-  SAFE_DESTROY_INSTANCE.init();
-  SAFE_DESTROY_INSTANCE.start();
   ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
 }
 
 void TestCheckpointExecutor::TearDownTestCase()
 {
-  SAFE_DESTROY_INSTANCE.stop();
-  SAFE_DESTROY_INSTANCE.wait();
-  SAFE_DESTROY_INSTANCE.destroy();
   MockTenantModuleEnv::get_instance().destroy();
 }
 
@@ -281,6 +276,7 @@ TEST_F(TestCheckpointExecutor, calculate_checkpoint)
   checkpoint_executor2->register_handler(TIMESTAMP_LOG_BASE_TYPE, &service1);
   ASSERT_EQ(OB_SUCCESS, checkpoint_executor2->init(ls2, &mock_log_handler_));
   checkpoint_executor2->start();
+
 
   ASSERT_EQ(OB_SUCCESS, checkpoint_executor2->update_clog_checkpoint());
   tmp.val_ = 5;

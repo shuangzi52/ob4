@@ -48,7 +48,7 @@ GB_3 [\x30-\x39]
 UTF8_GB_CHAR ({U_2}{U}|{U_3}{U}{U}|{U_4}{U}{U}{U}|{GB_1}{GB_2}|{GB_1}{GB_3}{GB_1}{GB_3})
 space            [ \t\n\r\f]
 non_newline      [^\n\r]
-sql_comment      ("--"{space}+{non_newline}*)|(#{non_newline}*)
+sql_comment      ("--"[ \t]+{non_newline}*)|(#{non_newline}*|"--"[\n\r])
 whitespace       ({space}+|{sql_comment})
 select_hint_begin       (select{space}*(\/\*([^+*]|\*+[^*\/])*\*+\/{space}*)*(\/\*\+({space}*hint{space}+)?))
 update_hint_begin       (update{space}*(\/\*([^+*]|\*+[^*\/])*\*+\/{space}*)*(\/\*\+({space}*hint{space}+)?))
@@ -285,6 +285,26 @@ FALSE {
   return BOOL_VALUE;
 }
 
+("N"|"n"){sqbegin} {
+  BEGIN(sq);
+  ParseResult *p = (ParseResult *)yyextra;
+  p->start_col_ = yylloc->first_column;
+  char **tmp_literal = &(p->tmp_literal_);
+  if (NULL == *tmp_literal)
+  {
+    *tmp_literal = (char*) parse_malloc(p->input_sql_len_ + 1, p->malloc_pool_);
+    check_malloc(*tmp_literal);
+  }
+  check_value(yylval);
+  malloc_new_node(yylval->node, p->malloc_pool_, T_NCHAR, 0);
+
+  yylval->node->str_len_ = 0;
+  if (IS_FAST_PARAMETERIZE && !IS_NEED_PARAMETERIZE) {
+    COPY_WRITE();
+  }
+}
+
+
 {sqbegin} {
   BEGIN(sq);
   ParseResult *p = (ParseResult *)yyextra;
@@ -305,6 +325,7 @@ FALSE {
   check_value(yylval);
   yylloc->first_column = p->start_col_;
   FORMAT_STR_NODE(yylval->node);
+  int32_t token_ret = yylval->node->type_ == T_NCHAR ? NATIONAL_LITERAL : STRING_VALUE;
   yylval->node->text_len_ = yylloc->last_column - p->start_col_ + 1;
   COPY_STRING(p->input_sql_ + p->start_col_ - 1, yylval->node->text_len_, yylval->node->raw_text_);
   if (IS_FAST_PARAMETERIZE) {
@@ -312,7 +333,7 @@ FALSE {
   } else {
     yylval->node->sql_str_off_ = yylloc->first_column;
     setup_token_pos_info(yylval->node, yylloc->first_column, yylval->node->text_len_ - 2);
-    return STRING_VALUE;
+    return token_ret;
   }
 }
 
@@ -587,6 +608,7 @@ FALSE {
     }
     check_malloc(dup_value);
     yylval->node->str_value_ = dup_value;
+    yylval->node->is_input_quoted_ = 1;
     yylval->node->sql_str_off_ = yylloc->first_column;
     setup_token_pos_info(yylval->node, yylloc->first_column, yylval->node->str_len_);
     return NAME_OB;
@@ -657,6 +679,7 @@ FALSE {
     }
     check_malloc(dup_value);
     yylval->node->str_value_ = dup_value;
+    yylval->node->is_input_quoted_ = 1;
     yylval->node->sql_str_off_ = yylloc->first_column;
     setup_token_pos_info(yylval->node, yylloc->first_column, yylval->node->str_len_);
     return NAME_OB;
@@ -679,6 +702,12 @@ X'([0-9A-F])*'|0X([0-9A-F])+ {
     --len;
     if (0 != len % 2) {
       yyerror(yylloc, yyextra, "hex string contain an even number of digits\n");
+      return PARSER_SYNTAX_ERROR;
+    }
+  } else {
+    // Values written using 0xval notation NOTE: 0Xval (use upper case 'X') notation is illegal in MySQL
+    if (yytext[1] == 'X') {
+      yyerror(yylloc, yyextra, "hex string with leading '0X' (use upper case 'X') is illegal\n");
       return PARSER_SYNTAX_ERROR;
     }
   }
@@ -717,6 +746,12 @@ B'([01])*'|0B([01])+ {
   if(src[len - 1] == '\'')
   {
     --len;
+  } else {
+    // Values written using 0bval notation NOTE: 0Bval (use upper case 'B') notation is illegal in MySQL
+    if (yytext[1] == 'B') {
+      yyerror(yylloc, yyextra, "bit string with leading '0B' (use upper case 'B') is illegal\n");
+      return PARSER_SYNTAX_ERROR;
+    }
   }
   ParseNode *node = NULL;
   ParseResult *p = (ParseResult *)yyextra;
@@ -1079,9 +1114,14 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>NO_WIN_MAGIC { return NO_WIN_MAGIC; }
 <hint>PULLUP_EXPR { return PULLUP_EXPR; }
 <hint>NO_PULLUP_EXPR { return NO_PULLUP_EXPR; }
+<hint>AGGR_FIRST_UNNEST { return AGGR_FIRST_UNNEST; }
+<hint>NO_AGGR_FIRST_UNNEST { return NO_AGGR_FIRST_UNNEST; }
+<hint>JOIN_FIRST_UNNEST { return JOIN_FIRST_UNNEST; }
+<hint>NO_JOIN_FIRST_UNNEST { return NO_JOIN_FIRST_UNNEST; }
 <hint>OPT_PARAM { return OPT_PARAM; }
 <hint>OB_DDL_SCHEMA_VERSION { return OB_DDL_SCHEMA_VERSION; }
 <hint>DYNAMIC_SAMPLING { return DYNAMIC_SAMPLING; }
+<hint>PUSHDOWN { return PUSHDOWN; }
 <hint>{identifier} {
   if (!(IS_FAST_PARAMETERIZE)) {
     check_value(yylval);

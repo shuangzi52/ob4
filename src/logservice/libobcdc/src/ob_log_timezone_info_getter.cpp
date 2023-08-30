@@ -325,8 +325,8 @@ int ObLogTimeZoneInfoGetter::fetch_tenant_timezone_info_(
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       sqlclient::ObMySQLResult *result = nullptr;
       if (OB_ISNULL(mysql_proxy_)) {
-        LOG_ERROR("mysql_proxy_ is null", K(mysql_proxy_));
         ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("mysql_proxy_ is null", KR(ret), K(mysql_proxy_));
       } else if (! need_fetch_timezone_info_by_tennat_()) {
         if (OB_FAIL(mysql_proxy_->read(res, ObTimeZoneInfoManager::FETCH_TZ_INFO_SQL))) {
           LOG_WARN("fail to execute sql", KR(ret));
@@ -363,7 +363,8 @@ int ObLogTimeZoneInfoGetter::refresh_all_tenant_timezone_info_()
   if (OB_FAIL(tenant_mgr_->get_all_tenant_ids(all_tenant_ids))) {
     LOG_WARN("fail to get all tenant ids", KR(ret));
   } else if (OB_ISNULL(mysql_proxy_)) {
-    LOG_ERROR("mysql_proxy_ is null", K(mysql_proxy_));
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("mysql_proxy_ is null", KR(ret), K(mysql_proxy_));
   } else {
     for (int64_t idx = 0; OB_SUCC(ret) && idx < all_tenant_ids.size(); idx++) {
       const uint64_t tenant_id = all_tenant_ids[idx];
@@ -546,7 +547,7 @@ int ObLogTimeZoneInfoGetter::export_timezone_info_(common::ObTZInfoMap &tz_info_
     return OB_SUCCESS == tmp_ret;
   };
 
-  if (OB_FAIL(tz_info_map.id_map_.for_each(tz_info_op))) {
+  if (OB_FAIL(tz_info_map.id_map_->for_each(tz_info_op))) {
     LOG_ERROR("generate ObRequestTZInfoResult failed", KR(ret));
   } else if (0 >= tz_info_res.tz_array_.count()) {
     // skip empty tz_info_result.
@@ -598,7 +599,7 @@ int ObLogTimeZoneInfoGetter::import_timezone_info_(common::ObTZInfoMap &tz_info_
     for (int idx= 0; OB_SUCC(ret) && idx < tz_info_cnt; idx++) {
       ObTimeZoneInfoPos &new_tz_info = tz_info_res.tz_array_.at(idx);
 
-      if (OB_FAIL(tz_info_map.id_map_.get(new_tz_info.get_tz_id(), stored_tz_info))) {
+      if (OB_FAIL(tz_info_map.id_map_->get(new_tz_info.get_tz_id(), stored_tz_info))) {
         if (OB_ENTRY_NOT_EXIST == ret) {
           ret = OB_SUCCESS;
         } else {
@@ -618,7 +619,7 @@ int ObLogTimeZoneInfoGetter::import_timezone_info_(common::ObTZInfoMap &tz_info_
       }
 
       if (OB_NOT_NULL(stored_tz_info)) {
-        tz_info_map.id_map_.revert(stored_tz_info);
+        tz_info_map.id_map_->revert(stored_tz_info);
         stored_tz_info = nullptr;
       }
     } // end for

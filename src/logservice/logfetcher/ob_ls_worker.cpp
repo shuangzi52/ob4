@@ -193,8 +193,8 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
     LOG_ERROR("not init", K(inited_));
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(idle_pool_) || OB_ISNULL(dead_pool_)) {
-    LOG_ERROR("invalid handlers", K(idle_pool_), K(dead_pool_));
     ret = OB_INVALID_ERROR;
+    LOG_ERROR("invalid handlers", KR(ret), K(idle_pool_), K(dead_pool_));
   }
   // Recycle deleted partitions and add them to DEAD POOL
   else if (OB_UNLIKELY(task.is_discarded())) {
@@ -208,7 +208,7 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
     request_svr.reset();
     bool found_valid_svr = false;
 
-    LOG_DEBUG("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] begin to dispatch",
+    LOG_TRACE("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] begin to dispatch",
         "task", &task, K(task), K(dispatch_reason));
 
     // Get the next valid server for the service log
@@ -218,13 +218,13 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
         //  server is not available, blacklisted
         int64_t svr_service_time = 0;
         int64_t survival_time = ATOMIC_LOAD(&g_blacklist_survival_time);
-        if (task.add_into_blacklist(request_svr, svr_service_time, survival_time)) {
+        if (OB_FAIL(task.add_into_blacklist(request_svr, svr_service_time, survival_time))) {
           // add server to blacklist
           LOG_ERROR("not-avail server, task add into blacklist fail", KR(ret), K(task), K(request_svr),
                     "svr_service_time", TVAL_TO_STR(svr_service_time),
                     "survival_time", TVAL_TO_STR(survival_time));
         } else {
-          LOG_DEBUG("not-avail server, task add into blacklist succ", KR(ret), K(task), K(request_svr),
+          LOG_TRACE("not-avail server, task add into blacklist succ", KR(ret), K(task), K(request_svr),
                     "svr_service_time", TVAL_TO_STR(svr_service_time),
                     "survival_time", TVAL_TO_STR(survival_time));
         }
@@ -242,14 +242,14 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
     if (OB_SUCCESS == ret) {
       // No server available, put it into idle pool
       if (! found_valid_svr) {
-        LOG_DEBUG("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] server list is used up, "
+        LOG_TRACE("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] server list is used up, "
             "dispatch to idle pool", "task", &task, K(task));
 
         if (OB_FAIL(idle_pool_->push(&task))) {
           LOG_ERROR("push into idle pool fail", KR(ret), K(task));
         }
       } else {
-        LOG_DEBUG("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] dispatch to next server",
+        LOG_TRACE("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] dispatch to next server",
             K(request_svr), "task", &task, K(task));
 
         // Assigning tasks to the server
@@ -286,7 +286,7 @@ int ObLSWorker::dispatch_stream_task(FetchStream &task, const char *from_mod)
       LOG_INFO("[STAT] [STREAM_WORKER] [DISPATCH_STREAM_TASK]",
           "fetch_stream", &task, K(from_mod), K(hash_val), K(task));
     } else {
-      LOG_DEBUG("[STAT] [STREAM_WORKER] [DISPATCH_STREAM_TASK]",
+      LOG_TRACE("[STAT] [STREAM_WORKER] [DISPATCH_STREAM_TASK]",
           "fetch_stream", &task, K(from_mod), K(hash_val), K(task));
     }
 
@@ -307,7 +307,7 @@ int ObLSWorker::hibernate_stream_task(FetchStream &task, const char *from_mod)
     LOG_INFO("[STAT] [STREAM_WORKER] [HIBERNATE_STREAM_TASK]",
         "task", &task, K(from_mod), K(task));
   } else {
-    LOG_DEBUG("[STAT] [STREAM_WORKER] [HIBERNATE_STREAM_TASK]",
+    LOG_TRACE("[STAT] [STREAM_WORKER] [HIBERNATE_STREAM_TASK]",
         "task", &task, K(from_mod), K(task));
   }
 
@@ -328,7 +328,7 @@ void ObLSWorker::handle(void *data, volatile bool &stop_flag)
   bool is_paused = ATOMIC_LOAD(&stream_paused_);
   FetchStream *task = static_cast<FetchStream *>(data);
 
-  LOG_DEBUG("[STAT] [STREAM_WORKER] [HANDLE_STREAM_TASK]", K_(stream_paused), K(thread_index),
+  LOG_TRACE("[STAT] [STREAM_WORKER] [HANDLE_STREAM_TASK]", K_(stream_paused), K(thread_index),
       K(task), KPC(task));
 
   if (OB_ISNULL(task)) {
@@ -338,14 +338,22 @@ void ObLSWorker::handle(void *data, volatile bool &stop_flag)
   // If the stream task is currently suspended, the task is put to sleep
   // DDL tasks are exempt from suspend and require always processing
   else if (OB_UNLIKELY(is_paused) && ! task->is_sys_log_stream()) {
-    LOG_DEBUG("[STAT] [STREAM_WORKER] [HIBERNATE_STREAM_TASK_ON_PAUSE]", K(task));
+    LOG_TRACE("[STAT] [STREAM_WORKER] [HIBERNATE_STREAM_TASK_ON_PAUSE]", K(task));
 
     if (OB_FAIL(hibernate_stream_task(*task, "PausedFetcher"))) {
       LOG_ERROR("hibernate_stream_task on pause fail", KR(ret), K(task), KPC(task));
     }
   } else if (OB_FAIL(task->handle(stop_flag))) {
     if (OB_IN_STOP_STATE != ret) {
-      LOG_ERROR("handle fetch stream task fail", KR(ret), K(task));
+      LOG_ERROR("handle fetch stream task failed", KR(ret), K(task));
+    } else {
+      LOG_INFO("handle fetch stream task is stopped", KR(ret), K(task));
+    }
+
+    LOG_INFO("handle fetch stream task failed, need to reschedule", KR(ret), K(task));
+    int tmp_ret = OB_SUCCESS;
+    if (OB_TMP_FAIL(hibernate_stream_task(*task, "HandleTaskErr"))) {
+      LOG_ERROR_RET(tmp_ret, "hibernate_stream_task on handle task failure", K(task), KPC(task));
     }
   } else {
     // Can no longer continue with the task
@@ -391,7 +399,7 @@ int ObLSWorker::dispatch_fetch_task_to_svr_(LSFetchCtx &task, const common::ObAd
   } else if (OB_FAIL(fs_container_mgr->get_fsc(tls_id, fsc))) {
     LOG_ERROR("FetchStreamContainerMgr get_fsc fail", KR(ret));
   } else {
-    LOG_DEBUG("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] dispatch to svr",
+    LOG_TRACE("[STAT] [STREAM_WORKER] [DISPATCH_FETCH_TASK] dispatch to svr",
         "task", &task, K(task), K(request_svr));
 
     if (OB_FAIL(fsc->dispatch(task, request_svr))) {

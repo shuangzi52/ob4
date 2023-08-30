@@ -25,6 +25,7 @@
 #include "lib/utility/ob_backtrace.h"
 #include "lib/oblog/ob_trace_log.h"
 #include "lib/container/ob_iarray.h"
+#include "common/ob_clock_generator.h"
 
 #define FALSE_IT(stmt) ({ (stmt); false; })
 #define OB_FALSE_IT(stmt) ({ (stmt); false; })
@@ -710,6 +711,19 @@ bool has_exist_in_array(const T *array, const int64_t num, const T &var)
   return ret;
 }
 
+template <typename ContainerT, typename ElementT>
+bool element_exist(const ContainerT &container, const ElementT &var)
+{
+  bool bret = false;
+  FOREACH(var_iter, container) {
+    if (*var_iter == var) {
+      bret = true;
+      break;
+    }
+  }
+  return bret;
+}
+
 template <typename T>
 int add_var_to_array_no_dup(ObIArray<T> &array, const T &var, int64_t *idx = NULL)
 {
@@ -1140,6 +1154,22 @@ public:
       if (ATOMIC_LOAD(&last_ts_) + stat_interval_ < cur_ts) {
         if (ATOMIC_BCAS(&lock_tag_, false, true)) {
           LIB_LOG(INFO, NULL == item_ ? "" : item_, K(cur_stat_count), K_(stat_interval), "avg count/cost", cur_accum_count / cur_stat_count, K(this), K_(extra_info));
+          (void)ATOMIC_SET(&last_ts_, cur_ts);
+          (void)ATOMIC_SET(&stat_count_, 0);
+          (void)ATOMIC_SET(&accum_count_, 0);
+          ATOMIC_BCAS(&lock_tag_, true, false);
+        }
+      }
+    }
+
+    void stat(const int64_t count, const int64_t total_time_cost)
+    {
+      const int64_t cur_ts = ::oceanbase::common::ObTimeUtility::fast_current_time();
+      const int64_t cur_stat_count = ATOMIC_AAF(&stat_count_, count);
+      const int64_t cur_accum_time = ATOMIC_AAF(&accum_count_, total_time_cost);
+      if (ATOMIC_LOAD(&last_ts_) + stat_interval_ < cur_ts) {
+        if (ATOMIC_BCAS(&lock_tag_, false, true)) {
+          LIB_LOG(INFO, NULL == item_ ? "" : item_, K(cur_stat_count), K_(stat_interval), "avg cost", cur_accum_time / cur_stat_count, K(this));
           (void)ATOMIC_SET(&last_ts_, cur_ts);
           (void)ATOMIC_SET(&stat_count_, 0);
           (void)ATOMIC_SET(&accum_count_, 0);

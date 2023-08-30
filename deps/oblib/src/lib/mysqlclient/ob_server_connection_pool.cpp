@@ -102,7 +102,7 @@ int ObServerConnectionPool::acquire(ObMySQLConnection *&conn, uint32_t sessid)
   return ret;
 }
 
-int ObServerConnectionPool::release(common::sqlclient::ObISQLConnection *conn, const bool succ, uint32_t sessid)
+int ObServerConnectionPool::release(common::sqlclient::ObISQLConnection *conn, const bool succ)
 {
   int ret = OB_SUCCESS;
   ObMySQLConnection *connection = static_cast<ObMySQLConnection *>(conn);
@@ -119,7 +119,7 @@ int ObServerConnectionPool::release(common::sqlclient::ObISQLConnection *conn, c
       connection->error_times_++;
       connection->close();
     }
-    if (OB_FAIL(connection_pool_ptr_->put_cached(connection, sessid))) {
+    if (OB_FAIL(connection_pool_ptr_->put_cached(connection, connection->get_sessid()))) {
       ATOMIC_DEC(&busy_conn_count_);
       LOG_WARN("connection object failed to put to cache. destroyed", K(ret));
     } else {
@@ -127,7 +127,14 @@ int ObServerConnectionPool::release(common::sqlclient::ObISQLConnection *conn, c
       ATOMIC_INC(&free_conn_count_);
     }
   }
-  LOG_TRACE("release connection to server conn pool", KP(this), K(busy_conn_count_), K(free_conn_count_), KP(connection), K(sessid), K(succ), K(ret), K(lbt()));
+  LOG_TRACE("release connection to server conn pool", KP(this),
+                                                      K(busy_conn_count_),
+                                                      K(free_conn_count_),
+                                                      KP(connection),
+                                                      K(connection->get_sessid()),
+                                                      K(succ),
+                                                      K(ret),
+                                                      K(lbt()));
   return ret;
 }
 
@@ -184,7 +191,7 @@ void ObServerConnectionPool::dump()
            "max_allowed_conn_count_", max_allowed_conn_count_, "server_not_available_", server_not_available_);
 }
 
-int ObServerConnectionPool::init_dblink(uint64_t dblink_id, const ObAddr &server,
+int ObServerConnectionPool::init_dblink(uint64_t tenant_id, uint64_t dblink_id, const ObAddr &server,
                                         const ObString &db_tenant, const ObString &db_user,
                                         const ObString &db_pass, const ObString &db_name,
                                         const common::ObString &conn_str,
@@ -208,6 +215,7 @@ int ObServerConnectionPool::init_dblink(uint64_t dblink_id, const ObAddr &server
              K(dblink_id), K(db_tenant), K(db_user), K(db_pass), K(db_name));
   } else {
     dblink_id_ = dblink_id;
+    tenant_id_  = tenant_id;
     if (cluster_str.empty()) {
       (void)snprintf(db_user_, sizeof(db_user_), "%.*s@%.*s", db_user.length(), db_user.ptr(),
                     db_tenant.length(), db_tenant.ptr());

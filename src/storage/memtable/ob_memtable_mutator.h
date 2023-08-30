@@ -136,7 +136,7 @@ public:
   ObMutator(const uint64_t table_id,
             const ObStoreRowkey &rowkey,
             const int64_t table_version,
-            const int64_t seq_no);
+            const transaction::ObTxSEQ seq_no);
   void reset();
 public:
   char obj_array_[sizeof(common::ObObj) * common::OB_MAX_ROWKEY_COLUMN_NUMBER];
@@ -144,7 +144,7 @@ public:
   uint32_t row_size_;
   uint64_t table_id_;
   int64_t table_version_;
-  int64_t seq_no_;
+  transaction::ObTxSEQ seq_no_;
 };
 
 class ObMemtableMutatorRow : public ObMutator
@@ -161,7 +161,8 @@ public:
                        const uint32_t acc_checksum,
                        const int64_t version,
                        const int32_t flag,
-                       const int64_t seq_no);
+                       const transaction::ObTxSEQ seq_no,
+                       const int64_t column_cnt);
   virtual ~ObMemtableMutatorRow();
   void reset();
   int copy(uint64_t &table_id,
@@ -174,8 +175,8 @@ public:
            uint32_t &acc_checksum,
            int64_t &version,
            int32_t &flag,
-           int64_t &seq_no) const;
-
+           transaction::ObTxSEQ &seq_no,
+           int64_t &column_cnt) const;
   int serialize(char *buf, int64_t &buf_len, int64_t &pos,
                 const transaction::ObTxEncryptMeta *encrypt_meta,
                 transaction::ObCLogEncryptInfo &new_encrypt_info,
@@ -190,6 +191,7 @@ public:
                           share::ObCLogEncryptStatMap &encrypt_stat_map,
                           const bool is_big_row = false);
   uint32_t get_flag() const { return flag_; };
+  int64_t get_column_cnt() const { return column_cnt_; }
 
   TO_STRING_KV(K_(row_size),
                K_(table_id),
@@ -202,7 +204,8 @@ public:
                K_(acc_checksum),
                K_(version),
                K_(flag),
-               K_(seq_no));
+               K_(seq_no),
+               K_(column_cnt));
 
 public:
   blocksstable::ObDmlFlag dml_flag_;
@@ -213,6 +216,17 @@ public:
   int64_t version_;
   int32_t flag_; // currently, unused
   uint8_t rowid_version_;
+  int64_t column_cnt_;
+#ifdef OB_BUILD_TDE_SECURITY
+private:
+  int handle_encrypt_row_(char *buf, const int64_t buf_len,
+                          const int64_t start_pos, int64_t &end_pos,
+                          const share::ObEncryptMeta &meta);
+  int handle_decrypt_row_(const char *buf, const int64_t start_pos,
+    const int64_t end_pos, ObEncryptRowBuf &row_buf, const char* &out_buf, int64_t &out_len,
+    const share::ObEncryptMeta &meta);
+  static const int64_t OB_MAX_COUNT_NEED_BYTES = 10; //max int64_t size need bytes
+#endif
 };
 
 class ObMutatorTableLock : public ObMutator
@@ -226,19 +240,19 @@ public:
                      const transaction::tablelock::ObTableLockOwnerID owner_id,
                      const transaction::tablelock::ObTableLockMode lock_mode,
                      const transaction::tablelock::ObTableLockOpType lock_op_type,
-                     const int64_t seq_no,
+                     const transaction::ObTxSEQ seq_no,
                      const int64_t create_timestamp,
                      const int64_t create_schema_version);
   virtual ~ObMutatorTableLock();
   void reset();
+  bool is_valid() const;
   int copy(transaction::tablelock::ObLockID &lock_id,
            transaction::tablelock::ObTableLockOwnerID &owner_id,
            transaction::tablelock::ObTableLockMode &lock_mode,
            transaction::tablelock::ObTableLockOpType &lock_op_type,
-           int64_t &seq_no,
+           transaction::ObTxSEQ &seq_no,
            int64_t &create_timestamp,
            int64_t &create_schema_version) const;
-
   int serialize(char *buf, const int64_t buf_len, int64_t &pos);
   int deserialize(const char *buf, const int64_t data_len, int64_t &pos);
 
@@ -323,6 +337,13 @@ public:
                 transaction::ObCLogEncryptInfo &encrypt_info);
   ObMemtableMutatorMeta& get_meta() { return meta_; }
   int64_t get_serialize_size() const;
+#ifdef OB_BUILD_TDE_SECURITY
+  static int encrypt_big_row_data(
+    const char *in_buf, const int64_t in_buf_len, int64_t &in_buf_pos,
+    char *out_buf, const int64_t out_buf_len, int64_t &out_buf_pos,
+    const int64_t table_id, const transaction::ObCLogEncryptInfo &encrypt_info,
+    bool &need_encrypt);
+#endif
 private:
   ObMemtableMutatorMeta meta_;
   common::ObDataBuffer buf_;

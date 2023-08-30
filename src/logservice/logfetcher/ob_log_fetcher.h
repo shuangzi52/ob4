@@ -16,6 +16,7 @@
 #define OCEANBASE_LOG_FETCHER_LOG_FETCHER_H_
 
 #include "share/scn.h"                          // SCN
+#include "lib/compress/ob_compress_util.h"      // ObCompressorType
 #include "ob_log_ls_fetch_mgr.h"                // ObLogLSFetchMgr
 #include "ob_log_fetch_stream_container_mgr.h"  // ObFsContainerMgr
 #include "ob_log_rpc.h"                         // ObLogRpc
@@ -34,6 +35,7 @@
 #include "ob_log_progress_info.h"               // ProgressInfo
 #include "ob_log_fetcher_start_parameters.h"    // ObLogFetcherStartParameters
 #include "ob_log_fetcher_err_handler.h"         // IObLogErrHandler
+#include "logservice/ob_log_external_storage_handler.h" // ObLogExternalStorageHandler
 
 namespace oceanbase
 {
@@ -65,7 +67,13 @@ public:
   virtual int64_t get_cluster_id() const = 0;
 
   // Get Tenant ID
-  virtual uint64_t get_tenant_id() const = 0;
+  virtual uint64_t get_source_tenant_id() const = 0;
+
+  // Update assign region to fetch log
+  virtual int update_preferred_upstream_log_region(const common::ObRegion &region) = 0;
+
+  // Get assign region
+  virtual int get_preferred_upstream_log_region(common::ObRegion &region) = 0;
 
   // Add the log stream
   //
@@ -113,6 +121,8 @@ public:
   // @retval Other error codes   Failed
   virtual int update_fetching_log_upper_limit(const share::SCN &upper_limit_scn) = 0;
 
+  virtual int update_compressor_type(const common::ObCompressorType &compressor_type) = 0;
+
   virtual int get_progress_info(ProgressInfo &progress_info) = 0;
 
   virtual int wait_for_all_ls_to_be_removed(const int64_t timeout) = 0;
@@ -122,6 +132,8 @@ public:
   virtual int get_log_route_service(logservice::ObLogRouteService *&log_route_service) = 0;
 
   virtual int get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_pool) = 0;
+
+  virtual int get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler) = 0;
 
   virtual int get_fetcher_config(const ObLogFetcherConfig *&cfg) = 0;
 
@@ -178,7 +190,8 @@ public:
   int init(
       const LogFetcherUser &log_fetcher_user,
       const int64_t cluster_id,
-      const uint64_t tenant_id,
+      const uint64_t source_tenant_id,
+      const uint64_t self_tenant_id,
       const bool is_loading_data_dict_baseline_data,
       const ClientFetchingMode fetching_mode,
       const ObBackupPathString &archive_dest,
@@ -200,7 +213,10 @@ public:
   virtual void configure(const ObLogFetcherConfig &cfg);
 
   virtual int64_t get_cluster_id() const { return cluster_id_; }
-  virtual uint64_t get_tenant_id() const { return tenant_id_; }
+  virtual uint64_t get_source_tenant_id() const { return source_tenant_id_; }
+
+  virtual int update_preferred_upstream_log_region(const common::ObRegion &region);
+  virtual int get_preferred_upstream_log_region(common::ObRegion &region);
 
   virtual int add_ls(
       const share::ObLSID &ls_id,
@@ -220,6 +236,8 @@ public:
 
   virtual int update_fetching_log_upper_limit(const share::SCN &upper_limit_scn);
 
+  virtual int update_compressor_type(const common::ObCompressorType &compressor_type);
+
   virtual int get_progress_info(ProgressInfo &progress_info);
 
   virtual int wait_for_all_ls_to_be_removed(const int64_t timeout);
@@ -229,6 +247,8 @@ public:
   virtual int get_log_route_service(logservice::ObLogRouteService *&log_route_service);
 
   virtual int get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_pool);
+
+  virtual int get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler);
 
   virtual int get_fetcher_config(const ObLogFetcherConfig *&cfg);
 
@@ -241,6 +261,8 @@ public:
   virtual void print_stat();
 
 private:
+  int suggest_cached_rpc_res_count_(const int64_t min_res_cnt,
+      const int64_t max_res_cnt);
   int init_self_addr_();
   void print_fetcher_stat_();
   int print_delay();
@@ -258,38 +280,41 @@ private:
   };
 
 private:
-  bool                          is_inited_;
-  LogFetcherUser                log_fetcher_user_;
-  int64_t                       cluster_id_;
-  uint64_t                      tenant_id_;
-  const ObLogFetcherConfig      *cfg_;
+  bool                                     is_inited_;
+  LogFetcherUser                           log_fetcher_user_;
+  int64_t                                  cluster_id_;
+  uint64_t                                 source_tenant_id_;
+  uint64_t                                 self_tenant_id_;
+  const ObLogFetcherConfig                 *cfg_;
 
-  bool                          is_loading_data_dict_baseline_data_;
-  ClientFetchingMode            fetching_mode_;
-  ObBackupPathString            archive_dest_;
-  archive::LargeBufferPool      large_buffer_pool_;
-  ObILogFetcherLSCtxAddInfoFactory *ls_ctx_add_info_factory_;
-  IObLogErrHandler              *err_handler_;
+  bool                                     is_loading_data_dict_baseline_data_;
+  ClientFetchingMode                       fetching_mode_;
+  ObBackupPathString                       archive_dest_;
+  archive::LargeBufferPool                 large_buffer_pool_;
+  int64_t                                  log_ext_handler_concurrency_;
+  logservice::ObLogExternalStorageHandler  log_ext_handler_;
+  ObILogFetcherLSCtxAddInfoFactory         *ls_ctx_add_info_factory_;
+  IObLogErrHandler                         *err_handler_;
 
-  ObLogLSFetchMgr               ls_fetch_mgr_;                  // Fetch Log Task Manager
-  PartProgressController        progress_controller_;           // Process Controller
+  ObLogLSFetchMgr                          ls_fetch_mgr_;                  // Fetch Log Task Manager
+  PartProgressController                   progress_controller_;           // Process Controller
 
   // Function Modules
-  ObLogRpc                      rpc_;
-  logservice::ObLogRouteService log_route_service_;
-  ObLogStartLSNLocator          start_lsn_locator_;
-  ObLogFetcherIdlePool          idle_pool_;
-  ObLogFetcherDeadPool          dead_pool_;
-  ObLSWorker                    stream_worker_;
+  ObLogRpc                                 rpc_;
+  logservice::ObLogRouteService            log_route_service_;
+  ObLogStartLSNLocator                     start_lsn_locator_;
+  ObLogFetcherIdlePool                     idle_pool_;
+  ObLogFetcherDeadPool                     dead_pool_;
+  ObLSWorker                               stream_worker_;
   // TODO
-  ObFsContainerMgr              fs_container_mgr_;
+  ObFsContainerMgr                         fs_container_mgr_;
 
-  volatile bool                 stop_flag_ CACHE_ALIGNED;
+  volatile bool                            stop_flag_ CACHE_ALIGNED;
 
   // stop flag
-  bool                          paused_ CACHE_ALIGNED;
-  int64_t                       pause_time_ CACHE_ALIGNED;
-  int64_t                       resume_time_ CACHE_ALIGNED;
+  bool                                     paused_ CACHE_ALIGNED;
+  int64_t                                  pause_time_ CACHE_ALIGNED;
+  int64_t                                  resume_time_ CACHE_ALIGNED;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLogFetcher);

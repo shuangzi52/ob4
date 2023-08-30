@@ -45,7 +45,7 @@ void ObLobTextIterCtx::reuse()
   iter_count_ = 0;
   if (OB_NOT_NULL(lob_query_iter_)) {
     lob_query_iter_->reset();
-    sop_return(ObLobQueryIter, lob_query_iter_);
+    OB_DELETE(ObLobQueryIter, "unused", lob_query_iter_);
     lob_query_iter_ = NULL;
   }
 }
@@ -57,7 +57,7 @@ ObTextStringIter::~ObTextStringIter()
   if (is_outrow_ && OB_NOT_NULL(ctx_)) {
     if (OB_NOT_NULL(ctx_->lob_query_iter_)) {
       ctx_->lob_query_iter_->reset();
-      common::sop_return(ObLobQueryIter, ctx_->lob_query_iter_);
+      OB_DELETE(ObLobQueryIter, "unused", ctx_->lob_query_iter_);
       ctx_->lob_query_iter_ = NULL;
     }
   }
@@ -146,9 +146,9 @@ static int init_lob_access_param(storage::ObLobAccessParam &param,
   } else if (OB_FAIL(lob_iter_ctx->locator_.get_location_info(location_info))) {
   } else {
     param.tx_desc_ = NULL;
-    param.snapshot_.core_.tx_id_ = tx_info->tx_id_;
-    param.snapshot_.core_.version_.convert_for_tx(tx_info->version_);
-    param.snapshot_.core_.scn_ = tx_info->scn_;
+    param.snapshot_.core_.tx_id_ = tx_info->snapshot_tx_id_;
+    param.snapshot_.core_.version_.convert_for_tx(tx_info->snapshot_version_);
+    param.snapshot_.core_.scn_ = transaction::ObTxSEQ::cast_from_int(tx_info->snapshot_seq_);
     param.snapshot_.valid_= true;
     param.snapshot_.source_ = transaction::ObTxReadSnapshot::SRC::LS;
     param.snapshot_.snapshot_lsid_ = share::ObLSID(location_info->ls_id_);
@@ -200,6 +200,9 @@ int ObTextStringIter::get_outrow_lob_full_data(ObIAllocator *allocator /*nullptr
       if (!param.ls_id_.is_valid() || !param.tablet_id_.is_valid()) {
         ret = OB_INVALID_ARGUMENT;
         COMMON_LOG(WARN, "Lob: invalid param.", K(ret), K(param));
+      } else if (param.byte_size_ == 0) {
+        // empty lob
+        ctx_->content_byte_len_ = 0;
       } else if (param.byte_size_ < 0 || param.len_ == 0) {
         ret = OB_ERR_UNEXPECTED;
         COMMON_LOG(WARN,"Lob: calc byte size is negative.", K(ret), K(param));
@@ -403,6 +406,8 @@ int ObTextStringIter::get_first_block(ObString &str)
       if (!param.ls_id_.is_valid() || !param.tablet_id_.is_valid()) {
         ret = OB_INVALID_ARGUMENT;
         COMMON_LOG(WARN, "Lob: invalid param.", K(ret), K(param));
+      } else if (param.byte_size_ == 0) {
+        state_ = TEXTSTRING_ITER_END;
       } else if (param.byte_size_ < 0 || param.len_ == 0) {
         ret = OB_ERR_UNEXPECTED;
         COMMON_LOG(WARN,"Lob: calc byte size is negative.", K(ret), K(param));
@@ -530,7 +535,7 @@ int ObTextStringIter::get_next_block_inner(ObString &str)
       if (ret == OB_ITER_END) {
         state_ = TEXTSTRING_ITER_END; // iter finished
         ctx_->lob_query_iter_->reset();
-        common::sop_return(ObLobQueryIter, ctx_->lob_query_iter_);
+        OB_DELETE(ObLobQueryIter, "unused", ctx_->lob_query_iter_);
         ctx_->lob_query_iter_ = NULL;
         ret = OB_SUCCESS;
       } else {

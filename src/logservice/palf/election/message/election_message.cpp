@@ -22,6 +22,7 @@
 #include "logservice/palf/election/algorithm/election_proposer.h"
 #include "logservice/palf/election/utils/election_args_checker.h"
 #include "logservice/palf/election/utils/election_common_define.h"
+#include "observer/ob_server.h"
 
 namespace oceanbase
 {
@@ -32,6 +33,18 @@ namespace election
 
 using namespace common;
 using namespace share;
+
+void CompatHelper::set_msg_flag_not_less_than_4_2(const ElectionMsgBase &msg) {
+  ElectionMsgBase &cast_msg = const_cast<ElectionMsgBase &>(msg);
+  cast_msg.msg_type_ |= BIT_MASK_NOT_LESS_THAN_4_2;
+}
+
+bool CompatHelper::fetch_msg_flag_not_less_than_4_2(const ElectionMsgBase &msg) {
+  ElectionMsgBase &cast_msg = const_cast<ElectionMsgBase &>(msg);
+  bool ret = (cast_msg.msg_type_ & BIT_MASK_NOT_LESS_THAN_4_2);
+  cast_msg.msg_type_ &= ~BIT_MASK_NOT_LESS_THAN_4_2;
+  return ret;
+}
 
 // this is important debug info when meet Lease Expired ERROR! which is a high frequecy error in election
 void print_debug_ts_if_reach_warn_threshold(const ElectionMsgBase &msg, const int64_t warn_threshold)
@@ -88,11 +101,13 @@ ElectionMsgBase::ElectionMsgBase(const int64_t id,
                                  const common::ObAddr &self_addr,
                                  const int64_t restart_counter,
                                  const int64_t ballot_number,
+                                 const LsBiggestMinClusterVersionEverSeen &version,
                                  const ElectionMsgType msg_type) :
 id_(id),
 sender_(self_addr),
 restart_counter_(restart_counter),
 ballot_number_(ballot_number),
+biggest_min_cluster_version_ever_seen_(version),
 msg_type_(static_cast<int64_t>(msg_type)) {
   debug_ts_.src_construct_ts_ = ObClockGenerator::getRealClock();
 }
@@ -103,6 +118,7 @@ void ElectionMsgBase::reset()
   receiver_.reset();
   restart_counter_ = INVALID_VALUE;
   ballot_number_ = INVALID_VALUE;
+  biggest_min_cluster_version_ever_seen_.version_ = 0;
   msg_type_ = static_cast<int64_t>(ElectionMsgType::INVALID_TYPE);
 }
 
@@ -111,6 +127,9 @@ void ElectionMsgBase::set_receiver(const common::ObAddr &addr) { receiver_ = add
 int64_t ElectionMsgBase::get_restart_counter() const { return restart_counter_; }
 
 int64_t ElectionMsgBase::get_ballot_number() const { return ballot_number_; }
+
+const LsBiggestMinClusterVersionEverSeen &ElectionMsgBase::get_ls_biggest_min_cluster_version_ever_seen() const
+{ return biggest_min_cluster_version_ever_seen_; }
 
 bool ElectionMsgBase::is_valid() const
 {
@@ -142,12 +161,14 @@ ElectionPrepareRequestMsgMiddle::ElectionPrepareRequestMsgMiddle(const int64_t i
                                                                  const common::ObAddr &self_addr,
                                                                  const int64_t restart_counter,
                                                                  const int64_t ballot_number,
+                                                                 const LsBiggestMinClusterVersionEverSeen &version,
                                                                  const uint64_t inner_priority_seed,
                                                                  const LogConfigVersion membership_version) :
 ElectionMsgBase(id,
                 self_addr,
                 restart_counter,
                 ballot_number,
+                version,
                 ElectionMsgType::PREPARE_REQUEST),
 role_(ObRole::INVALID_ROLE),
 is_buffer_valid_(false),
@@ -197,11 +218,13 @@ accepted_(false) {}
 
 ElectionPrepareResponseMsgMiddle::
 ElectionPrepareResponseMsgMiddle(const ObAddr &self_addr,
+                                 const LsBiggestMinClusterVersionEverSeen &version,
                                  const ElectionPrepareRequestMsgMiddle &request) :
 ElectionMsgBase(request.get_id(),
                 self_addr,
                 request.get_restart_counter(),
                 INVALID_VALUE,
+                version,
                 ElectionMsgType::PREPARE_RESPONSE),
 accepted_(false) {
   set_receiver(request.get_sender());
@@ -227,7 +250,9 @@ const Lease &ElectionPrepareResponseMsgMiddle::get_lease() const { return lease_
 ElectionAcceptRequestMsgMiddle::ElectionAcceptRequestMsgMiddle() :
 ElectionMsgBase(),
 lease_start_ts_on_proposer_(0),
-lease_interval_(0) {}
+lease_interval_(0),
+membership_version_(),
+flag_not_less_than_4_2_(false) {}
 
 ElectionMsgDebugTs ElectionPrepareResponseMsgMiddle::get_request_debug_ts() const { return request_debug_ts_; }
 
@@ -235,6 +260,7 @@ ElectionAcceptRequestMsgMiddle::ElectionAcceptRequestMsgMiddle(const int64_t id,
                                                                const ObAddr &self_addr,
                                                                const int64_t restart_counter,
                                                                const int64_t ballot_number,
+                                                               const LsBiggestMinClusterVersionEverSeen &version,
                                                                const int64_t lease_start_ts_on_proposer,
                                                                const int64_t lease_interval,
                                                                const LogConfigVersion membership_version) :
@@ -242,15 +268,19 @@ ElectionMsgBase(id,
                 self_addr,
                 restart_counter,
                 ballot_number,
+                version,
                 ElectionMsgType::ACCEPT_REQUEST),
 lease_start_ts_on_proposer_(lease_start_ts_on_proposer),
 lease_interval_(lease_interval),
-membership_version_(membership_version) {}
+membership_version_(membership_version),
+flag_not_less_than_4_2_(!observer::ObServer::get_instance().is_arbitration_mode() && GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_2_0_0) {}
 
 int64_t ElectionAcceptRequestMsgMiddle::get_lease_start_ts_on_proposer() const
 {
   return lease_start_ts_on_proposer_;
 }
+
+LogConfigVersion ElectionAcceptRequestMsgMiddle::get_membership_version() const { return membership_version_; }
 
 int64_t ElectionAcceptRequestMsgMiddle::get_lease_interval() const { return lease_interval_; }
 
@@ -260,22 +290,24 @@ lease_started_ts_on_proposer_(0),
 lease_interval_(0),
 accepted_(false),
 is_buffer_valid_(false),
-inner_priority_seed_(static_cast<uint64_t>(PRIORITY_SEED_BIT::DEFAULT_SEED))
-{
-  memset(priority_buffer_, 0, PRIORITY_BUFFER_SIZE);
-}
-
-LogConfigVersion ElectionAcceptRequestMsgMiddle::get_membership_version() const { return membership_version_; }
+inner_priority_seed_(static_cast<uint64_t>(PRIORITY_SEED_BIT::DEFAULT_SEED)),
+responsed_membership_version_(),
+membership_version_(),
+request_debug_ts_(),
+fixed_buffer_(priority_buffer_),
+flag_not_less_than_4_2_(false) {}
 
 ElectionAcceptResponseMsgMiddle::
 ElectionAcceptResponseMsgMiddle(const ObAddr &self_addr,
                                 const uint64_t inner_priority_seed,
                                 const LogConfigVersion &membership_version,
+                                const LsBiggestMinClusterVersionEverSeen &version,
                                 const ElectionAcceptRequestMsgMiddle &request) :
 ElectionMsgBase(request.get_id(),
                 self_addr,
                 request.get_restart_counter(),
                 INVALID_VALUE,
+                version,
                 ElectionMsgType::ACCEPT_RESPONSE),
 lease_started_ts_on_proposer_(request.get_lease_start_ts_on_proposer()),
 lease_interval_(request.get_lease_interval()),
@@ -283,10 +315,11 @@ accepted_(false),
 is_buffer_valid_(false),
 inner_priority_seed_(inner_priority_seed),
 responsed_membership_version_(request.get_membership_version()),
-membership_version_(membership_version)
-{
+membership_version_(membership_version),
+request_debug_ts_(),
+fixed_buffer_(priority_buffer_),
+flag_not_less_than_4_2_(request.not_less_than_4_2()) {
   set_receiver(request.get_sender());
-  memset(priority_buffer_, 0, PRIORITY_BUFFER_SIZE);
   request_debug_ts_ = request.get_debug_ts();
 }
 
@@ -298,11 +331,12 @@ int ElectionAcceptResponseMsgMiddle::set_accepted(const int64_t ballot_number,
   accepted_ = true;
   int64_t pos = 0;
   if (OB_NOT_NULL(priority)) {
-    if (CLICK_FAIL(priority->serialize((char*)priority_buffer_, PRIORITY_BUFFER_SIZE, pos))) {
+    if (CLICK_FAIL(priority->serialize((char*)fixed_buffer_.priority_buffer_, PRIORITY_BUFFER_SIZE, pos))) {
       ELECT_LOG(ERROR, "fail to serialize priority");
     } else {
       is_buffer_valid_ = true;
     }
+    fixed_buffer_.buffer_used_size_ = pos;
   }
   return ret;
 }
@@ -341,12 +375,14 @@ ElectionChangeLeaderMsgMiddle::ElectionChangeLeaderMsgMiddle(const int64_t id,
                                                              const ObAddr &self_addr,
                                                              const int64_t restart_counter,
                                                              const int64_t ballot_number,
+                                                             const LsBiggestMinClusterVersionEverSeen &version,
                                                              int64_t switch_source_leader_ballot,
                                                              const LogConfigVersion membership_version) :
 ElectionMsgBase(id,
                 self_addr,
                 restart_counter,
                 ballot_number,
+                version,
                 ElectionMsgType::CHANGE_LEADER),
 switch_source_leader_ballot_(switch_source_leader_ballot),
 membership_version_(membership_version) {}
@@ -354,6 +390,54 @@ membership_version_(membership_version) {}
 LogConfigVersion ElectionChangeLeaderMsgMiddle::get_membership_version() const { return membership_version_; }
 
 int64_t ElectionChangeLeaderMsgMiddle::get_old_ballot_number() const { return switch_source_leader_ballot_; }
+
+
+#define OLD_SERIALIZE_MEMBER_LIST lease_started_ts_on_proposer_, lease_interval_, reserved_flag_,\
+                                  accepted_, is_buffer_valid_, responsed_membership_version_, membership_version_,\
+                                  request_debug_ts_, priority_buffer_, inner_priority_seed_
+#define NEW_SERIALIZE_MEMBER_LIST lease_started_ts_on_proposer_, lease_interval_,\
+                                  accepted_, is_buffer_valid_, responsed_membership_version_, membership_version_,\
+                                  request_debug_ts_, fixed_buffer_, inner_priority_seed_
+OB_UNIS_SERIALIZE(ElectionAcceptResponseMsgMiddle);
+OB_UNIS_DESERIALIZE(ElectionAcceptResponseMsgMiddle);
+OB_UNIS_SERIALIZE_SIZE(ElectionAcceptResponseMsgMiddle);
+int ElectionAcceptResponseMsgMiddle::serialize_(char* buf, const int64_t buf_len, int64_t& pos) const {
+  int ret = ElectionMsgBase::serialize(buf, buf_len, pos);
+  if (OB_SUCC(ret)) {
+    if (flag_not_less_than_4_2_) {
+      LST_DO_CODE(OB_UNIS_ENCODE, NEW_SERIALIZE_MEMBER_LIST);
+    } else {
+      LST_DO_CODE(OB_UNIS_ENCODE, OLD_SERIALIZE_MEMBER_LIST);
+    }
+  }
+  return ret;
+}
+int ElectionAcceptResponseMsgMiddle::deserialize_(const char* buf, const int64_t data_len, int64_t& pos) {
+  int ret = ElectionMsgBase::deserialize(buf, data_len, pos);
+  flag_not_less_than_4_2_ = CompatHelper::fetch_msg_flag_not_less_than_4_2(*this);
+  if (OB_SUCC(ret)) {
+    if (flag_not_less_than_4_2_) {
+      LST_DO_CODE(OB_UNIS_DECODE, NEW_SERIALIZE_MEMBER_LIST);
+    } else {
+      LST_DO_CODE(OB_UNIS_DECODE, OLD_SERIALIZE_MEMBER_LIST);
+    }
+  }
+  return ret;
+}
+int64_t ElectionAcceptResponseMsgMiddle::get_serialize_size_(void) const {
+  if (flag_not_less_than_4_2_) {
+    CompatHelper::set_msg_flag_not_less_than_4_2(*this);
+  }
+  int64_t len = ElectionMsgBase::get_serialize_size();
+  if (flag_not_less_than_4_2_) {
+    LST_DO_CODE(OB_UNIS_ADD_LEN, NEW_SERIALIZE_MEMBER_LIST);
+  } else {
+    LST_DO_CODE(OB_UNIS_ADD_LEN, OLD_SERIALIZE_MEMBER_LIST);
+  }
+  return len;
+}
+#undef NEW_SERIALIZE_MEMBER_LIST
+#undef OLD_SERIALIZE_MEMBER_LIST
 
 }// namespace election
 }// namespace palf

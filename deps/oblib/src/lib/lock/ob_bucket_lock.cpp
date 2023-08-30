@@ -30,6 +30,7 @@ ObBucketLock::ObBucketLock()
 
 ObBucketLock::~ObBucketLock()
 {
+  destroy();
 }
 
 int ObBucketLock::init(
@@ -147,7 +148,7 @@ int ObBucketLock::wrlock(const uint64_t bucket_idx, const int64_t abs_timeout_us
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
-    COMMON_LOG(WARN, "The ObBucketLock has not been inited, ", K(ret));
+    COMMON_LOG(WARN, "The ObBucketLock has not been inited, ", K(ret), K(lbt()));
   } else if(OB_UNLIKELY(bucket_idx >= bucket_cnt_)) {
     ret = OB_INVALID_ARGUMENT;
     COMMON_LOG(ERROR, "Invalid argument, ", K(bucket_idx), K_(bucket_cnt), K(ret));

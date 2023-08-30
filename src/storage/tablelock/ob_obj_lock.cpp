@@ -334,6 +334,7 @@ int ObOBJLock::update_lock_status_(
       curr->lock_op_.commit_version_ = commit_version;
       curr->lock_op_.commit_scn_ = commit_scn;
       LOG_DEBUG("update_lock_status_", K(curr->lock_op_));
+      break;
     }
   }
   if (!find) {
@@ -1161,7 +1162,7 @@ int ObOBJLock::get_lock_op_iter(const ObLockID &lock_id,
     tmp_op.op_type_ = IN_TRANS_DML_LOCK;
     tmp_op.lock_op_status_ = LOCK_OP_DOING;
     // we use this one for the count.
-    tmp_op.lock_seq_no_ = row_share_;
+    tmp_op.lock_seq_no_ = ObTxSEQ(row_share_, 0);
     if (OB_FAIL(iter.push(tmp_op))) {
       TABLELOCK_LOG(WARN, "push tmp lock op into iterator failed", K(ret), K(tmp_op));
     }
@@ -1174,7 +1175,7 @@ int ObOBJLock::get_lock_op_iter(const ObLockID &lock_id,
     tmp_op.op_type_ = IN_TRANS_DML_LOCK;
     tmp_op.lock_op_status_ = LOCK_OP_DOING;
     // we use this one for the count.
-    tmp_op.lock_seq_no_ = row_exclusive_;
+    tmp_op.lock_seq_no_ = ObTxSEQ(row_exclusive_, 0);
     if (OB_FAIL(iter.push(tmp_op))) {
       TABLELOCK_LOG(WARN, "push tmp lock op into iterator failed", K(ret), K(tmp_op));
     }
@@ -1210,8 +1211,7 @@ void ObOBJLock::check_need_recover_(
 {
   need_recover = true;
   DLIST_FOREACH_NORET(curr, *op_list) {
-    if (curr->lock_op_ == lock_op) {
-      need_recover = false;
+    if (!(need_recover = curr->lock_op_.need_replay_or_recover(lock_op))) {
       break;
     }
   }
@@ -1551,7 +1551,11 @@ int ObOBJLock::compact_tablelock_(ObTableLockOpList *&op_list,
         // do nothing
       }
     }
-    drop_op_list_if_empty_(unlock_op.lock_mode_, op_list, allocator);
+    // maybe we can not get any complete unlock_op,
+    // so we should judge whether it's valid.
+    if (unlock_op.is_valid()) {
+      drop_op_list_if_empty_(unlock_op.lock_mode_, op_list, allocator);
+    }
     if (OB_OBJ_LOCK_NOT_EXIST == ret) {
       // compact finished succeed
       ret = OB_SUCCESS;

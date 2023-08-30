@@ -49,7 +49,7 @@ int ObExprFrameInfo::assign(const ObExprFrameInfo &other,
     LOG_WARN("failed to copy dynamic frames", K(ret));
   } else if (OB_FAIL(datum_frame_.assign(other.datum_frame_))) {
     LOG_WARN("failed to copy datum frame", K(ret));
-  } else if (const_frame_ptrs_.prepare_allocate(other.const_frame_ptrs_.count())) {
+  } else if (OB_FAIL(const_frame_ptrs_.prepare_allocate(other.const_frame_ptrs_.count()))) {
     LOG_WARN("failed to prepare allocate array", K(ret));
   } else {
     char *frame_mem = NULL;
@@ -502,7 +502,7 @@ OB_NOINLINE int ObPreCalcExprFrameInfo::do_batch_stmt_eval(ObExecContext &exec_c
   ObEvalCtx eval_ctx(exec_ctx);
   ObDatum *res_datum = NULL;
   ObDatumObjParam datum_param;
-  int64_t group_cnt = exec_ctx.get_sql_ctx()->multi_stmt_item_.get_batched_stmt_cnt();
+  int64_t group_cnt = exec_ctx.get_sql_ctx()->get_batch_params_count();
   ObSqlDatumArray *datum_array = nullptr;
   //construct sql array obj
   for (int64_t i = 0; OB_SUCC(ret) && i < pre_calc_rt_exprs_.count(); ++i) {
@@ -635,6 +635,9 @@ int ObTempExpr::eval(ObExecContext &exec_ctx, const ObNewRow &row, ObObj &result
     ObTempExprCtxReplaceGuard exec_ctx_backup_guard(exec_ctx, *temp_expr_ctx);
     OZ(rt_exprs_.at(expr_idx_).eval(*temp_expr_ctx, res_datum));
     OZ(res_datum->to_obj(result, rt_exprs_.at(expr_idx_).obj_meta_));
+    if (!exec_ctx.use_temp_expr_ctx_cache()) {
+      temp_expr_ctx->~ObTempExprCtx();
+    }
     LOG_TRACE("temp expr result", K(result), K(row), K(rt_exprs_));
   }
 

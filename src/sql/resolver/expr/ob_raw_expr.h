@@ -321,6 +321,7 @@ public:
   int64_t bit_count() const { return static_cast<int64_t>(desc_.len_) * PER_BITSETWORD_BITS; }
   bool is_empty() const { return 0 == num_members(); }
   bool is_valid() const { return desc_.inited_; }
+  int get_init_err() const { return desc_.inited_ ? OB_SUCCESS : desc_.init_errcode_;  }
   void clear_all()
   {
     if (!is_valid()) {
@@ -1558,7 +1559,9 @@ struct ObResolveContext
     is_for_pivot_(false),
     is_for_dynamic_sql_(false),
     is_for_dbms_sql_(false),
-    tg_timing_event_(TG_TIMING_EVENT_INVALID)
+    tg_timing_event_(TG_TIMING_EVENT_INVALID),
+    view_ref_id_(OB_INVALID_ID),
+    is_variable_allowed_(true)
   {
   }
 
@@ -1602,6 +1605,8 @@ struct ObResolveContext
   bool is_for_dynamic_sql_;
   bool is_for_dbms_sql_;
   TgTimingEvent tg_timing_event_; // for msyql trigger
+  uint64_t view_ref_id_;
+  bool is_variable_allowed_;
 };
 
 typedef ObResolveContext<ObRawExprFactory> ObExprResolveContext;
@@ -1709,18 +1714,21 @@ public:
   int add_child_flags(const ObExprInfo &flags);
   bool has_flag(ObExprInfoFlag flag) const;
   int clear_flag(int32_t flag);
-  /**                                                   +-is_static_scalar_const_expr
-   *                               （1、1+2、sysdate）   ｜     （1，not for[1,2,3])
+  /**                                                   +-is_immutable_const_expr-+
+   *                               （1、1+2、sysdate）   ｜        (1、1+2)
    *                             +-is_static_const_expr-+
    *                             |
    * is_const_or_calculable_expr-+
    *    (1、1+2、2+？、sysdate）   |
    *                             +-is_dynamic_const_expr
    *                                 （2 + ？）
+   * immutable const: is const for all queries
+   * static const: is const in a query sql
+   * dynamic const: is const in a query block
    */
   bool is_param_expr() const;
-  bool cnt_param_expr() const;
   bool is_const_expr() const;
+  bool is_immutable_const_expr() const;
   bool is_static_const_expr() const;
   bool is_static_scalar_const_expr() const;
   bool is_dynamic_const_expr() const;
@@ -1964,14 +1972,15 @@ inline bool ObRawExpr::is_param_expr() const
   return has_flag(IS_STATIC_PARAM) || has_flag(IS_DYNAMIC_PARAM);
 }
 
-inline bool ObRawExpr::cnt_param_expr() const
-{
-  return has_flag(CNT_STATIC_PARAM) || has_flag(CNT_DYNAMIC_PARAM);
-}
-
 inline bool ObRawExpr::is_const_expr() const
 {
   return has_flag(IS_CONST) || has_flag(IS_CONST_EXPR);
+}
+
+inline bool ObRawExpr::is_immutable_const_expr() const
+{
+  // todo: support recognize 1+1 by introducing new expr flag like IS_MUTABLE_FUNC
+  return is_const_raw_expr() && !is_param_expr();
 }
 
 inline bool ObRawExpr::is_static_const_expr() const
@@ -2325,7 +2334,7 @@ public:
 
   int64_t get_ref_id() const;
   void set_ref_id(int64_t id);
-  ObSelectStmt *get_ref_stmt() { return ref_stmt_; }
+  ObSelectStmt *&get_ref_stmt() { return ref_stmt_; }
   const ObSelectStmt *get_ref_stmt() const { return ref_stmt_; }
   void set_ref_stmt(ObSelectStmt *ref_stmt)
   {
@@ -4082,9 +4091,11 @@ class ObPLAssocIndexRawExpr : public ObOpRawExpr
 {
 public:
   ObPLAssocIndexRawExpr(common::ObIAllocator &alloc)
-    : ObOpRawExpr(alloc), for_write_(false),
+    : ObOpRawExpr(alloc),
+    parent_type_(pl::parent_expr_type::EXPR_UNKNOWN),
+    for_write_(false),
     out_of_range_set_err_(true),
-    parent_type_(pl::parent_expr_type::EXPR_UNKNOWN) {}
+    is_index_by_varchar_(false) {}
   ObPLAssocIndexRawExpr()
     : ObOpRawExpr(), for_write_(false) {}
   virtual ~ObPLAssocIndexRawExpr() {}
@@ -4093,6 +4104,8 @@ public:
   inline bool get_write() const { return for_write_; }
   inline bool get_out_of_range_set_err() const { return out_of_range_set_err_; }
   inline void set_out_of_range_set_err(bool is_set_err) { out_of_range_set_err_ = is_set_err; }
+  inline bool is_index_by_varchar() const { return is_index_by_varchar_; }
+  inline void set_is_index_by_varchar(bool index_by_varchar) { is_index_by_varchar_ = index_by_varchar; }
   inline void set_parent_type(pl::parent_expr_type type) { parent_type_ = type; }
   inline pl::parent_expr_type get_parent_type() const { return parent_type_; }
   VIRTUAL_TO_STRING_KV_CHECK_STACK_OVERFLOW(N_ITEM_TYPE, type_,
@@ -4106,11 +4119,17 @@ public:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObPLAssocIndexRawExpr);
 private:
-  bool for_write_;
-  // set ret to out of range or not.
-  bool out_of_range_set_err_;
   // hack,  0: parent expr is prior, 1 parent expr is
   pl::parent_expr_type parent_type_;
+  union {
+    uint64_t expr_flag_;
+    struct {
+      uint64_t for_write_ : 1;
+      uint64_t out_of_range_set_err_ : 1; // set ret to out of range or not.
+      uint64_t is_index_by_varchar_ : 1; // assoc type index type is varchar
+      uint64_t reserved_:61;
+    };
+  };
 };
 
 class ObObjAccessRawExpr : public ObOpRawExpr
@@ -4123,7 +4142,8 @@ public:
       access_indexs_(),
       var_indexs_(),
       for_write_(false),
-      property_type_(pl::ObCollectionType::INVALID_PROPERTY) {}
+      property_type_(pl::ObCollectionType::INVALID_PROPERTY),
+      orig_access_indexs_() {}
   ObObjAccessRawExpr()
     : ObOpRawExpr(),
       get_attr_func_(0),
@@ -4131,7 +4151,8 @@ public:
       access_indexs_(),
       var_indexs_(),
       for_write_(false),
-      property_type_(pl::ObCollectionType::INVALID_PROPERTY) {}
+      property_type_(pl::ObCollectionType::INVALID_PROPERTY),
+      orig_access_indexs_() {}
   virtual ~ObObjAccessRawExpr() {}
   int assign(const ObRawExpr &other) override;
   int inner_deep_copy(ObIRawExprCopier &copier) override;
@@ -4152,6 +4173,8 @@ public:
   bool is_property() const { return pl::ObCollectionType::INVALID_PROPERTY != property_type_; }
   pl::ObCollectionType::PropertyType get_property() const { return property_type_; }
   void set_property(pl::ObCollectionType::PropertyType property_type) { property_type_ = property_type; }
+  common::ObIArray<pl::ObObjAccessIdx> &get_orig_access_idxs() { return orig_access_indexs_; }
+  const common::ObIArray<pl::ObObjAccessIdx> &get_orig_access_idxs() const { return orig_access_indexs_; }
 private:
   DISALLOW_COPY_AND_ASSIGN(ObObjAccessRawExpr);
   uint64_t get_attr_func_; //获取用户自定义类型数据的函数指针
@@ -4160,6 +4183,7 @@ private:
   common::ObSEArray<int64_t, 4, common::ModulePageAllocator, true> var_indexs_;
   bool for_write_;
   pl::ObCollectionType::PropertyType property_type_;
+  common::ObSEArray<pl::ObObjAccessIdx, 4, common::ModulePageAllocator, true> orig_access_indexs_;
 };
 
 enum ObMultiSetType {
@@ -4282,7 +4306,7 @@ public:
   ObRawExpr *date_unit_expr_;
 
   ObRawExpr *exprs_[BOUND_EXPR_MAX];
-  TO_STRING_KV(K_(type), K_(is_preceding), K_(is_nmb_literal), KP_(interval_expr),
+  TO_STRING_KV(K_(type), K_(is_preceding), K_(is_nmb_literal), KPC_(interval_expr),
                K_(date_unit_expr));
 };
 
@@ -4640,7 +4664,12 @@ public:
       raw_expr->set_allocator(allocator_);
       raw_expr->set_expr_factory(*this);
       raw_expr->set_expr_type(expr_type);
-      if (OB_FAIL(expr_store_.store_obj(raw_expr))) {
+      if (OB_FAIL(raw_expr->get_expr_info().get_init_err()) ||
+          OB_FAIL(raw_expr->get_relation_ids().get_init_err())) {
+        SQL_RESV_LOG(WARN, "failed to init ObSqlBitSet", K(ret));
+        raw_expr->~ExprType();
+        raw_expr = NULL;
+      } else if (OB_FAIL(expr_store_.store_obj(raw_expr))) {
         SQL_RESV_LOG(WARN, "store raw expr failed", K(ret));
         raw_expr->~ExprType();
         raw_expr = NULL;

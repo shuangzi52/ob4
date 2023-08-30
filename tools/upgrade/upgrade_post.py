@@ -26,8 +26,8 @@
 #    self.action_sql = action_sql
 #    self.rollback_sql = rollback_sql
 #
-#current_cluster_version = "4.2.0.0"
-#current_data_version = "4.2.0.0"
+#current_cluster_version = "4.2.1.0"
+#current_data_version = "4.2.1.0"
 #g_succ_sql_list = []
 #g_commit_sql_list = []
 #
@@ -118,6 +118,12 @@
 #  logging.info(sql)
 #  cur.execute(sql)
 #  wait_parameter_sync(cur, False, parameter, value, timeout)
+#
+#def set_tenant_parameter(cur, parameter, value, timeout = 0):
+#  sql = """alter system set {0} = '{1}' tenant = 'all'""".format(parameter, value)
+#  logging.info(sql)
+#  cur.execute(sql)
+#  wait_parameter_sync(cur, True, parameter, value, timeout)
 #
 #def get_ori_enable_ddl(cur, timeout):
 #  ori_value_str = fetch_ori_enable_ddl(cur)
@@ -290,6 +296,17 @@
 #
 #  wait_parameter_sync(cur, False, "enable_upgrade_mode", "False", timeout)
 #
+#def do_suspend_merge(cur, timeout):
+#    action_sql = "alter system suspend merge tenant = all"
+#    rollback_sql = "alter system resume merge tenant = all"
+#    logging.info(action_sql)
+#    cur.execute(action_sql)
+#
+#def do_resume_merge(cur, timeout):
+#    action_sql = "alter system resume merge tenant = all"
+#    rollback_sql = "alter system suspend merge tenant = all"
+#    logging.info(action_sql)
+#    cur.execute(action_sql)
 #
 #class Cursor:
 #  __cursor = None
@@ -553,7 +570,7 @@
 #
 #      if run_modules.MODULE_HEALTH_CHECK in my_module_set:
 #        logging.info('================begin to run health check action ===============')
-#        upgrade_health_checker.do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout)
+#        upgrade_health_checker.do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, False)  # need_check_major_status = False
 #        logging.info('================succeed to run health check action ===============')
 #
 #      if run_modules.MODULE_END_ROLLING_UPGRADE in my_module_set:
@@ -739,7 +756,7 @@
 #
 #      if run_modules.MODULE_HEALTH_CHECK in my_module_set:
 #        logging.info('================begin to run health check action ===============')
-#        upgrade_health_checker.do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout)
+#        upgrade_health_checker.do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, True) # need_check_major_status = True
 #        logging.info('================succeed to run health check action ===============')
 #
 #    except Exception, e:
@@ -1224,6 +1241,15 @@
 #  # when upgrade across version, disable enable_ddl/major_freeze
 #  if current_version != target_version:
 #    actions.set_parameter(cur, 'enable_ddl', 'False', timeout)
+#    actions.set_parameter(cur, 'enable_major_freeze', 'False', timeout)
+#    actions.set_tenant_parameter(cur, '_enable_adaptive_compaction', 'False', timeout)
+#    actions.do_suspend_merge(cur, timeout)
+#  # When upgrading from a version prior to 4.2 to version 4.2, the bloom_filter should be disabled.
+#  # The param _bloom_filter_enabled is no longer in use as of version 4.2, there is no need to enable it again.
+#  if actions.get_version(current_version) < actions.get_version('4.2.0.0')\
+#      and actions.get_version(target_version) >= actions.get_version('4.2.0.0'):
+#    actions.set_tenant_parameter(cur, '_bloom_filter_enabled', 'False', timeout)
+#
 #####========******####======== actions begin ========####******========####
 #  return
 #####========******####========= actions end =========####******========####
@@ -1902,9 +1928,12 @@
 ## 4. 检查集群状态
 #def check_cluster_status(query_cur):
 #  # 4.1 检查是否非合并状态
-#  (desc, results) = query_cur.exec_query("""select count(1) from CDB_OB_MAJOR_COMPACTION where STATUS != 'IDLE'""")
+#  (desc, results) = query_cur.exec_query("""select count(1) from CDB_OB_MAJOR_COMPACTION where (GLOBAL_BROADCAST_SCN > LAST_SCN or STATUS != 'IDLE')""")
 #  if results[0][0] > 0 :
 #    fail_list.append('{0} tenant is merging, please check'.format(results[0][0]))
+#  (desc, results) = query_cur.exec_query("""select /*+ query_timeout(1000000000) */ count(1) from __all_virtual_tablet_compaction_info where max_received_scn > finished_scn and max_received_scn > 0""")
+#  if results[0][0] > 0 :
+#    fail_list.append('{0} tablet is merging, please check'.format(results[0][0]))
 #  logging.info('check cluster status success')
 #
 ## 5. 检查是否有异常租户(creating，延迟删除，恢复中)
@@ -2059,6 +2088,28 @@
 #      else:
 #        logging.info('check backup destination success')
 #
+#def check_server_version(query_cur):
+#    sql = """select distinct(substring_index(build_version, '_', 1)) from __all_server""";
+#    (desc, results) = query_cur.exec_query(sql);
+#    if len(results) != 1:
+#      fail_list.append("servers build_version not match")
+#    else:
+#      logging.info("check server version success")
+#
+## 14. 检查server是否可服务
+#def check_observer_status(query_cur):
+#  (desc, results) = query_cur.exec_query("""select count(*) from oceanbase.__all_server where (start_service_time <= 0 or status != "active")""")
+#  if results[0][0] > 0 :
+#    fail_list.append('{0} observer not available , please check'.format(results[0][0]))
+#  logging.info('check observer status success')
+#
+## 15  检查schema是否刷新成功
+#def check_schema_status(query_cur):
+#  (desc, results) = query_cur.exec_query("""select if (a.cnt = b.cnt, 1, 0) as passed from (select count(*) as cnt from oceanbase.__all_virtual_server_schema_info where refreshed_schema_version > 1 and refreshed_schema_version % 8 = 0) as a join (select count(*) as cnt from oceanbase.__all_server join oceanbase.__all_tenant) as b""")
+#  if results[0][0] != 1 :
+#    fail_list.append('{0} schema not available, please check'.format(results[0][0]))
+#  logging.info('check schema status success')
+#
 ## last check of do_check, make sure no function execute after check_fail_list
 #def check_fail_list():
 #  if len(fail_list) != 0 :
@@ -2097,6 +2148,9 @@
 #      check_archive_job_exist(query_cur)
 #      check_archive_dest_exist(query_cur)
 #      check_backup_dest_exist(query_cur)
+#      check_observer_status(query_cur)
+#      check_schema_status(query_cur)
+#      check_server_version(query_cur)
 #      # all check func should execute before check_fail_list
 #      check_fail_list()
 #      modify_server_permanent_offline_time(cur)
@@ -2466,6 +2520,20 @@
 #  sql = """select if (a.cnt = b.cnt, 1, 0) as passed from (select count(*) as cnt from oceanbase.__all_virtual_server_schema_info where refreshed_schema_version > 1 and refreshed_schema_version % 8 = 0) as a join (select count(*) as cnt from oceanbase.__all_server join oceanbase.__all_tenant) as b"""
 #  check_until_timeout(query_cur, sql, 1, timeout)
 #
+## 4. check major finish
+#def check_major_merge(query_cur, timeout):
+#  need_check = 0
+#  (desc, results) = query_cur.exec_query("""select distinct value from  GV$OB_PARAMETERs where name = 'enable_major_freeze';""")
+#  if len(results) != 1:
+#    need_check = 1
+#  elif results[0][0] != 'True':
+#    need_check = 1
+#  if need_check == 1:
+#    sql = """select count(1) from CDB_OB_MAJOR_COMPACTION where (GLOBAL_BROADCAST_SCN > LAST_SCN or STATUS != 'IDLE')"""
+#    check_until_timeout(query_cur, sql, 0, timeout)
+#    sql2 = """select /*+ query_timeout(1000000000) */ count(1) from __all_virtual_tablet_compaction_info where max_received_scn > finished_scn and max_received_scn > 0"""
+#    check_until_timeout(query_cur, sql2, 0, timeout)
+#
 #def check_until_timeout(query_cur, sql, value, timeout):
 #  times = timeout / 10
 #  while times >= 0:
@@ -2486,7 +2554,7 @@
 #    time.sleep(10)
 #
 ## 开始健康检查
-#def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, zone = ''):
+#def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, need_check_major_status, zone = ''):
 #  try:
 #    conn = mysql.connector.connect(user = my_user,
 #                                   password = my_passwd,
@@ -2504,6 +2572,8 @@
 #      check_paxos_replica(query_cur, timeout)
 #      check_schema_status(query_cur, timeout)
 #      check_server_version_by_zone(query_cur, zone)
+#      if True == need_check_major_status:
+#        check_major_merge(query_cur, timeout)
 #    except Exception, e:
 #      logging.exception('run error')
 #      raise e
@@ -2538,7 +2608,7 @@
 #      zone = get_opt_zone()
 #      logging.info('parameters from cmd: host=\"%s\", port=%s, user=\"%s\", password=\"%s\", log-file=\"%s\", timeout=%s, zone=\"%s\"', \
 #          host, port, user, password, log_filename, timeout, zone)
-#      do_check(host, port, user, password, upgrade_params, timeout, zone)
+#      do_check(host, port, user, password, upgrade_params, timeout, False, zone) # need_check_major_status = False
 #    except mysql.connector.Error, e:
 #      logging.exception('mysql connctor error')
 #      raise e
@@ -2655,6 +2725,8 @@
 ## 7 打开major freeze
 #def enable_major_freeze(cur, timeout):
 #  actions.set_parameter(cur, 'enable_major_freeze', 'True', timeout)
+#  actions.set_tenant_parameter(cur, '_enable_adaptive_compaction', 'True', timeout)
+#  actions.do_resume_merge(cur, timeout)
 #
 ## 开始升级后的检查
 #def do_check(conn, cur, query_cur, timeout):

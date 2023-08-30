@@ -67,7 +67,7 @@ public:
 
   int destroy();
 
-  int set_with_barrier(uint64_t op_id, const ObPxMultiPartModifyOpInput *modify_input);
+  int set_dh_barrier_param(uint64_t op_id, const ObPxMultiPartModifyOpInput *modify_input);
 
   int get_next_row(ObExecContext &ctx, const ObExprPtrIArray &row);
 private:
@@ -90,6 +90,9 @@ private:
     ~ReturningCtx() = default;
     void reset()
     {
+      if (row_iter_) {
+        row_iter_->close();
+      }
       tablet_id_array_.reset();
       next_idx_ = 0;
       row_iter_ = NULL;

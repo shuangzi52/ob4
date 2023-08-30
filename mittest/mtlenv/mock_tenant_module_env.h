@@ -32,12 +32,16 @@
 #include "observer/omt/ob_tenant.h"
 #include "observer/omt/ob_worker_processor.h"
 #include "observer/omt/ob_tenant_meta.h"
+#include "observer/omt/ob_multi_tenant.h"
+#include "observer/omt/ob_tenant_srs.h"
 #include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
 #include "share/ob_alive_server_tracer.h"
 #include "share/ob_device_manager.h"
 #include "share/ob_io_device_helper.h"
+#include "share/ob_simple_mem_limit_getter.h"
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_tenant_schema_service.h"
 #include "share/stat/ob_opt_stat_monitor_manager.h"
@@ -51,6 +55,7 @@
 #include "storage/slog/ob_storage_logger.h"
 #include "storage/compaction/ob_sstable_merge_info_mgr.h"
 #include "storage/compaction/ob_tenant_freeze_info_mgr.h"
+#include "storage/compaction/ob_compaction_diagnose.h"
 #include "storage/tx_storage/ob_checkpoint_service.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/tx_storage/ob_access_service.h"
@@ -63,6 +68,8 @@
 #include "storage/ob_tenant_tablet_stat_mgr.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 #include "storage/ob_file_system_router.h"
+#include "storage/access/ob_table_scan_iterator.h"
+#include "storage/lob/ob_lob_manager.h"
 #include "ob_mittest_utils.h"
 #include "storage/mock_disk_usage_report.h"
 #include "share/deadlock/ob_deadlock_detector_mgr.h"
@@ -71,10 +78,12 @@
 #include "share/scn.h"
 #include "mock_gts_source.h"
 #include "storage/blocksstable/ob_shared_macro_block_manager.h"
+#include "storage/multi_data_source/runtime_utility/mds_tenant_service.h"
 #include "storage/concurrency_control/ob_multi_version_garbage_collector.h"
 #include "storage/tablelock/ob_table_lock_service.h"
 #include "storage/tx/wrs/ob_tenant_weak_read_service.h"
 #include "logservice/palf/log_define.h"
+#include "storage/high_availability/ob_rebuild_service.h"
 
 namespace oceanbase
 {
@@ -97,7 +106,7 @@ static int server_obj_pool_mtl_new(common::ObServerObjectPool<T> *&pool)
   int ret = common::OB_SUCCESS;
   uint64_t tenant_id = MTL_ID();
   pool = MTL_NEW(common::ObServerObjectPool<T>, "TntSrvObjPool", tenant_id, false,
-                 MTL_IS_MINI_MODE());
+                 MTL_IS_MINI_MODE(), MTL_CPU_COUNT());
   if (OB_ISNULL(pool)) {
     ret = common::OB_ALLOCATE_MEMORY_FAILED;
   } else {
@@ -307,6 +316,7 @@ public:
   int remove_sys_tenant();
   void release_guard();
   void destroy();
+  bool is_inited() const { return inited_; }
 
 public:
   static int init_slogger_mgr(const char *log_dir);
@@ -359,6 +369,8 @@ private:
 
   // switch tenant thread local
   share::ObTenantSwitchGuard guard_;
+
+  common::ObSimpleMemLimitGetter getter_;
 
   bool inited_;
   bool destroyed_;
@@ -495,6 +507,9 @@ int MockTenantModuleEnv::prepare_io()
   const int64_t async_io_thread_count = 8;
   const int64_t sync_io_thread_count = 2;
   const int64_t max_io_depth = 256;
+  const int64_t bucket_num = 1024L;
+  const int64_t max_cache_size = 1024L * 1024L * 512;
+  const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (OB_FAIL(THE_IO_DEVICE->init(iod_opts))) {
@@ -512,6 +527,13 @@ int MockTenantModuleEnv::prepare_io()
     STORAGE_LOG(WARN, "fail to start io manager", K(ret));
   } else if (OB_FAIL(ObIOManager::get_instance().add_tenant_io_manager(OB_SERVER_TENANT_ID, io_config))) {
     STORAGE_LOG(WARN, "add tenant io config failed", K(ret));
+  } else if (OB_FAIL(ObKVGlobalCache::get_instance().init(&getter_,
+      bucket_num,
+      max_cache_size,
+      block_size))) {
+    STORAGE_LOG(WARN, "fail to init kv global cache ", K(ret));
+  } else if (OB_FAIL(OB_STORE_CACHE.init(10, 1, 1, 1, 1, 10000, 10))) {
+    STORAGE_LOG(WARN, "fail to init OB_STORE_CACHE, ", K(ret));
   } else {
   }
   return ret;
@@ -580,7 +602,7 @@ int MockTenantModuleEnv::init_before_start_mtl()
     STORAGE_LOG(WARN, "fail to init env", K(ret));
   } else if (OB_FAIL(session_mgr_.init())) {
     STORAGE_LOG(WARN, "fail to init env", K(ret));
-  } else if (OB_FAIL(ObVirtualTenantManager::get_instance().init(10))) {
+  } else if (OB_FAIL(ObVirtualTenantManager::get_instance().init())) {
     STORAGE_LOG(WARN, "fail to init env", K(ret));
   } else if (OB_FAIL(OB_SERVER_BLOCK_MGR.init(THE_IO_DEVICE, 2 * 1024 * 1024))) {
     STORAGE_LOG(WARN, "fail to init env", K(ret));
@@ -618,8 +640,6 @@ int MockTenantModuleEnv::init_before_start_mtl()
     STORAGE_LOG(ERROR, "init timer fail", KR(ret));
   } else if (OB_FAIL(TG_START(lib::TGDefIDs::MemDumpTimer))) {
     STORAGE_LOG(ERROR, "init memory dump timer fail", KR(ret));
-  } else if (OB_FAIL(ObOptStatMonitorManager::get_instance().init(&sql_proxy_))) {
-    STORAGE_LOG(ERROR, "failed to init opt stat monitor manager", KR(ret));
   } else {
     obrpc::ObRpcNetHandler::CLUSTER_ID = 1;
     oceanbase::palf::election::INIT_TS = 1;
@@ -640,20 +660,21 @@ int MockTenantModuleEnv::init()
       ret = OB_INIT_TWICE;
       STORAGE_LOG(ERROR, "init twice", K(ret));
     } else if (FALSE_IT(init_gctx_gconf())) {
-
     } else if (OB_FAIL(init_before_start_mtl())) {
       STORAGE_LOG(ERROR, "init_before_start_mtl failed", K(ret));
     } else {
       oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
       MTL_BIND(ObTenantIOManager::mtl_init, ObTenantIOManager::mtl_destroy);
+      MTL_BIND2(mtl_new_default, omt::ObSharedTimer::mtl_init, omt::ObSharedTimer::mtl_start, omt::ObSharedTimer::mtl_stop, omt::ObSharedTimer::mtl_wait, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTenantSchemaService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObStorageLogger::mtl_init, ObStorageLogger::mtl_start, ObStorageLogger::mtl_stop, ObStorageLogger::mtl_wait, mtl_destroy_default);
       MTL_BIND2(ObTenantMetaMemMgr::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTransService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, logservice::ObGarbageCollector::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTimestampService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTransIDService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObXAService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, ObLSService::mtl_init, mtl_start_default, mtl_stop_default, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, ObLSService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObAccessService::mtl_init, nullptr, mtl_stop_default, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTenantFreezer::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, checkpoint::ObCheckPointService::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
@@ -668,11 +689,18 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, share::detector::ObDeadLockDetectorMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTenantTabletStatMgr::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default)
       MTL_BIND2(mtl_new_default, storage::ObTenantSSTableMergeInfoMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, share::ObDagWarningHistoryManager::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, compaction::ObScheduleSuspectInfoMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTenantFreezeInfoMgr::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObSharedMacroBlockMgr::mtl_init,  mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, storage::mds::ObTenantMdsService::mtl_init, storage::mds::ObTenantMdsService::mtl_start, storage::mds::ObTenantMdsService::mtl_stop, storage::mds::ObTenantMdsService::mtl_wait, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObMultiVersionGarbageCollector::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTableLockService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(server_obj_pool_mtl_new<transaction::ObPartTransCtx>, nullptr, nullptr, nullptr, nullptr, server_obj_pool_mtl_destroy<transaction::ObPartTransCtx>);
+      MTL_BIND2(server_obj_pool_mtl_new<ObTableScanIterator>, nullptr, nullptr, nullptr, nullptr, server_obj_pool_mtl_destroy<ObTableScanIterator>);
+      MTL_BIND(ObTenantSQLSessionMgr::mtl_init, ObTenantSQLSessionMgr::mtl_destroy);
+      MTL_BIND2(mtl_new_default, ObRebuildService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, omt::ObTenantSrs::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     }
     if (OB_FAIL(ret)) {
 
@@ -680,6 +708,8 @@ int MockTenantModuleEnv::init()
       STORAGE_LOG(ERROR, "reload memory config failed", K(ret));
     } else if (OB_FAIL(start_())) {
       STORAGE_LOG(ERROR, "mock env start failed", K(ret));
+    } else if (OB_FAIL(ObTmpFileManager::get_instance().init())) {
+      STORAGE_LOG(WARN, "init_tmp_file_manager failed", K(ret));
     } else {
       inited_ = true;
     }
@@ -721,27 +751,27 @@ int MockTenantModuleEnv::start_()
     STORAGE_LOG(ERROR, "fail to switch to sys tenant", K(ret));
   } else {
     ObLogService *log_service = MTL(logservice::ObLogService*);
-    if (OB_ISNULL(log_service) || OB_ISNULL(log_service->palf_env_)) {
+    ObGarbageCollector *gc_svr = MTL(logservice::ObGarbageCollector*);
+    if (OB_ISNULL(log_service) || OB_ISNULL(log_service->palf_env_) || OB_ISNULL(gc_svr)) {
       ret = OB_ERR_UNEXPECTED;
       STORAGE_LOG(ERROR, "fail to switch to sys tenant", KP(log_service));
     } else {
-      palf::LogIOWorkerConfig log_io_worker_config;
-      log_io_worker_config.io_worker_num_ = 1;
-      log_io_worker_config.io_queue_capcity_ = 100 * 1024;
-      log_io_worker_config.batch_width_ = 8;
-      log_io_worker_config.batch_depth_ = palf::PALF_SLIDING_WINDOW_SIZE;
-
-      palf::LogIOWorker &use_io_worker = log_service->palf_env_->palf_env_impl_.log_io_worker_wrapper_.user_log_io_worker_;
-      if (OB_FAIL(use_io_worker.init(log_io_worker_config, tenant_id,
-                                     log_service->palf_env_->palf_env_impl_.cb_thread_pool_.get_tg_id(),
-                                     log_service->palf_env_->palf_env_impl_.log_alloc_mgr_,
-                                     &log_service->palf_env_->palf_env_impl_))) {
-        STORAGE_LOG(ERROR, "fail to init user_io_worker", KP(log_service));
-      } else if (OB_FAIL(use_io_worker.start())) {
-        STORAGE_LOG(ERROR, "fail to init start", KP(log_service));
+      palf::PalfEnvImpl *palf_env_impl = &log_service->palf_env_->palf_env_impl_;
+      palf::LogIOWorkerWrapper &log_iow_wrapper = palf_env_impl->log_io_worker_wrapper_;
+      palf::LogIOWorkerConfig new_config;
+      const int64_t mock_tenant_id = 1;
+      gc_svr->stop_create_new_gc_task_ = true;
+      palf_env_impl->init_log_io_worker_config_(1, mock_tenant_id, new_config);
+      new_config.io_worker_num_ = 4;
+      log_iow_wrapper.destory_and_free_log_io_workers_();
+      if (OB_FAIL(log_iow_wrapper.create_and_init_log_io_workers_(
+        new_config, mock_tenant_id, palf_env_impl->cb_thread_pool_.get_tg_id(), palf_env_impl->log_alloc_mgr_, palf_env_impl))) {
+        STORAGE_LOG(WARN, "failed to create_and_init_log_io_workers_", K(new_config));
+      } else if (FALSE_IT(log_iow_wrapper.log_writer_parallelism_ = new_config.io_worker_num_)) {
+      } else if (FALSE_IT(log_iow_wrapper.is_user_tenant_ = true)) {
+      } else if (OB_FAIL(log_iow_wrapper.start_()))  {
+        STORAGE_LOG(WARN, "failed to start_ log_iow_wrapper", K(new_config));
       } else {
-        //set this to stop user_io_worker
-        log_service->palf_env_->palf_env_impl_.log_io_worker_wrapper_.is_user_tenant_ = true;
       }
     }
   }
@@ -775,10 +805,14 @@ void MockTenantModuleEnv::destroy()
   multi_tenant_.stop();
   multi_tenant_.wait();
   multi_tenant_.destroy();
-
+  ObKVGlobalCache::get_instance().destroy();
   ObServerCheckpointSlogHandler::get_instance().destroy();
   SLOGGERMGR.destroy();
-  THE_IO_DEVICE->destroy();
+  ObTmpFileManager::get_instance().destroy();
+
+  OB_SERVER_BLOCK_MGR.stop();
+  OB_SERVER_BLOCK_MGR.wait();
+  OB_SERVER_BLOCK_MGR.destroy();
 
   ObTsMgr::get_instance().stop();
   ObTsMgr::get_instance().wait();
@@ -796,6 +830,8 @@ void MockTenantModuleEnv::destroy()
   TG_STOP(lib::TGDefIDs::MemDumpTimer);
   TG_WAIT(lib::TGDefIDs::MemDumpTimer);
   TG_DESTROY(lib::TGDefIDs::MemDumpTimer);
+
+  THE_IO_DEVICE->destroy();
 
 
   destroyed_ = true;

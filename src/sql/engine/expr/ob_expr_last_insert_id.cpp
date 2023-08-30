@@ -45,7 +45,14 @@ int ObExprLastInsertID::calc_result_typeN(ObExprResType &type,
   type.set_precision(ObAccuracy::DDL_DEFAULT_ACCURACY[ObUInt64Type].precision_);
   type.set_result_flag(NOT_NULL_FLAG);
   if (1 == param_num) {
-    types_array[0].set_calc_type(ObUInt64Type);
+    const ObObjType arg_type = types_array[0].get_type();
+    if (ob_is_int_tc(arg_type) || ob_is_uint_tc(arg_type)) {
+      // get the uint value directly without extra cast
+    } else if (ob_is_number_tc(arg_type)) {
+      types_array[0].set_calc_type(ObIntType);
+    } else {
+      types_array[0].set_calc_type(ObUInt64Type);
+    }
   }
   return OB_SUCCESS;
 }
@@ -62,15 +69,16 @@ int ObExprLastInsertID::eval_last_insert_id(
 {
   int ret = OB_SUCCESS;
   ObPhysicalPlanCtx *plan_ctx = ctx.exec_ctx_.get_physical_plan_ctx();
+  ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
   ObDatum *arg = NULL;
-  if (NULL == plan_ctx) {
+  if (NULL == plan_ctx || NULL == session) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("phy plan context is NULL", K(ret));
+    LOG_WARN("phy plan context or session is NULL", K(ret), K(plan_ctx), K(session));
   } else if (OB_FAIL(expr.eval_param_value(ctx, arg))) {
     LOG_WARN("evaluate parameter failed", K(ret));
   } else {
     if (0 == expr.arg_cnt_) {
-      expr_datum.set_uint(plan_ctx->get_last_insert_id_session());
+      expr_datum.set_uint(session->get_local_last_insert_id());
     } else if (1 == expr.arg_cnt_) {
       plan_ctx->set_last_insert_id_with_expr(true);
       plan_ctx->set_last_insert_id_changed(true);

@@ -122,6 +122,7 @@ int ObSqlPlan::store_sql_plan_for_explain(ObExecContext *ctx,
   PlanText out_plan_text;
   plan_text.type_ = type;
   ObSEArray<ObSqlPlanItem*, 16> sql_plan_infos;
+  bool allocate_mem_failed = false;
   if (OB_FAIL(init_buffer(plan_text))) {
     LOG_WARN("failed to init buffer", K(ret));
   } else if (OB_FAIL(get_sql_plan_infos(plan_text,
@@ -129,12 +130,14 @@ int ObSqlPlan::store_sql_plan_for_explain(ObExecContext *ctx,
                                         sql_plan_infos))) {
     LOG_WARN("failed to get sql plan infos", K(ret));
   }
+  allocate_mem_failed |= OB_ALLOCATE_MEMORY_FAILED == ret;
   if (OB_FAIL(format_sql_plan(sql_plan_infos,
                               type,
                               option,
                               out_plan_text))) {
     LOG_WARN("failed to format sql plan", K(ret));
   }
+  allocate_mem_failed |= OB_ALLOCATE_MEMORY_FAILED == ret;
   if (OB_FAIL(plan_text_to_strings(out_plan_text, plan_strs))) {
     LOG_WARN("failed to convert plan text to strings", K(ret));
   } else if (OB_FAIL(inner_store_sql_plan_for_explain(ctx,
@@ -145,6 +148,16 @@ int ObSqlPlan::store_sql_plan_for_explain(ObExecContext *ctx,
     if (plan_table.compare("PLAN_TABLE") == 0) {
       //ignore error for default
       ret = OB_SUCCESS;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (allocate_mem_failed) {
+      if (OB_FAIL(plan_strs.push_back("Plan truncated due to insufficient memory!"))) {
+        LOG_WARN("failed to push back string", K(ret));
+      }
+    } else if (plan_strs.empty()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to generate plan", K(ret));
     }
   }
   destroy_buffer(plan_text);
@@ -968,6 +981,8 @@ int ObSqlPlan::print_constraint_info(char *buf,
       ret = BUF_PRINTF("FALSE");
     } else if (PRE_CALC_RESULT_NO_WILDCARD == info.expect_result_) {
       ret = BUF_PRINTF("NO_WILDCARD");
+    } else if (PRE_CALC_ERROR == info.expect_result_) {
+      ret = BUF_PRINTF("ERROR");
     } else if (PRE_CALC_PRECISE == info.expect_result_) {
       ret = BUF_PRINTF("PRECISE");
     } else if (PRE_CALC_NOT_PRECISE == info.expect_result_) {
@@ -1352,7 +1367,7 @@ int ObSqlPlan::get_operator_prefix(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
       }
       buf_len = plan_level * 25;
       pos = 0;
-      if (plan_level > 0) {
+      if (OB_SUCC(ret) && plan_level > 0) {
         buf = static_cast<char*>(allocator_.alloc(buf_len));
         if (OB_ISNULL(buf)) {
           ret = OB_ERR_UNEXPECTED;
@@ -1391,8 +1406,12 @@ int ObSqlPlan::get_operator_prefix(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
           ret = BUF_PRINTF("  ");
         }
       }
-      ObString prefix(pos, buf);
-      format_helper.operator_prefix_.push_back(prefix);
+      if (OB_SUCC(ret)) {
+        ObString prefix(pos, buf);
+        if (OB_FAIL(format_helper.operator_prefix_.push_back(prefix))) {
+          LOG_WARN("failed to push back prefix", K(ret));
+        }
+      }
     }
   }
   return ret;

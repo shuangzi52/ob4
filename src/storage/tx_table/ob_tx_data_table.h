@@ -39,7 +39,7 @@ struct TxDataReadSchema
 {
   ObTableIterParam iter_param_;
   ObTableReadInfo read_info_;
-  ObTableReadInfo full_read_info_;
+  ObRowkeyReadInfo full_read_info_;
 
   TxDataReadSchema() : iter_param_(), read_info_(), full_read_info_() {}
 };
@@ -91,6 +91,14 @@ public:
       update_ts_ = 0;
     }
 
+    CalcUpperInfo &operator= (const CalcUpperInfo &rhs)
+    {
+      min_start_scn_in_ctx_ = rhs.min_start_scn_in_ctx_;
+      keep_alive_scn_ = rhs.keep_alive_scn_;
+      update_ts_ = rhs.update_ts_;
+      return *this;
+    }
+
     share::SCN min_start_scn_in_ctx_;
     share::SCN keep_alive_scn_;
     int64_t update_ts_;
@@ -101,6 +109,8 @@ public:
 
   using SliceAllocator = ObSliceAlloc;
 
+  static int64_t UPDATE_CALC_UPPER_INFO_INTERVAL;
+
   static const int64_t TX_DATA_MAX_CONCURRENCY = 32;
   // A tx data is 128 bytes, 128 * 262144 = 32MB
   static const int64_t SSTABLE_CACHE_MAX_RETAIN_CNT = 262144;
@@ -108,11 +118,10 @@ public:
   // cache cleaning task will delete at least 11w tx data.
   static const int64_t DEFAULT_CACHE_RETAINED_TIME = 100_ms; // 100ms
 
-  // The tx data memtable do not need freeze it self if its memory use is less than 1%
-  static constexpr double TX_DATA_FREEZE_TRIGGER_MIN_PERCENTAGE = 1;
-
-  // The tx data memtable will trigger a freeze if its memory use is more than 10%
-  static constexpr double TX_DATA_FREEZE_TRIGGER_MAX_PERCENTAGE = 5;
+  // The tx data memtable will trigger a freeze if its memory use is more than 2%
+  static constexpr double TX_DATA_FREEZE_TRIGGER_PERCENTAGE = 2;
+  // TODO : @gengli.wzy The active & frozen tx data memtable can not use memory more than 10%
+  static constexpr double TX_DATA_MEM_LIMIT_PERCENTAGE = 10;
 
   enum COLUMN_ID_LIST
   {
@@ -195,7 +204,10 @@ public:  // ObTxDataTable
    * @param[in] tx_id the tx id of the transaction to be checked
    * @param[in] fn the functor which is dealt with tx data
    */
-  virtual int check_with_tx_data(const transaction::ObTransID tx_id, ObITxDataCheckFunctor &fn, ObTxDataGuard &tx_data_guard);
+  virtual int check_with_tx_data(const transaction::ObTransID tx_id,
+                                 ObITxDataCheckFunctor &fn,
+                                 ObTxDataGuard &tx_data_guard,
+                                 share::SCN &recycled_scn);
 
   /**
    * @brief See ObTxTable::get_recycle_scn
@@ -249,8 +261,6 @@ public: // getter and setter
 private:
   virtual ObTxDataMemtableMgr *get_memtable_mgr_() { return memtable_mgr_; }
 
-  int get_ls_min_end_scn_in_latest_tablets_(share::SCN &min_end_ts);
-
   int init_slice_allocator_();
 
   int init_arena_allocator_();
@@ -266,18 +276,20 @@ private:
 
   int get_tx_data_from_cache_(const transaction::ObTransID tx_id, ObTxDataGuard &tx_data_guard, bool &find);
 
-  int check_tx_data_in_sstable_(const transaction::ObTransID tx_id, ObITxDataCheckFunctor &fn, ObTxDataGuard &tx_data_guard);
+  int check_tx_data_in_sstable_(const transaction::ObTransID tx_id,
+                                ObITxDataCheckFunctor &fn,
+                                ObTxDataGuard &tx_data_guard,
+                                share::SCN &recycled_scn);
 
   int get_tx_data_in_cache_(const transaction::ObTransID tx_id, ObTxData *&tx_data);
 
-  int get_tx_data_in_sstable_(const transaction::ObTransID tx_id, ObTxData &tx_data);
+  int get_tx_data_in_sstable_(const transaction::ObTransID tx_id, ObTxData &tx_data, share::SCN &recycled_scn);
 
   int insert_(ObTxData *&tx_data, ObTxDataMemtableWriteGuard &write_guard);
 
   int insert_into_memtable_(ObTxDataMemtable *tx_data_memtable, ObTxData *&tx_data);
 
   // free the whole undo status list allocated by slice allocator
-  int get_min_end_scn_from_single_tablet_(ObTabletHandle &tablet_handle, share::SCN &end_scn);
 
   int deep_copy_undo_status_list_(const ObUndoStatusList &in_list, ObUndoStatusList &out_list);
   int init_tx_data_read_schema_();
@@ -289,7 +301,7 @@ private:
   int calc_upper_trans_scn_(const share::SCN sstable_end_scn, share::SCN &upper_trans_version);
 
   int update_freeze_trigger_threshold_();
-  
+
   int check_need_update_memtables_cache_(bool &need_update);
 
   int get_tx_data_in_memtables_cache_(const transaction::ObTransID tx_id,

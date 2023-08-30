@@ -50,6 +50,7 @@ private:
       equal_infos_(),
       need_add_constraint_(PRE_CALC_RESULT_NONE),
       can_pullup_(false),
+      mem_equal_(false),
       is_used_(false),
       is_complex_const_info_(false),
       multi_const_exprs_(),
@@ -67,19 +68,21 @@ private:
     common::ObSEArray<ObPCParamEqualInfo, 2> equal_infos_;
     PreCalcExprExpectResult need_add_constraint_;
     bool can_pullup_;
+    bool mem_equal_; //param expr mem is const expr.
     bool is_used_;
     //record or/in predicate const exprs
     bool is_complex_const_info_;
     common::ObSEArray<ObRawExpr*, 4> multi_const_exprs_;
     common::ObSEArray<PreCalcExprExpectResult, 4> multi_need_add_constraints_;
 
-    TO_STRING_KV(K_(column_expr),
-                 K_(const_expr),
+    TO_STRING_KV(KPC_(column_expr),
+                 KPC_(const_expr),
                  K_(exclude_expr),
                  K_(new_expr),
                  K_(equal_infos),
                  K_(need_add_constraint),
                  K_(can_pullup),
+                 K_(mem_equal),
                  K_(is_used),
                  K_(is_complex_const_info),
                  K_(multi_const_exprs),
@@ -120,7 +123,7 @@ private:
       column_expr_(NULL),
       const_expr_(NULL),
       equal_infos_(),
-      need_add_constraint_(-1)
+      need_add_constraint_(PRE_CALC_RESULT_NONE)
       { }
 
     virtual ~PullupConstInfo() { }
@@ -128,7 +131,7 @@ private:
     ObRawExpr* column_expr_;
     ObRawExpr* const_expr_;
     common::ObSEArray<ObPCParamEqualInfo, 2> equal_infos_;
-    int64_t need_add_constraint_;
+    PreCalcExprExpectResult need_add_constraint_;
 
     TO_STRING_KV(K_(column_expr),
                  K_(const_expr),
@@ -207,9 +210,15 @@ private:
                                          bool &trans_happened);
 
   int check_const_expr_validity(const ObDMLStmt &stmt,
-                                ObRawExpr *const_expr,
-                                bool &is_valid,
-                                bool &need_add_constraint);
+                                ExprConstInfo &const_info,
+                                bool &is_valid);
+
+  int check_const_expr_not_null(const ObDMLStmt &stmt,
+                                ExprConstInfo &const_info,
+                                bool &is_valid);
+
+  int check_cast_const_expr(ExprConstInfo &const_info,
+                            bool &is_valid);
 
   int check_can_replace_in_select(ObSelectStmt *stmt,
                                   ObRawExpr *target_expr,
@@ -221,23 +230,6 @@ private:
                                             ObIArray<ObRawExpr *> &parent_exprs,
                                             bool ignore_all_select_exprs,
                                             bool &can_replace);
-
-  int check_can_replace(ObRawExpr *expr,
-                        ObIArray<ObRawExpr *> &parent_exprs,
-                        bool used_in_compare,
-                        bool &can_replace);
-
-  int check_is_bypass_string_expr(ObRawExpr *expr,
-                                  ObRawExpr *src_expr,
-                                  bool &is_bypass);
-
-  int check_convert_string_safely(ObRawExpr *expr,
-                                  ObRawExpr *src_expr,
-                                  bool &is_safe);
-
-  int check_cast_accuracy(const ObExprResType &src_type,
-                          const ObExprResType &dst_type,
-                          bool &is_safe);
 
   int recursive_replace_join_conditions(TableItem *table_item,
                                         ConstInfoContext &const_ctx,
@@ -288,6 +280,9 @@ private:
 
   int collect_equal_param_constraints(ObIArray<ExprConstInfo> &expr_const_infos);
 
+  int add_equal_param_constraint(ObRawExpr *column_expr,
+                                 ObRawExpr *const_expr,
+                                 PreCalcExprExpectResult expect_result);
   int recursive_collect_equal_pair_from_condition(ObDMLStmt *stmt,
                                                   ObRawExpr *expr,
                                                   ConstInfoContext &const_ctx,

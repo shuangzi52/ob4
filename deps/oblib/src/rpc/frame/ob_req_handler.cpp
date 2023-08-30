@@ -18,6 +18,7 @@
 #include "lib/ob_define.h"
 #include "lib/time/ob_time_utility.h"
 #include "lib/utility/serialization.h"
+#include "common/ob_clock_generator.h"
 
 using namespace oceanbase::rpc::frame;
 using namespace oceanbase::common::serialization;
@@ -338,7 +339,8 @@ int new_keepalive_packet(easy_connection_t *conn)
   uint32_t keepalive_payload_size = 0;
 
   if (OB_ISNULL(conn)) {
-    LOG_WARN("invalid argument, c is NULL.");
+    ret = common::OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid argument, c is NULL.", K(ret));
   } else {
     playload_size = common::OB_NET_HEADER_LENGTH + keepalive_payload_size;
     session_alloc_size = playload_size;

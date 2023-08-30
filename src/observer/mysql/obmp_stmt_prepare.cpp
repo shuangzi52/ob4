@@ -128,7 +128,7 @@ int ObMPStmtPrepare::multiple_query_check(ObSQLSessionInfo &session,
         LOG_WARN("can't not prepare multi stmt", K(ret), K(queries.count()));
       } else {
         if (OB_UNLIKELY(parse_stat.parse_fail_ && (0 == parse_stat.fail_query_idx_)
-                        && (OB_ERR_PARSE_SQL != parse_stat.fail_ret_))) {
+                        && ObSQLUtils::check_need_disconnect_parser_err(parse_stat.fail_ret_))) {
           // 进入本分支，说明在multi_query中的某条query parse失败，如果不是语法错，则进入该分支
           // 如果当前query_count 为1， 则不断连接;如果大于1，
           // 则需要在发错误包之后断连接，防止客户端一直在等接下来的回包
@@ -176,6 +176,8 @@ int ObMPStmtPrepare::process()
   } else {
     ObSQLSessionInfo &session = *sess;
     THIS_WORKER.set_session(sess);
+    lib::CompatModeGuard g(sess->get_compatibility_mode() == ORACLE_MODE ?
+                             lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL);
     ObSQLSessionInfo::LockGuard lock_guard(session.get_query_lock());
     session.set_current_trace_id(ObCurTraceId::get_trace_id());
     session.get_raw_audit_record().request_memory_used_ = 0;
@@ -212,6 +214,7 @@ int ObMPStmtPrepare::process()
     } else if (FALSE_IT(session.post_sync_session_info())) {
     } else if (OB_UNLIKELY(packet_len > session.get_max_packet_size())) {
       ret = OB_ERR_NET_PACKET_TOO_LARGE;
+      need_disconnect = false;
       LOG_WARN("packet too large than allowd for the session", K_(sql), K(ret));
     } else if (OB_FAIL(sql::ObFLTUtils::init_flt_info(pkt.get_extra_info(), session,
                             conn->proxy_cap_flags_.is_full_link_trace_support()))) {
@@ -298,6 +301,8 @@ int ObMPStmtPrepare::process_prepare_stmt(const ObMultiStmtItem &multi_stmt_item
     if (OB_FAIL(check_and_refresh_schema(session.get_login_tenant_id(),
                                          session.get_effective_tenant_id()))) {
       LOG_WARN("failed to check_and_refresh_schema", K(ret));
+    } else if (OB_FAIL(session.update_timezone_info())) {
+      LOG_WARN("fail to update time zone info", K(ret));
     } else {
       ctx_.self_add_plan_ = false;
       ctx_.is_prepare_protocol_ = true; //set to prepare protocol

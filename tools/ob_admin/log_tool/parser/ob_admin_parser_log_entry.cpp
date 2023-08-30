@@ -41,12 +41,14 @@ using namespace palf;
 namespace tools
 {
 ObAdminParserLogEntry::ObAdminParserLogEntry(const LogEntry &entry,
-                                             const block_id_t block_id,
+                                             const char *block_name,
                                              const LSN lsn,
                                              const ObAdminMutatorStringArg &str_arg)
     : buf_(entry.get_data_buf()), buf_len_(entry.get_data_len()), pos_(0),
-    scn_val_(entry.get_scn().get_val_for_logservice()), block_id_(block_id), lsn_(lsn), str_arg_()
+      scn_val_(entry.get_scn().get_val_for_logservice()), lsn_(lsn), str_arg_()
 {
+  memset(block_name_, '\0', OB_MAX_FILE_NAME_LENGTH);
+  memcpy(block_name_, block_name, OB_MAX_FILE_NAME_LENGTH);
   str_arg_ = str_arg;
 }
 
@@ -91,7 +93,7 @@ int ObAdminParserLogEntry::parse_trans_service_log_(ObTxLogBlock &tx_log_block)
     LOG_WARN("ObTxLogBlock init failed", K(ret));
   } else if (str_arg_.filter_.is_tx_id_valid() && tx_id != str_arg_.filter_.get_tx_id()) {
     //just skip this
-    LOG_TRACE("skip with tx_id", K(str_arg_), K(tx_id), K(block_id_), K(lsn_));
+    LOG_TRACE("skip with tx_id", K(str_arg_), K(tx_id), K(block_name_), K(lsn_));
   } else {
 
     str_arg_.log_stat_->tx_block_header_size_ += tx_block_header.get_serialize_size();
@@ -114,7 +116,7 @@ int ObAdminParserLogEntry::parse_trans_service_log_(ObTxLogBlock &tx_log_block)
       if (LogFormatFlag::NO_FORMAT != str_arg_.flag_) {
         //print block_id and lsn for tx_format and filter_format
         str_arg_.writer_ptr_->dump_key("BlockId");
-        str_arg_.writer_ptr_->dump_uint64(block_id_);
+        str_arg_.writer_ptr_->dump_key(block_name_);
         str_arg_.writer_ptr_->dump_key("LSN");
         str_arg_.writer_ptr_->dump_int64((int64_t)(lsn_.val_));
       }
@@ -558,8 +560,21 @@ int ObAdminParserLogEntry::parse_reserved_snapshot_log_()
 
 int ObAdminParserLogEntry::parse_medium_log_()
 {
-  //not supported so far, just reserved
-  int ret = OB_NOT_SUPPORTED;
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator;
+  ObTabletID tablet_id;
+  int64_t medium_snapshot = 0;
+  compaction::ObMediumCompactionInfo medium_info;
+  ObStorageSchema storage_schema;
+  if (OB_FAIL(tablet_id.deserialize(buf_, buf_len_, pos_))) {
+    LOG_WARN("fail to deserialize tablet id", K(ret));
+  } else if (OB_FAIL(serialization::decode_i64(buf_, buf_len_, pos_, &medium_snapshot))) {
+    LOG_WARN("fail to deserialize medium_snapshot", K(ret));
+  } else if (OB_FAIL(medium_info.deserialize(allocator, buf_, buf_len_, pos_))) {
+    LOG_WARN("fail to deserialize medium info", K(ret));
+  } else {
+    fprintf(stdout, " ###<MediumCompactionLog>: tablet_id:%ld, medium_info: %s\n", tablet_id.id(), to_cstring(medium_info));
+  }
   return ret;
 }
 
@@ -683,8 +698,8 @@ int ObAdminParserLogEntry::parse_trans_redo_log_(ObTxLogBlock &tx_log_block,
     LOG_WARN("tx_log_block.deserialize_log_body failed", K(ret), K(redolog));
   } else if (OB_FAIL(scn.convert_for_logservice(scn_val_))) {
     LOG_WARN("failed to convert", K(ret), K(scn_val_));
-  } else if (OB_FAIL(redolog.ob_admin_dump(&mmi, str_arg_, block_id_, lsn_, tx_id, scn, has_dumped_tx_id))) {
-    LOG_WARN("get mutator json string failed", K(block_id_), K(lsn_), K(tx_id), K(ret));
+  } else if (OB_FAIL(redolog.ob_admin_dump(&mmi, str_arg_, block_name_, lsn_, tx_id, scn, has_dumped_tx_id))) {
+    LOG_WARN("get mutator json string failed", K(block_name_), K(lsn_), K(tx_id), K(ret));
   } else {/*do nothing*/}
   return ret;
 }

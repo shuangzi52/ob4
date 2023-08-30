@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #ifndef USSL_HOOK_USSL_HOOK_
 #define USSL_HOOK_USSL_HOOK_
 
@@ -38,6 +50,10 @@ enum CtxLevelOptName {
   SO_OB_CTX_SET_SSL_KEY_DIR,
   SO_OB_CTX_SET_SSL_CONFIG,
 };
+
+static int ussl_is_stopped = 0;
+void ussl_stop();
+void ussl_wait();
 
 int ussl_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 int ussl_listen(int fd, int n);

@@ -418,7 +418,7 @@ public:
   OB_INLINE void set_scale(const ObScale scale) { scale_ = static_cast<int8_t>(scale); }
   OB_INLINE ObScale get_scale() const { return static_cast<ObScale>(scale_); }
   OB_INLINE void set_extend_type(uint8_t type) { extend_type_ = type; }
-  OB_INLINE uint8_t get_extend_type() const { return extend_type_; }
+  OB_INLINE uint8_t get_extend_type() const { return is_ext() ? extend_type_ : -1; }
 
   TO_STRING_KV(N_TYPE, ob_obj_type_str(static_cast<ObObjType>(type_)),
                N_COLLATION, ObCharset::collation_name(get_collation_type()),
@@ -492,7 +492,7 @@ struct ObLobDataOutRowCtx
   uint64_t op_ : 8;
   uint64_t offset_ : 55;
   uint64_t check_sum_;
-  uint64_t seq_no_st_;
+  int64_t seq_no_st_;
   uint32_t seq_no_cnt_;
   uint32_t del_seq_no_cnt_; // for sql update
   uint64_t modified_len_;
@@ -675,7 +675,7 @@ struct ObMemLobCommon
 
   ObMemLobCommon(ObMemLobType type, bool is_simple) :
     lob_common_(), version_(MEM_LOB_LOCATOR_VERSION), type_(type), read_only_(0),
-    has_inrow_data_(1), is_open_(0), is_simple_(is_simple), has_extern_(0), reserved_(0)
+    has_inrow_data_(1), is_open_(0), is_simple_(is_simple), has_extern_(0), is_freed_(0), reserved_(0)
   { lob_common_.is_mem_loc_ = 1; }
 
   OB_INLINE void set_extern(bool has_extern) { has_extern_ = has_extern ? 1 : 0; };
@@ -683,12 +683,14 @@ struct ObMemLobCommon
   OB_INLINE void set_has_inrow_data(bool has_inrow_data) { has_inrow_data_ =  has_inrow_data ? 1 : 0 ; }
   OB_INLINE void set_open(bool is_open) { is_open_ = is_open ? 1 : 0; }
   OB_INLINE void set_simple(bool is_simple) { is_simple_ = is_simple ? 1 : 0; }
+  OB_INLINE void set_freed(bool freed) { is_freed_ = freed ? 1 : 0; };
 
   OB_INLINE bool is_read_only() { return read_only_ == 1; }
   OB_INLINE bool has_inrow_data() { return has_inrow_data_ == 1; }
   OB_INLINE bool is_open() { return is_open_ == 1; }
   OB_INLINE bool is_simple() { return is_simple_ == 1; }
   OB_INLINE bool has_extern() {return has_extern_ == 1; }
+  OB_INLINE bool is_freed() {return is_freed_ == 1; }
   OB_INLINE bool is_persist() { return type_ == PERSISTENT_LOB; }
   OB_INLINE bool is_temporary_full() { return type_ == TEMP_FULL_LOB; }
   OB_INLINE bool is_temporary_delta() { return type_ == TEMP_DELTA_LOB; }
@@ -709,7 +711,7 @@ struct ObMemLobCommon
   }
 
   TO_STRING_KV(K_(lob_common), K_(type), K_(read_only), K_(has_inrow_data), K_(is_open), K_(is_simple),
-               K_(has_extern), K_(reserved), K_(version));
+               K_(has_extern), K_(is_freed), K_(reserved), K_(version));
 
   ObLobCommon lob_common_;
 
@@ -726,7 +728,8 @@ struct ObMemLobCommon
   uint32_t is_simple_ : 1; // Indicate whether the lob has this common part only. Used for inrow lobs
                            // which do not need rowkey (Only used in mysql modes now)
   uint32_t has_extern_ : 1; // Indicate whether the lob locator has extern segment
-  uint32_t reserved_  : 15;
+  uint32_t is_freed_ : 1; // Indicate whether the temp lob locator has been freed
+  uint32_t reserved_  : 14;
 
 
   char data_[0];
@@ -803,13 +806,13 @@ struct ObMemLobTxInfo
 {
   ObMemLobTxInfo(){}
   ObMemLobTxInfo(int64_t snapshot_ver, int64_t tx_id, int64_t scn) :
-    version_(snapshot_ver), tx_id_(tx_id), scn_(scn)
+    snapshot_version_(snapshot_ver), snapshot_tx_id_(tx_id), snapshot_seq_(scn)
   {}
-  TO_STRING_KV(K_(version), K_(tx_id), K_(scn));
+  TO_STRING_KV(K_(snapshot_version), K_(snapshot_tx_id), K_(snapshot_seq));
 
-  int64_t version_;
-  int64_t tx_id_;
-  int64_t scn_;
+  int64_t snapshot_version_;
+  int64_t snapshot_tx_id_;
+  int64_t snapshot_seq_;
   char data_[0];
 };
 
@@ -990,6 +993,14 @@ public:
            (reinterpret_cast<ObMemLobCommon *>(ptr_))->is_read_only();
   }
 
+  OB_INLINE bool is_freed() const
+  {
+    validate_has_lob_header(has_lob_header_);
+    return has_lob_header_ && OB_NOT_NULL(ptr_) &&
+           !is_lob_disk_locator() && size_ >= MEM_LOB_COMMON_HEADER_LEN &&
+           (reinterpret_cast<ObMemLobCommon *>(ptr_))->is_freed();
+  }
+
   OB_INLINE bool has_inrow_data() const
   {
     bool bret = false;
@@ -1062,45 +1073,30 @@ public:
   bool has_lob_header_; // for observer 4.0 compatibility
 };
 
-// mock xml binary header for test;
-class ObMockXmlBinHeader {
-public:
-  ObMockXmlBinHeader(bool is_unparsed, bool is_document) :
-    is_unparsed_(is_unparsed), is_document_(is_document), reserved_(0) {}
-  ~ObMockXmlBinHeader(){};
-
-  TO_STRING_KV(K_(is_unparsed), K_(is_document), K_(reserved));
-  union {
-    uint32_t flag_;
-    struct {
-      uint32_t is_unparsed_: 1;
-      uint32_t is_document_: 1;
-      uint32_t reserved_: 30;
-    };
-  };
-};
-
 struct ObObjPrintParams
 {
   ObObjPrintParams (const ObTimeZoneInfo *tz_info, ObCollationType cs_type):
     tz_info_(tz_info),
     cs_type_(cs_type),
     print_flags_(0),
-    exec_ctx_(NULL)
+    exec_ctx_(NULL),
+    ob_obj_type_(ObNullType)
   {}
   ObObjPrintParams (const ObTimeZoneInfo *tz_info):
     tz_info_(tz_info),
     cs_type_(CS_TYPE_UTF8MB4_GENERAL_CI),
     print_flags_(0),
-    exec_ctx_(NULL)
+    exec_ctx_(NULL),
+    ob_obj_type_(ObNullType)
   {}
   ObObjPrintParams ():
     tz_info_(NULL),
     cs_type_(CS_TYPE_UTF8MB4_GENERAL_CI),
     print_flags_(0),
-    exec_ctx_(NULL)
+    exec_ctx_(NULL),
+    ob_obj_type_(ObNullType)
   {}
-  TO_STRING_KV(K_(tz_info), K_(cs_type),K_(print_flags));
+  TO_STRING_KV(K_(tz_info), K_(cs_type),K_(print_flags), K_(ob_obj_type));
   const ObTimeZoneInfo *tz_info_;
   ObCollationType cs_type_;
   union {
@@ -1129,6 +1125,7 @@ struct ObObjPrintParams
    *
   */
   sql::ObExecContext *exec_ctx_;
+  ObObjType ob_obj_type_;
 };
 
 // sizeof(ObObjValue)=8
@@ -2062,9 +2059,7 @@ inline ObObj::ObObj(const ObObj &other)
 
 inline void ObObj::reset()
 {
-  meta_.set_null();
-  meta_.set_collation_type(CS_TYPE_INVALID);
-  meta_.set_collation_level(CS_LEVEL_INVALID);
+  meta_.reset();
   val_len_ = 0;
   v_.int64_ = 0;
 }
@@ -3808,6 +3803,7 @@ DEFINE_SET_COMMON_OBJ_VALUE(float, float);
 DEFINE_SET_COMMON_OBJ_VALUE(double, double);
 DEFINE_SET_COMMON_OBJ_VALUE(int64, int64_t);
 DEFINE_SET_COMMON_OBJ_VALUE(uint64, uint64_t);
+
 template<>
 inline void ObObj::set_obj_value<ObString>(const ObString &v)
 {
@@ -3834,6 +3830,13 @@ inline void ObObj::set_obj_value<ObURowIDData>(const ObURowIDData &urowid)
 {
   v_.string_ = (const char *)urowid.rowid_content_;
   val_len_ = static_cast<int32_t>(urowid.rowid_len_);
+}
+
+template<>
+inline void ObObj::set_obj_value<ObOTimestampData>(const ObOTimestampData &otimestamp)
+{
+  time_ctx_ = otimestamp.time_ctx_;
+  v_.datetime_ = otimestamp.time_us_;
 }
 
 struct ParamFlag
@@ -4079,15 +4082,22 @@ class ObHexEscapeSqlStr
 {
 public:
   ObHexEscapeSqlStr(const common::ObString &str) : str_(str),
-                                                   skip_escape_(false) { }
+                                                   skip_escape_(false),
+                                                   do_oracle_mode_escape_(lib::is_oracle_mode()) { }
   ObHexEscapeSqlStr(const common::ObString &str, const bool skip_escape) : str_(str),
-                                                                           skip_escape_(skip_escape){ }
+                                                                           skip_escape_(skip_escape),
+                                                                           do_oracle_mode_escape_(lib::is_oracle_mode()){ }
+  ObHexEscapeSqlStr(const common::ObString &str,
+                    const bool skip_escape,
+                    const bool do_oracle_mode_escape)
+    : str_(str), skip_escape_(skip_escape), do_oracle_mode_escape_(do_oracle_mode_escape){ }
   ObString str() const { return str_; }
   int64_t get_extra_length() const;
   DECLARE_TO_STRING;
 private:
   ObString str_;
   bool skip_escape_;
+  bool do_oracle_mode_escape_;
 };
 
 typedef Ob2DArray<ObObjParam, OB_MALLOC_BIG_BLOCK_SIZE,

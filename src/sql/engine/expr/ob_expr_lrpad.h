@@ -14,6 +14,7 @@
 #define OCEANBASE_SQL_ENGINE_EXPR_OB_SQL_EXPR_LRPAD_
 
 #include "sql/engine/expr/ob_expr_operator.h"
+#include "sql/engine/expr/ob_i_expr_extra_info.h"
 
 namespace oceanbase
 {
@@ -30,11 +31,11 @@ public:
 
   virtual ~ObExprBaseLRpad();
 
-  static int calc_type(ObExprResType &type,
-                       ObExprResType &text,
-                       ObExprResType &len,
-                       ObExprResType *pad_text,
-                       common::ObExprTypeCtx &type_ctx);
+  int calc_type(ObExprResType &type,
+                ObExprResType &text,
+                ObExprResType &len,
+                ObExprResType *pad_text,
+                common::ObExprTypeCtx &type_ctx) const;
 
   static int padding(LRpadType type,
                      const common::ObCollationType coll_type,
@@ -136,6 +137,7 @@ public:
   static int calc_oracle(LRpadType pad_type, const ObExpr &expr, const common::ObDatum &text,
                          const common::ObDatum &len, const common::ObDatum &pad_text,
                          common::ObIAllocator &res_alloc, ObDatum &res, bool &is_unchanged_clob);
+  int get_origin_len_obj(ObObj &len_obj) const;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprBaseLRpad);
 };
@@ -221,6 +223,24 @@ public:
                                            ObDatum &res);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprOracleRpad);
+};
+
+struct ObExprOracleLRpadInfo : public ObIExprExtraInfo
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObExprOracleLRpadInfo(common::ObIAllocator &alloc, ObExprOperatorType type)
+      : ObIExprExtraInfo(alloc, type),
+        is_called_in_sql_(true)
+  {
+  }
+
+  virtual int deep_copy(common::ObIAllocator &allocator,
+                        const ObExprOperatorType type,
+                        ObIExprExtraInfo *&copied_info) const override;
+
+public:
+  bool is_called_in_sql_;
 };
 
 } // namespace sql

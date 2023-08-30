@@ -26,8 +26,6 @@ namespace oceanbase
 namespace logservice
 {
 const int64_t MAX_FETCH_LOG_BUF_LEN = 4 * 1024 * 1024L;
-const int64_t MIN_FETCH_LOG_WORKER_THREAD_COUNT = 1;
-const int64_t MAX_FETCH_LOG_WORKER_THREAD_COUNT = 10;
 const int64_t MAX_LS_FETCH_LOG_TASK_CONCURRENCY = 4;
 
 struct ObLogRestoreErrorContext
@@ -41,11 +39,12 @@ struct ObLogRestoreErrorContext
   ErrorType error_type_;
   int ret_code_;
   share::ObTaskId trace_id_;
+  palf::LSN err_lsn_;
   ObLogRestoreErrorContext() { reset(); }
   virtual ~ObLogRestoreErrorContext() { reset(); }
   void reset();
   ObLogRestoreErrorContext &operator=(const ObLogRestoreErrorContext &other);
-  TO_STRING_KV(K_(ret_code), K_(trace_id));
+  TO_STRING_KV(K_(ret_code), K_(trace_id), K_(error_type), K_(err_lsn));
 };
 
 struct ObRestoreLogContext

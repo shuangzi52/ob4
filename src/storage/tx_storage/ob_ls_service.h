@@ -46,6 +46,7 @@ struct ObLSMeta;
 // Support log stream meta persistent and checkpoint
 class ObLSService
 {
+  static const int64_t DEFAULT_LOCK_TIMEOUT = 60_s;
 public:
   ObLSService();
   ~ObLSService();
@@ -60,6 +61,8 @@ public:
   bool safe_to_destroy();
   void inc_ls_safe_destroy_task_cnt();
   void dec_ls_safe_destroy_task_cnt();
+  void inc_iter_cnt();
+  void dec_iter_cnt();
 public:
   // create a LS
   // @param [in] arg, all the parameters that is need to create a LS.
@@ -119,15 +122,6 @@ public:
   // get all ls ids
   int get_ls_ids(common::ObIArray<share::ObLSID> &ls_id_array);
 
-  // tablet operation
-  int create_tablet(const obrpc::ObBatchCreateTabletArg &batch_arg,
-                    obrpc::ObCreateTabletBatchRes &result);
-  // remove tablets from a ls
-  // @param [in] arg, all the remove parameters needed.
-  // @param [out] result, the return code of the remove op.
-  int remove_tablet(const obrpc::ObBatchRemoveTabletArg &batch_arg,
-                    obrpc::ObRemoveTabletRes &result);
-
   // tablet operation in transactions
   // Create tablets for a ls
   // @param [in] tx_desc, trans descriptor
@@ -148,6 +142,7 @@ public:
   obrpc::ObStorageRpcProxy *get_storage_rpc_proxy() { return &storage_svr_rpc_proxy_; }
   storage::ObStorageRpc *get_storage_rpc() { return &storage_rpc_; }
   ObLSMap *get_ls_map() { return &ls_map_; }
+  int dump_ls_info();
 
   TO_STRING_KV(K_(tenant_id), K_(is_inited));
 private:
@@ -204,6 +199,9 @@ private:
   // for safe destroy
   // store the ls is removing
   int64_t safe_ls_destroy_task_cnt_;
+
+  // record the count of ls iter
+  int64_t iter_cnt_;
   DISALLOW_COPY_AND_ASSIGN(ObLSService);
 };
 

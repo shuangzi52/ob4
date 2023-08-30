@@ -26,7 +26,6 @@
 #include "storage/blocksstable/ob_tmp_file.h"
 #include "storage/lob/ob_lob_piece.h"
 #include "sql/engine/ob_exec_context.h"
-#include "observer/ob_safe_destroy_thread.h"
 #include "lib/objectpool/ob_server_object_pool.h"
 
 namespace oceanbase
@@ -52,19 +51,15 @@ public:
     EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
     MTL(transaction::ObTransService*)->tx_desc_mgr_.tx_id_allocator_ =
       [](transaction::ObTransID &tx_id) { tx_id = transaction::ObTransID(1001); return OB_SUCCESS; };
-    SAFE_DESTROY_INSTANCE.init();
-    SAFE_DESTROY_INSTANCE.start();
     ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
   }
   static void TearDownTestCase()
   {
-    SAFE_DESTROY_INSTANCE.stop();
-    SAFE_DESTROY_INSTANCE.wait();
-    SAFE_DESTROY_INSTANCE.destroy();
     MockTenantModuleEnv::get_instance().destroy();
   }
   virtual void SetUp()
   {
+    ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
 
   }
 
@@ -355,7 +350,7 @@ void TestLobManager::insert_lob_piece(
   // 2. create savepoint (can be rollbacked)
   ObTxParam tx_param;
   TestDmlCommon::build_tx_param(tx_param);
-  int64_t savepoint = 0;
+  ObTxSEQ savepoint;
   ASSERT_EQ(OB_SUCCESS, tx_service->create_implicit_savepoint(*tx_desc, tx_param, savepoint, true));
   // 3. acquire snapshot (write also need snapshot)
   ObTxIsolationLevel isolation = ObTxIsolationLevel::RC;
@@ -479,7 +474,7 @@ void TestLobManager::insert_lob_meta(
   // 2. create savepoint (can be rollbacked)
   ObTxParam tx_param;
   TestDmlCommon::build_tx_param(tx_param);
-  int64_t savepoint = 0;
+  ObTxSEQ savepoint;
   ASSERT_EQ(OB_SUCCESS, tx_service->create_implicit_savepoint(*tx_desc, tx_param, savepoint, true));
   // 3. acquire snapshot (write also need snapshot)
   ObTxIsolationLevel isolation = ObTxIsolationLevel::RC;
@@ -737,7 +732,6 @@ void TestLobManager::scan_lob_meta(
   }
   if (iter != NULL) {
     iter->reset();
-    // common::sop_return(ObLobMetaScanIter, iter);
   }
   // ASSERT_EQ(0, out_data.length());
 
@@ -1059,7 +1053,7 @@ TEST_F(TestLobManager, DISABLED_basic3)
     // 2. create savepoint (can be rollbacked)
     ObTxParam tx_param;
     TestDmlCommon::build_tx_param(tx_param);
-    int64_t savepoint = 0;
+    ObTxSEQ savepoint;
     ASSERT_EQ(OB_SUCCESS, tx_service->create_implicit_savepoint(*tx_desc, tx_param, savepoint, true));
     // 3. acquire snapshot (write also need snapshot)
     ObTxIsolationLevel isolation = ObTxIsolationLevel::RC;
@@ -1140,7 +1134,7 @@ TEST_F(TestLobManager, DISABLED_basic3)
     // 2. create savepoint (can be rollbacked)
     ObTxParam tx_param;
     TestDmlCommon::build_tx_param(tx_param);
-    int64_t savepoint = 0;
+    ObTxSEQ savepoint;
     ASSERT_EQ(OB_SUCCESS, tx_service->create_implicit_savepoint(*tx_desc, tx_param, savepoint, true));
     // 3. acquire snapshot (write also need snapshot)
     ObTxIsolationLevel isolation = ObTxIsolationLevel::RC;
@@ -1744,7 +1738,7 @@ TEST_F(TestLobManager, inrow_bin_reverse_query)
       }
     }
     iter->reset();
-    common::sop_return(ObLobQueryIter, iter);
+    OB_DELETE(ObLobQueryIter, "unused", iter);
     allocator.free(read_buf);
   }
 
@@ -1775,7 +1769,7 @@ TEST_F(TestLobManager, inrow_bin_reverse_query)
       }
     }
     iter->reset();
-    common::sop_return(ObLobQueryIter, iter);
+    OB_DELETE(ObLobQueryIter, "unused", iter);
     allocator.free(read_buf);
   }
 
@@ -1843,7 +1837,7 @@ TEST_F(TestLobManager, inrow_utf8_reverse_query)
       }
     }
     iter->reset();
-    common::sop_return(ObLobQueryIter, iter);
+    OB_DELETE(ObLobQueryIter, "unused", iter);
     allocator.free(read_buf);
   }
 

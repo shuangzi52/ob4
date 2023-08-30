@@ -172,6 +172,10 @@ class ObPhysicalRestoreTenantResolver : public ObSystemCmdResolver
     virtual ~ObPhysicalRestoreTenantResolver() {}
     virtual int resolve(const ParseNode &parse_tree);
   private:
+#ifdef OB_BUILD_TDE_SECURITY
+    int resolve_kms_encrypt_info(common::ObString store_option);
+    int check_kms_info_valid(const common::ObString &kms_info, bool &is_valid);
+#endif
     int resolve_decryption_passwd(obrpc::ObPhysicalRestoreTenantArg &arg);
     int resolve_restore_source_array(obrpc::ObPhysicalRestoreTenantArg &arg);
 };
@@ -190,6 +194,17 @@ class ObAlterSystemSetResolver : public ObSystemCmdResolver
 public:
   ObAlterSystemSetResolver(ObResolverParams &params) : ObSystemCmdResolver(params) {}
   virtual ~ObAlterSystemSetResolver() {}
+  virtual int resolve(const ParseNode &parse_tree);
+private:
+  int check_param_valid(int64_t tenant_id,
+      const common::ObString &name_node, const common::ObString &value_node);
+};
+
+class ObAlterSystemKillResolver : public ObSystemCmdResolver
+{
+public:
+  ObAlterSystemKillResolver(ObResolverParams &params) : ObSystemCmdResolver(params) {}
+  virtual ~ObAlterSystemKillResolver() {}
   virtual int resolve(const ParseNode &parse_tree);
 private:
   int check_param_valid(int64_t tenant_id,
@@ -232,6 +247,7 @@ DEF_SIMPLE_CMD_RESOLVER(ObBackupKeyResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObEnableSqlThrottleResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObDisableSqlThrottleResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObSetRegionBandwidthResolver);
+DEF_SIMPLE_CMD_RESOLVER(ObCancelRestoreResolver);
 
 #undef DEF_SIMPLE_CMD_RESOLVER
 

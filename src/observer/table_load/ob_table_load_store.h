@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -9,6 +17,7 @@
 #include "share/table/ob_table_load_array.h"
 #include "share/table/ob_table_load_define.h"
 #include "share/table/ob_table_load_row_array.h"
+#include "share/table/ob_table_load_sql_statistics.h"
 
 namespace oceanbase
 {
@@ -37,8 +46,10 @@ public:
   int confirm_begin();
   int pre_merge(const table::ObTableLoadArray<table::ObTableLoadTransId> &committed_trans_id_array);
   int start_merge();
-  int commit(table::ObTableLoadResultInfo &result_info, table::ObTableLoadSqlStatistics &sql_statistics);
+  int commit(table::ObTableLoadResultInfo &result_info);
   int get_status(table::ObTableLoadStatusType &status, int &error_code);
+private:
+  int commit_sql_statistics(const table::ObTableLoadSqlStatistics &sql_statistics);
 private:
   class MergeTaskProcessor;
   class MergeTaskCallback;

@@ -31,25 +31,19 @@ enum RuntimeFilterType
 class ObExprJoinFilter : public ObExprOperator
 {
 public:
-  #define FUNCTION_CNT 4
-  #define GET_FUNC(i, j) (((i) * (FUNCTION_CNT)) + (j))
-  enum FunctionIndex{
-    HASH_ROW = 0,
-    HASH_BATCH = 1,
-    NULL_FIRST_COMPARE = 2,
-    NULL_LAST_COMPARE = 3
-  };
   class ObExprJoinFilterContext : public ObExprOperatorCtx
   {
     public:
       ObExprJoinFilterContext() : ObExprOperatorCtx(),
-          rf_msg_(nullptr), rf_key_(), start_time_(0),
+          rf_msg_(nullptr), rf_key_(), hash_funcs_(), cmp_funcs_(), start_time_(0),
           filter_count_(0), total_count_(0), check_count_(0),
           n_times_(0), ready_ts_(0), next_check_start_pos_(0),
           window_cnt_(0), window_size_(0),
           partial_filter_count_(0), partial_total_count_(0),
-          cur_pos_(total_count_), flag_(0)
+          cur_pos_(total_count_), need_reset_sample_info_(false), flag_(0),
+          cur_row_()
         {
+          cur_row_.set_attr(ObMemAttr(MTL_ID(), "RfCurRow"));
           need_wait_rf_ = true;
           is_first_ = true;
         }
@@ -62,6 +56,8 @@ public:
     public:
       ObP2PDatahubMsgBase *rf_msg_;
       ObP2PDhKey rf_key_;
+      ObHashFuncs hash_funcs_;
+      ObCmpFuncs cmp_funcs_;
       int64_t start_time_;
       int64_t filter_count_;
       int64_t total_count_;
@@ -76,6 +72,7 @@ public:
       int64_t partial_filter_count_;
       int64_t partial_total_count_;
       int64_t &cur_pos_;
+      bool need_reset_sample_info_; // use for check_need_dynamic_diable_bf_batch
       union {
         uint64_t flag_;
         struct {
@@ -87,6 +84,7 @@ public:
           int32_t reserved_:28;
         };
       };
+      ObTMArray<ObDatum> cur_row_;
   };
   ObExprJoinFilter();
   explicit ObExprJoinFilter(common::ObIAllocator& alloc);
@@ -124,6 +122,9 @@ public:
   static void collect_sample_info(
     ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx,
     bool is_match);
+  static void collect_sample_info_batch(
+    ObExprJoinFilter::ObExprJoinFilterContext &join_filter_ctx,
+    int64_t filter_count, int64_t total_count);
 private:
   static int check_rf_ready(
     ObExecContext &exec_ctx,
@@ -131,6 +132,8 @@ private:
 
   static void check_need_dynamic_diable_bf(
       ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx);
+  static void check_need_dynamic_diable_bf_batch(
+      ObExprJoinFilter::ObExprJoinFilterContext &join_filter_ctx);
 private:
   static const int64_t CHECK_TIMES = 127;
 private:

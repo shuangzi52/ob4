@@ -159,7 +159,7 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
 
     SMART_VAR(ObSPIResultSet, spi_result) {
       OZ (spi_result.init(*session));
-      OZ (spi_result.start_nested_stmt_if_need(&pl_exec_ctx, static_cast<stmt::StmtType>(info->type_), false));
+      OZ (spi_result.start_nested_stmt_if_need(&pl_exec_ctx, info->route_sql_, static_cast<stmt::StmtType>(info->type_), false));
 
       if (OB_SUCC(ret)) {
         ObSPIOutParams out_params;
@@ -199,7 +199,7 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
               if (OB_ERR_TOO_MANY_ROWS != ret) {
                 int cli_ret = OB_SUCCESS;
                 retry_ctrl.test_and_save_retry_state(GCTX,
-                                                    *ctx.exec_ctx_.get_sql_ctx(),
+                                                    spi_result.get_sql_ctx(),
                                                     *spi_result.get_result_set(),
                                                     ret, cli_ret, true, true, true);
                 ret = cli_ret;
@@ -225,8 +225,8 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
   if (OB_FAIL(ret)) {
     LOG_WARN("get result obj failed", K(ret));
   } else {
-    if (info->result_type_.get_type() != result.get_type() ||
-       info->result_type_.get_collation_type() != result.get_collation_type()) {
+    if (!info->result_type_.is_ext()
+        && (info->result_type_.get_obj_meta() != result.get_meta())) {
       ObObj conv_res;
       OZ (sql::ObSPIService::spi_convert(*session,
                                          alloc,

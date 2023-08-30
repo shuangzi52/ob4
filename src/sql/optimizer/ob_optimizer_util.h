@@ -136,6 +136,10 @@ public:
                                const common::ObIArray<OrderItem> &ordering2,
                                const EqualSets &equal_sets);
 
+  static bool in_same_equalset(const ObRawExpr *from,
+                               const ObRawExpr *to,
+                               const EqualSets &equal_sets);
+
   static bool is_expr_equivalent(const ObRawExpr *from,
                                  const ObRawExpr *to,
                                  const EqualSets &equal_sets);
@@ -164,6 +168,7 @@ public:
   static int get_non_const_expr_size(const ObIArray<ObRawExpr *> &exprs,
                                      const EqualSets &equal_sets,
                                      const common::ObIArray<ObRawExpr *> &const_exprs,
+                                     const ObIArray<ObRawExpr *> &exec_ref_exprs,
                                      int64_t &number);
 
   static bool is_sub_expr(const ObRawExpr *sub_expr, const ObRawExpr *expr);
@@ -182,6 +187,11 @@ public:
                                  const common::ObIArray<ObRawExpr*> &exprs,
                                  const uint64_t expr_prefix_count,
                                  bool &is_subset);
+
+  static int intersect_exprs(const ObIArray<ObRawExpr *> &first,
+                             const ObIArray<ObRawExpr *> &right,
+                             const EqualSets &equal_sets,
+                             ObIArray<ObRawExpr *> &result);
 
   static int intersect_exprs(const ObIArray<ObRawExpr *> &first,
                              const ObIArray<ObRawExpr *> &right,
@@ -705,7 +715,8 @@ public:
                              const bool is_at_most_one_row,
                              bool &need_sort,
                              int64_t &prefix_pos,
-                             const int64_t part_cnt);
+                             const int64_t part_cnt,
+                             const bool check_part_only = false);
 
   static int check_need_sort(const ObIArray<OrderItem> &expected_order_items,
                              const ObIArray<OrderItem> &input_ordering,
@@ -738,7 +749,8 @@ public:
                              const bool is_at_most_one_row,
                              bool &need_sort,
                              int64_t &prefix_pos,
-                             const int64_t part_cnt);
+                             const int64_t part_cnt,
+                             const bool check_part_only = false);
 
   static int decide_sort_keys_for_merge_style_op(const ObDMLStmt *stmt,
                                                  const EqualSets &stmt_equal_sets,
@@ -876,6 +888,7 @@ public:
   static int get_subplan_const_column(const ObDMLStmt &parent_stmt,
                                       const uint64_t table_id,
                                       const ObSelectStmt &child_stmt,
+                                      const ObIArray<ObRawExpr*> &exec_ref_exprs,
                                       ObIArray<ObRawExpr *> &output_exprs);
 
   /*
@@ -1066,7 +1079,8 @@ public:
                                  ObSelectStmt &left_stmt,
                                  ObSelectStmt &right_stmt,
                                  ObSelectStmt *select_stmt,
-                                 const bool to_left_type = false);
+                                 const bool is_mysql_recursive_union = false,
+                                 ObIArray<ObString> *rcte_col_name = NULL);
 
   static int gen_set_target_list(ObIAllocator *allocator,
                                  ObSQLSessionInfo *session_info,
@@ -1074,7 +1088,8 @@ public:
                                  ObIArray<ObSelectStmt*> &left_stmts,
                                  ObIArray<ObSelectStmt*> &right_stmts,
                                  ObSelectStmt *select_stmt,
-                                 const bool to_left_type = false);
+                                 const bool is_mysql_recursive_union = false,
+                                 ObIArray<ObString> *rcte_col_name = NULL);
 
   static int gen_set_target_list(ObIAllocator *allocator,
                                  ObSQLSessionInfo *session_info,
@@ -1093,13 +1108,21 @@ public:
                                             ObIArray<ObSelectStmt*> &left_stmts,
                                             ObIArray<ObSelectStmt*> &right_stmts,
                                             ObIArray<ObExprResType> *res_types,
-                                            const bool to_left_type = false);
+                                            const bool is_mysql_recursive_union = false,
+                                            ObIArray<ObString> *rcte_col_name = NULL);
 
   static int add_cast_to_set_list(ObSQLSessionInfo *session_info,
                                   ObRawExprFactory *expr_factory,
                                   ObIArray<ObSelectStmt*> &stmts,
                                   const ObExprResType &res_type,
                                   const int64_t idx);
+
+  static int add_column_conv_to_set_list(ObSQLSessionInfo *session_info,
+                                         ObRawExprFactory *expr_factory,
+                                         ObIArray<ObSelectStmt*> &stmts,
+                                         const ObExprResType &res_type,
+                                         const int64_t idx,
+                                         ObIArray<ObString> *rcte_col_name);
 
   static int check_subquery_has_ref_assign_user_var(ObRawExpr *expr, bool &is_has);
 
@@ -1118,7 +1141,8 @@ public:
                                            ObIArray<ObRawExpr*> &pushdown_filters,
                                            ObIArray<ObRawExpr*> &candi_filters,
                                            ObIArray<ObRawExpr*> &remain_filters,
-                                           bool &can_pushdown);
+                                           bool &can_pushdown,
+                                           bool check_match_index = true);
 
   /**
     * @brief check_pushdown_filter
@@ -1133,7 +1157,11 @@ public:
                                    ObOptimizerContext &opt_ctx,
                                    ObIArray<ObRawExpr*> &pushdown_filters,
                                    ObIArray<ObRawExpr*> &candi_filters,
-                                   ObIArray<ObRawExpr*> &remain_filters);
+                                   ObIArray<ObRawExpr*> &remain_filters,
+                                   bool check_match_index = true);
+
+  static int remove_special_exprs(ObIArray<ObRawExpr*> &pushdown_filters,
+                                  ObIArray<ObRawExpr*> &remain_filters);
 
   static int check_pushdown_filter_overlap_index(const ObDMLStmt &stmt,
                                                  ObOptimizerContext &opt_ctx,
@@ -1163,7 +1191,8 @@ public:
                                                 ObIArray<ObRawExpr*> &common_exprs,
                                                 ObIArray<ObRawExpr*> &pushdown_filters,
                                                 ObIArray<ObRawExpr*> &candi_filters,
-                                                ObIArray<ObRawExpr*> &remain_filters);
+                                                ObIArray<ObRawExpr*> &remain_filters,
+                                                bool check_match_index = true);
 
   /**
     * @brief get_groupby_win_func_common_exprs
@@ -1288,13 +1317,15 @@ public:
                                          const ObIArray<ObLogicalOperator *> &child_ops,
                                          ObIAllocator &allocator,
                                          ObIArray<int64_t> &reselected_pos,
-                                         ObShardingInfo *&result_sharding);
+                                         ObShardingInfo *&result_sharding,
+                                         int64_t &inherit_sharding_index);
 
   static int compute_basic_sharding_info(const ObAddr &local_addr,
                                          const ObIArray<ObShardingInfo*> &input_shardings,
                                          ObIAllocator &allocator,
                                          ObIArray<int64_t> &reselected_pos,
-                                         ObShardingInfo *&result_sharding);
+                                         ObShardingInfo *&result_sharding,
+                                         int64_t &inherit_sharding_index);
 
   static int get_duplicate_table_replica(const ObCandiTableLoc &phy_table_loc,
                                          ObIArray<ObAddr> &valid_addrs);
@@ -1357,8 +1388,6 @@ public:
   static int check_exec_param_filter_exprs(const ObIArray<ObRawExpr *> &input_filters,
                                            bool &has_exec_param_filters);
 
-  static int adjust_join_path_dup_table_replica_pos(const Path *path,
-                                                    const int64_t cur_dup_table_pos);
 
   static int check_contain_batch_stmt_parameter(ObRawExpr* expr, bool &contain);
 
@@ -1436,13 +1465,36 @@ public:
 
   static int check_contain_my_exec_param(ObRawExpr* expr, const common::ObIArray<ObExecParamRawExpr*> & my_exec_params, bool &contain);
 
-  static int truncate_string_for_opt_stats(const ObObj *old_obj,
-                                           ObIAllocator &alloc,
-                                           ObObj *&new_obj);
-
   static int generate_pseudo_trans_info_expr(ObOptimizerContext &opt_ctx,
                                              const common::ObString &table_name,
                                              ObOpPseudoColumnRawExpr *&expr);
+
+  static int is_in_range_optimization_enabled(const ObGlobalHint &global_hint, ObSQLSessionInfo *session_info, bool &is_enabled);
+
+  static int pushdown_and_rename_filter_into_subquery(const ObDMLStmt &parent_stmt,
+                                                      const ObSelectStmt &subquery,
+                                                      int64_t table_id,
+                                                      ObOptimizerContext &opt_ctx,
+                                                      ObIArray<ObRawExpr *> &input_filters,
+                                                      ObIArray<ObRawExpr *> &push_filters,
+                                                      ObIArray<ObRawExpr *> &remain_filters,
+                                                      bool check_match_index = true);
+  static int split_or_filter_into_subquery(const ObDMLStmt &parent_stmt,
+                                           const ObSelectStmt &subquery,
+                                           int64_t table_id,
+                                           ObOptimizerContext &opt_ctx,
+                                           ObRawExpr *filter,
+                                           ObRawExpr *&push_filter,
+                                           bool &can_pushdown_all,
+                                           bool check_match_index = true);
+  static int split_or_filter_into_subquery(ObIArray<const ObDMLStmt *> &parent_stmts,
+                                           ObIArray<const ObSelectStmt *> &subqueries,
+                                           ObIArray<int64_t> &table_ids,
+                                           ObIArray<ObIArray<ObRawExpr *>*> &or_filter_params,
+                                           ObOptimizerContext &opt_ctx,
+                                           ObRawExpr *&push_filter,
+                                           bool &can_pushdown_all,
+                                           bool check_match_index = true);
 
 private:
   //disallow construct

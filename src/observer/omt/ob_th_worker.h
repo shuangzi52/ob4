@@ -35,7 +35,7 @@ class ObResourceGroup;
 
 static const int64_t WORKER_CHECK_PERIOD = 500L;
 static const int64_t REQUEST_WAIT_TIME = 10 * 1000L;
-static const int64_t NESTING_REQUEST_WAIT_TIME = 1 * 1000 * 1000L;
+static const int64_t NESTING_REQUEST_WAIT_TIME = 10 * 1000L;
 
 // Quick Queue Priorities
 enum { QQ_HIGH = 0, QQ_NORMAL, QQ_LOW, QQ_MAX_PRIO };
@@ -45,6 +45,7 @@ enum { RQ_HIGH = QQ_MAX_PRIO, RQ_NORMAL, RQ_LOW, RQ_MAX_PRIO };
 class ObThWorker
     : public lib::Worker, public lib::Threads
 {
+  friend class ObTenant;
 public:
   explicit ObThWorker();
   virtual ~ObThWorker();
@@ -56,6 +57,10 @@ public:
   virtual bool can_retry() const override { return can_retry_; }
   // Note: you CAN NOT call set_need_retry when can_retry_ == false
   virtual void set_need_retry() override { need_retry_ = true; }
+  // THIS is _only_ used (for easy impl) in query_retry_ctrl decide to retry
+  // but following process want to invalid the decision.
+  // refer `ObQueryRetryCtrl::on_close_resulet_fail_`
+  virtual void unset_need_retry() override { need_retry_ = false; }
   virtual bool need_retry() const override { return need_retry_; }
   virtual void resume() override;
 
@@ -72,7 +77,7 @@ public:
   OB_INLINE void set_group(ObResourceGroup *group) { group_ = group; }
 
   void worker(int64_t &tenant_id, int64_t &req_recv_timestamp, int32_t &worker_level);
-  void run(int64_t idx);
+  void run(int64_t idx) override;
 
   OB_INLINE void pause() { pause_flag_ = true; }
 
@@ -85,8 +90,7 @@ public:
 
   OB_INLINE bool is_group_worker() const { return OB_NOT_NULL(group_); }
   OB_INLINE bool is_level_worker() const { return get_worker_level() > 0; }
-  OB_INLINE uint8_t priority_limit() const { return priority_limit_; }
-  OB_INLINE void set_priority_limit(bool v=true) { priority_limit_ = v; }
+  OB_INLINE void set_priority_limit(uint8_t limit) { priority_limit_ = limit; }
   OB_INLINE bool is_high_priority() const { return priority_limit_ == QQ_HIGH; }
   OB_INLINE bool is_normal_priority() const { return priority_limit_ == QQ_NORMAL; }
   OB_INLINE bool is_default_worker() const { return !is_group_worker() &&
@@ -101,13 +105,12 @@ public:
   OB_INLINE void set_lq_yield(bool v=true) { is_lq_yield_ = v; }
   OB_INLINE int64_t get_last_wakeup_ts() { return last_wakeup_ts_; }
   OB_INLINE void set_last_wakeup_ts(int64_t last_wakeup_ts) { last_wakeup_ts_ = last_wakeup_ts; }
+  OB_INLINE int64_t blocking_ts() const { return OB_NOT_NULL(blocking_ts_) ? (*blocking_ts_) : 0; }
 
 private:
-  void set_th_worker_thread_name(uint64_t tenant_id);
+  void set_th_worker_thread_name();
+  void update_ru_cputime();
   void process_request(rpc::ObRequest &req);
-
-  void th_created();
-  void th_destroy();
 
 private:
   ObWorkerProcessor procor_;
@@ -135,7 +138,8 @@ private:
   bool has_add_to_cgroup_;
 
   int64_t last_wakeup_ts_;
-
+  int64_t* blocking_ts_;
+  int64_t idle_us_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObThWorker);
 }; // end of class ObThWorker
@@ -165,7 +169,7 @@ level: set worker's level, in ObResourceGroup level = INT32_MAX, in ObTenant lev
 group: set worker's group, in ObResourceGroup level = this, in ObTenant level = nullptr,
 */
 int create_worker(ObThWorker* &worker, ObTenant *tenant, int32_t group_id,
-                  int32_t level = INT32_MAX, ObResourceGroup *group = nullptr);
+                  int32_t level = INT32_MAX, bool force = false, ObResourceGroup *group = nullptr);
                     // defalut level=INT32_MAX, group=nullptr
 int destroy_worker(ObThWorker *worker);
 

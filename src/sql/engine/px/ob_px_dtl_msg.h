@@ -32,6 +32,8 @@ namespace oceanbase
 namespace sql
 {
 
+typedef obrpc::ObRpcResultCode ObPxUserErrorMsg;
+
 struct ObPxTabletInfo
 {
   OB_UNIS_VERSION(1);
@@ -208,6 +210,11 @@ typedef common::ObArray<ObPxPartChMapItem,
                         false, /*auto free*/
                         common::ObArrayDefaultCallBack<ObPxPartChMapItem>,
                         common::DefaultItemEncode<ObPxPartChMapItem> > ObPxPartChMapArray;
+typedef sql::ObTMArray<ObPxPartChMapItem,
+                       common::ModulePageAllocator,
+                       false, /*auto free*/
+                       common::ObArrayDefaultCallBack<ObPxPartChMapItem>,
+                       common::DefaultItemEncode<ObPxPartChMapItem> > ObPxPartChMapTMArray;
 typedef common::hash::ObHashMap<int64_t, int64_t, common::hash::NoPthreadDefendMode> ObPxPartChMap;
 
 
@@ -215,7 +222,7 @@ struct ObPxPartChInfo
 {
   ObPxPartChInfo() : part_ch_array_() {}
   ~ObPxPartChInfo() = default;
-  ObPxPartChMapArray part_ch_array_;
+  ObPxPartChMapTMArray part_ch_array_;
 };
 
 class ObPxReceiveDataChannelMsg
@@ -351,7 +358,8 @@ public:
       : dfo_id_(common::OB_INVALID_ID),
         sqc_id_(common::OB_INVALID_ID),
         rc_(common::OB_SUCCESS),
-        task_count_(0) {}
+        task_count_(0),
+        err_msg_() {}
   virtual ~ObPxInitSqcResultMsg() = default;
   void reset() {}
   TO_STRING_KV(K_(dfo_id), K_(sqc_id), K_(rc), K_(task_count));
@@ -360,6 +368,7 @@ public:
   int64_t sqc_id_;
   int rc_; // 错误码
   int64_t task_count_;
+  ObPxUserErrorMsg err_msg_; // for error msg & warning msg
   // No need to serialize
   ObSEArray<ObPxTabletInfo, 8> tablets_info_;
 };
@@ -375,30 +384,35 @@ public:
       : dfo_id_(common::OB_INVALID_ID),
         sqc_id_(common::OB_INVALID_ID),
         rc_(common::OB_SUCCESS),
+        das_retry_rc_(common::OB_SUCCESS),
         task_monitor_info_array_(),
         sqc_affected_rows_(0),
         dml_row_info_(),
         temp_table_id_(common::OB_INVALID_ID),
         interm_result_ids_(),
-        fb_info_() {}
+        fb_info_(),
+        err_msg_() {}
   virtual ~ObPxFinishSqcResultMsg() = default;
   const transaction::ObTxExecResult &get_trans_result() const { return trans_result_; }
   transaction::ObTxExecResult &get_trans_result() { return trans_result_; }
   void reset()
   {
-    dfo_id_ = OB_INVALID_ID;
-    sqc_id_ = OB_INVALID_ID;
-    rc_ = OB_SUCCESS;
+    dfo_id_ = common::OB_INVALID_ID;
+    sqc_id_ = common::OB_INVALID_ID;
+    rc_ = common::OB_SUCCESS;
+    das_retry_rc_ = common::OB_SUCCESS;
     trans_result_.reset();
     task_monitor_info_array_.reset();
     dml_row_info_.reset();
     fb_info_.reset();
+    err_msg_.reset();
   }
-  TO_STRING_KV(K_(dfo_id), K_(sqc_id), K_(rc), K_(sqc_affected_rows));
+  TO_STRING_KV(K_(dfo_id), K_(sqc_id), K_(rc), K_(das_retry_rc), K_(sqc_affected_rows));
 public:
   int64_t dfo_id_;
   int64_t sqc_id_;
   int rc_; // 错误码
+  int das_retry_rc_; //record the error code that cause DAS to retry
   transaction::ObTxExecResult trans_result_;
   ObPxTaskMonitorInfoArray task_monitor_info_array_; // deprecated, keep for compatiblity
   int64_t sqc_affected_rows_; // pdml情况下，一个sqc 影响的行数
@@ -406,6 +420,7 @@ public:
   uint64_t temp_table_id_;
   ObSEArray<uint64_t, 8> interm_result_ids_;
   ObExecFeedbackInfo fb_info_;
+  ObPxUserErrorMsg err_msg_; // for error msg & warning msg
 };
 
 class ObPxFinishTaskResultMsg
@@ -520,7 +535,9 @@ public:
   ~ObPxTabletRange() = default;
   void reset();
   bool is_valid() const;
-  int deep_copy_from(const ObPxTabletRange &other, common::ObIAllocator &allocator);
+  template <bool use_allocator>
+  int deep_copy_from(const ObPxTabletRange &other, common::ObIAllocator &allocator,
+                     char *buf, int64_t size, int64_t &pos);
   int assign(const ObPxTabletRange &other);
   int64_t get_range_col_cnt() const { return range_cut_.empty() ? 0 :
       range_cut_.at(0).count(); }
@@ -528,7 +545,7 @@ public:
 public:
   static const int64_t DEFAULT_RANGE_COUNT = 8;
   typedef common::ObSEArray<common::ObRowkey, DEFAULT_RANGE_COUNT> EndKeys;
-  typedef ObSEArray<ObDatum, 2> DatumKey;
+  typedef Ob2DArray<ObDatum> DatumKey;
   typedef ObSEArray<int64_t, 2> RangeWeight;
   typedef ObSEArray<DatumKey, DEFAULT_RANGE_COUNT> RangeCut; // not include MAX at last nor MIN at first
   typedef ObSEArray<RangeWeight, DEFAULT_RANGE_COUNT> RangeWeights;
@@ -537,6 +554,41 @@ public:
   int64_t range_weights_;
   RangeCut range_cut_;
 };
+
+template <bool use_allocator>
+int ObPxTabletRange::deep_copy_from(const ObPxTabletRange &other, common::ObIAllocator &allocator,
+                                    char *buf, int64_t size, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  reset();
+  tablet_id_ = other.tablet_id_;
+  range_weights_ = other.range_weights_;
+  if (OB_FAIL(range_cut_.reserve(other.range_cut_.count()))) {
+    SQL_LOG(WARN, "reserve end keys failed", K(ret), K(other.range_cut_.count()));
+  }
+  DatumKey copied_key;
+  RangeWeight range_weight;
+  ObDatum tmp_datum;
+  for (int64_t i = 0; OB_SUCC(ret) && i < other.range_cut_.count(); ++i) {
+    const DatumKey &cur_key = other.range_cut_.at(i);
+    copied_key.reuse();
+    range_weight.reuse();
+    for (int64_t j = 0; OB_SUCC(ret) && j < cur_key.count(); ++j) {
+      if (use_allocator && OB_FAIL(tmp_datum.deep_copy(cur_key.at(j), allocator))) {
+        SQL_LOG(WARN, "deep copy datum failed", K(ret), K(i), K(j), K(cur_key.at(j)));
+      } else if (!use_allocator && OB_FAIL(tmp_datum.deep_copy(cur_key.at(j), buf, size, pos))) {
+        SQL_LOG(WARN, "deep copy datum failed", K(ret), K(i), K(j), K(cur_key.at(j)), K(size), K(pos));
+      } else if (OB_FAIL(copied_key.push_back(tmp_datum))) {
+        SQL_LOG(WARN, "push back datum failed", K(ret), K(i), K(j), K(tmp_datum));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(range_cut_.push_back(copied_key))) {
+      SQL_LOG(WARN, "push back rowkey failed", K(ret), K(copied_key), K(i));
+    }
+  }
+  return ret;
+}
 
 }
 }

@@ -152,8 +152,8 @@ int ObCreateStandbyFromNetActor::finish_restore_if_possible_()
   arg.exec_tenant_id_ = OB_SYS_TENANT_ID;
   arg.tenant_id_ = tenant_id_;
   obrpc::ObCommonRpcProxy *rs_rpc_proxy = GCTX.rs_rpc_proxy_;
-  ObAllTenantInfo tenant_info;
   SCN min_user_ls_create_scn = SCN::base_scn();
+  SCN readable_scn = SCN::base_scn();
 
   if (OB_ISNULL(rs_rpc_proxy)) {
     ret = OB_ERR_UNEXPECTED;
@@ -168,6 +168,8 @@ int ObCreateStandbyFromNetActor::finish_restore_if_possible_()
     WSTAT("tenant info loader should not be NULL", KR(ret), KP(tenant_info_loader));
   } else {
     ISTAT("start to wait whether can finish restore", K_(tenant_id), K(min_user_ls_create_scn));
+    DEBUG_SYNC(BLOCK_CREATE_STANDBY_TENANT_END);
+
     int64_t retry_cnt_after_sync_user_ls = 0;
     // wait 1 minute, sleep 1s and retry 60 times
     for (int64_t retry_cnt = 60; OB_SUCC(ret) && retry_cnt > 0 && !has_set_stop(); --retry_cnt) {
@@ -177,11 +179,11 @@ int ObCreateStandbyFromNetActor::finish_restore_if_possible_()
       } else if (is_dropped) {
         ret = OB_TENANT_HAS_BEEN_DROPPED;
         LOG_WARN("tenant has been dropped", KR(ret), K_(tenant_id));
-      } else if (OB_FAIL(tenant_info_loader->get_tenant_info(tenant_info))) {
-        WSTAT("failed to get tenant info", KR(ret));
-      } else if (tenant_info.get_standby_scn() >= min_user_ls_create_scn) {
+      } else if (OB_FAIL(tenant_info_loader->get_readable_scn(readable_scn))) {
+        WSTAT("failed to get readable_scn", KR(ret));
+      } else if (readable_scn >= min_user_ls_create_scn) {
         retry_cnt_after_sync_user_ls++;
-        ISTAT("tenant readable scn can read inner table", K(tenant_info), K(min_user_ls_create_scn),
+        ISTAT("tenant readable scn can read inner table", K(readable_scn), K(min_user_ls_create_scn),
                                                           K(retry_cnt_after_sync_user_ls));
 
         bool is_refreshed = false;
@@ -207,7 +209,7 @@ int ObCreateStandbyFromNetActor::finish_restore_if_possible_()
     }
   }
 
-  ISTAT("finish_restore_if_possible", K(ret), K_(tenant_id), K(min_user_ls_create_scn), K(arg), K(tenant_info));
+  ISTAT("finish_restore_if_possible", K(ret), K_(tenant_id), K(min_user_ls_create_scn), K(arg), K(readable_scn));
 
   return ret;
 }

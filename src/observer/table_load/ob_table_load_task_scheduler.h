@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -9,6 +17,7 @@
 #include "lib/profile/ob_trace_id.h"
 #include "lib/queue/ob_lighty_queue.h"
 #include "share/ob_thread_pool.h"
+#include "lib/allocator/page_arena.h"
 
 namespace oceanbase
 {
@@ -42,7 +51,7 @@ class ObTableLoadTaskThreadPoolScheduler final : public ObITableLoadTaskSchedule
   static const int STATE_STOPPED = 4;
   static const int STATE_STOPPED_NO_WAIT = 5;
 public:
-  ObTableLoadTaskThreadPoolScheduler(int64_t thread_count, common::ObIAllocator &allocator,
+  ObTableLoadTaskThreadPoolScheduler(int64_t thread_count, uint64_t table_id, const char *label,
                                      int64_t session_queue_size = 64);
   virtual ~ObTableLoadTaskThreadPoolScheduler();
   int init() override;
@@ -85,9 +94,10 @@ private:
   };
   int execute_worker_tasks(WorkerContext &worker_ctx);
 private:
-  common::ObIAllocator &allocator_;
+  common::ObArenaAllocator allocator_;
   const int64_t thread_count_;
   const int64_t session_queue_size_;
+  char name_[OB_THREAD_NAME_BUF_LEN];
   common::ObCurTraceId::TraceId trace_id_;
   int64_t timeout_ts_;
   MyThreadPool thread_pool_;

@@ -17,6 +17,7 @@
 #include "lib/ob_define.h"
 #include "lib/rc/context.h"
 #include "lib/runtime.h"
+#include "common/errsim_module/ob_errsim_module_type.h"
 
 namespace oceanbase
 {
@@ -42,6 +43,7 @@ public:
   virtual bool can_retry() const { return false; }
   // Set retry flag so that scheduler will reprocess this request then
   virtual void set_need_retry() {}
+  virtual void unset_need_retry() {}
   // It's used to check whether query need retry. Whenever worker has
   // observed this query need retry, it should stop processing this
   // query immediately.
@@ -113,6 +115,11 @@ public:
   static CompatMode get_compatibility_mode();
   static Worker& self();
   static void set_worker_to_thread_local(Worker *worker);
+
+#ifdef ERRSIM
+  static void set_module_type(const ObErrsimModuleType &module_type);
+  static ObErrsimModuleType get_module_type();
+#endif
 
 public:
   static __thread Worker *self_;
@@ -212,6 +219,29 @@ private:
   Worker::CompatMode last_compat_mode_;
 };
 
+#ifdef ERRSIM
+//set current errsim module in code snippet and set last errsim module when guard destructor
+class ErrsimModuleGuard final
+{
+public:
+  ErrsimModuleGuard(ObErrsimModuleType::TYPE type)
+  {
+    last_type_ = THIS_WORKER.get_module_type().type_;
+    ObErrsimModuleType curr_type(type);
+    THIS_WORKER.set_module_type(curr_type);
+  }
+
+  ~ErrsimModuleGuard()
+  {
+    ObErrsimModuleType curr_type(last_type_);
+    THIS_WORKER.set_module_type(curr_type);
+  }
+
+private:
+  ObErrsimModuleType::TYPE last_type_;
+};
+#endif
+
 // used to check compatibility mode.
 class ObRuntimeContext
 {
@@ -221,6 +251,9 @@ public:
       : compat_mode_(Worker::CompatMode::MYSQL)
   {}
   Worker::CompatMode compat_mode_;
+#ifdef ERRSIM
+  ObErrsimModuleType module_type_;
+#endif
 };
 
 inline ObRuntimeContext &get_ob_runtime_context()
@@ -257,6 +290,19 @@ OB_INLINE Worker::CompatMode Worker::get_compatibility_mode()
 {
   return get_compat_mode();
 }
+
+#ifdef ERRSIM
+OB_INLINE void Worker::set_module_type(const ObErrsimModuleType &module_type)
+{
+  get_ob_runtime_context().module_type_ = module_type;
+}
+
+OB_INLINE ObErrsimModuleType Worker::get_module_type()
+{
+  return get_ob_runtime_context().module_type_;
+}
+#endif
+
 
 } // end of namespace lib
 } // end of namespace oceanbase

@@ -61,8 +61,7 @@ private:
   bool contains_internal(void* ptr) const;
 
 public:
-  static const int64_t MAX_MEMORY_ALLOCATION = OB_MAX_SYS_BKGD_THREAD_NUM * 6
-      * OB_DEFAULT_MACRO_BLOCK_SIZE;
+  static const int64_t MAX_MEMORY_ALLOCATION = OB_MAX_SYS_BKGD_THREAD_NUM * 2 * OB_DEFAULT_MACRO_BLOCK_SIZE; //256MB
 
 private:
   // TODO(zhuixin.gsy) reduce 128*2M size to 64*2M, which is expanded temporarily for generating index blocks
@@ -127,7 +126,7 @@ ObFixedSizeBlockAllocator<SIZE>::ObFixedSizeBlockAllocator() :
     lock_(common::ObLatchIds::FIXED_SIZE_ALLOCATOR_LOCK),
     total_block_num_(0),
     max_block_num_(0),
-    allocator_(SET_USE_500(ObMemAttr(OB_SERVER_TENANT_ID, ObModIds::OB_FIXED_SIZE_BLOCK_ALLOCATOR))),
+    allocator_(SET_USE_UNEXPECTED_500(ObMemAttr(OB_SERVER_TENANT_ID, ObModIds::OB_FIXED_SIZE_BLOCK_ALLOCATOR))),
     free_blocks_(),
     block_buf_list_(allocator_)
 {
@@ -147,7 +146,7 @@ int ObFixedSizeBlockAllocator<SIZE>::init(const int64_t block_num, const lib::Ob
     COMMON_LOG(WARN, "init max block number fail", K(ret));
   } else {
     ObMemAttr attr(OB_SERVER_TENANT_ID, label);
-    SET_USE_500(attr);
+    SET_USE_UNEXPECTED_500(attr);
     ObSpinLockGuard guard(lock_);
     if (IS_NOT_INIT) {
       if (OB_FAIL(free_blocks_.init(max_block_num_, global_default_allocator, attr))) {

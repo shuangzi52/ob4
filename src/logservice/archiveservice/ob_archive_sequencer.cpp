@@ -90,7 +90,7 @@ void ObArchiveSequencer::destroy()
 int ObArchiveSequencer::start()
 {
   int ret = OB_SUCCESS;
-  ObThreadPool::set_run_wrapper(MTL_CTX(), lib::ThreadCGroup::BACK_CGROUP);
+  ObThreadPool::set_run_wrapper(MTL_CTX());
   if (OB_UNLIKELY(! inited_)) {
     ARCHIVE_LOG(ERROR, "ObArchiveSequencer not init");
     ret = OB_NOT_INIT;
@@ -171,7 +171,7 @@ int ObArchiveSequencer::produce_log_fetch_task_()
       ARCHIVE_LOG(INFO, "archive round not in doing status, just skip", K(key), K(state));
     }
   } else {
-    GenFetchTaskFunctor functor(tenant_id_, key, unused_id, log_service_, archive_fetcher_);
+    GenFetchTaskFunctor functor(tenant_id_, key, unused_id, log_service_, archive_fetcher_, ls_mgr_);
     if (OB_FAIL(ls_mgr_->foreach_ls(functor))) {
       ARCHIVE_LOG(WARN, "foreach ls failed", K(ret), K(key));
     }
@@ -195,6 +195,7 @@ bool GenFetchTaskFunctor::operator()(const ObLSID &id, ObLSArchiveTask *ls_archi
   LogFileTuple archive_tuple;
   int64_t unused_file_id = 0;
   int64_t unused_file_offset = 0;
+  int64_t unused_timestamp = common::OB_INVALID_TIMESTAMP;
   if (OB_ISNULL(ls_archive_task)) {
     ret = OB_ERR_UNEXPECTED;
     ARCHIVE_LOG(ERROR, "ls_archive_task is NULL", K(ret), K(id), K(ls_archive_task));
@@ -210,12 +211,12 @@ bool GenFetchTaskFunctor::operator()(const ObLSID &id, ObLSArchiveTask *ls_archi
     ARCHIVE_LOG(TRACE, "cache sequenced log size reach limit, just wait", K(id), K(seq_lsn), K(archive_tuple));
   } else if (OB_FAIL(get_commit_index_(id, commit_lsn))) {
     ARCHIVE_LOG(WARN, "get commit index failed", K(ret), K(id));
-  } else if (OB_FAIL(ls_archive_task->get_fetcher_progress(station, fetch_lsn, fetch_scn))) {
+  } else if (OB_FAIL(ls_archive_task->get_fetcher_progress(station, fetch_lsn, fetch_scn, unused_timestamp))) {
     ARCHIVE_LOG(WARN, "get fetch progress failed", K(ret), K(ls_archive_task));
   } else {
     LSN lsn = seq_lsn;
     LSN end_lsn;
-    while (lsn <= commit_lsn) {
+    while (lsn <= commit_lsn && OB_SUCC(ret)) {
       ObArchiveLogFetchTask *task = NULL;
       cal_end_lsn_(lsn, fetch_lsn, commit_lsn, end_lsn);
       if (end_lsn <= lsn) {
@@ -284,12 +285,18 @@ int GenFetchTaskFunctor::generate_log_fetch_task_(const ObLSID &id,
 {
   int ret = OB_SUCCESS;
   ObArchiveLogFetchTask *tmp_task = NULL;
+  palf::PalfHandleGuard palf_handle;
+  share::SCN scn;
   task = NULL;
 
   if (OB_ISNULL(tmp_task = archive_fetcher_->alloc_log_fetch_task())) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     ARCHIVE_LOG(WARN, "alloc log fetch task failed", K(ret), K(id));
-  } else if (OB_FAIL(tmp_task->init(tenant_id_, id, station, start_lsn, end_lsn))) {
+  } else if (OB_FAIL(log_service_->open_palf(id, palf_handle))) {
+    ARCHIVE_LOG(WARN, "open_palf failed", K(id));
+  } else if (OB_FAIL(palf_handle.locate_by_lsn_coarsely(start_lsn, scn))) {
+    ARCHIVE_LOG(WARN, "locate by lsn failed", K(id), K(start_lsn));
+  } else if (OB_FAIL(tmp_task->init(tenant_id_, id, station, scn, start_lsn, end_lsn))) {
     ARCHIVE_LOG(WARN, "log fetch task init failed", K(ret), K(id), K(station));
   } else {
     task = tmp_task;
@@ -301,6 +308,16 @@ int GenFetchTaskFunctor::generate_log_fetch_task_(const ObLSID &id,
     archive_fetcher_->free_log_fetch_task(tmp_task);
   }
 
+  if (OB_ERR_OUT_OF_LOWER_BOUND == ret) {
+    int tmp_ret = OB_CLOG_RECYCLE_BEFORE_ARCHIVE;
+    ObArchiveInterruptReason reason;
+    reason.set(ObArchiveInterruptReason::Factor::LOG_RECYCLE, lbt(), tmp_ret);
+    LOG_DBA_ERROR(OB_CLOG_RECYCLE_BEFORE_ARCHIVE, "msg", "observer clog is recycled "
+        "before archive, check if archive speed is less than clog writing speed "
+        "or archive device is full or archive device is not healthy",
+        "ret", tmp_ret);
+    ls_mgr_->mark_fatal_error(id, station.get_round(), reason);
+  }
   return ret;
 }
 

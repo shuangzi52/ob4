@@ -23,6 +23,9 @@
 #include "sql/plan_cache/ob_dist_plans.h"
 #include "share/schema/ob_schema_struct.h"
 #include "lib/hash/ob_hashset.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_evolution_plan.h"
+#endif
 
 namespace test
 {
@@ -115,10 +118,14 @@ public:
         all_plan_const_param_constraints_(alloc_),
         all_pre_calc_constraints_(),
         all_priv_constraints_(),
+        need_match_all_params_(false),
         multi_stmt_rowkey_pos_(alloc_),
         pre_cal_expr_handler_(NULL),
+        can_skip_params_match_(false),
+        can_delay_init_datum_store_(false),
         res_map_rule_id_(common::OB_INVALID_ID),
-        res_map_rule_param_idx_(common::OB_INVALID_INDEX)
+        res_map_rule_param_idx_(common::OB_INVALID_INDEX),
+        is_cli_return_rowid_(false)
   {}
   virtual ~ObPlanSet();
 
@@ -133,6 +140,8 @@ public:
                         int64_t outline_param_idx,
                         const ObPlanCacheCtx &pc_ctx,
                         bool &is_same);
+  bool can_skip_params_match();
+  bool can_delay_init_datum_store();
   int match_param_info(const ObParamInfo &param_info,
                        const ObObjParam &param,
                        bool &is_same,
@@ -172,6 +181,10 @@ public:
                /*bool &same_bool_param);*/
   inline bool is_multi_stmt_plan() const { return !multi_stmt_rowkey_pos_.empty(); }
   int remove_cache_obj_entry(const ObCacheObjID obj_id);
+
+  bool get_can_skip_params_match() { return can_skip_params_match_; }
+  bool get_can_delay_init_datum_store() { return can_delay_init_datum_store_; }
+
 private:
   bool is_match_outline_param(int64_t param_idx)
   {
@@ -233,15 +246,20 @@ protected:
   EqualParamConstraint all_equal_param_constraints_;
   PreCalcExprConstraint all_pre_calc_constraints_;
   PrivConstraint all_priv_constraints_;
+  //if true, check the datatypes of all params
+  bool need_match_all_params_;
   // maintain the rowkey position for multi_stmt
   common::ObFixedArray<int64_t, common::ObIAllocator> multi_stmt_rowkey_pos_;
   // pre calculable expression list handler.
   PreCalcExprHandler* pre_cal_expr_handler_;
+  bool can_skip_params_match_;
+  bool can_delay_init_datum_store_;
 
 public:
   //variables for resource map rule
   uint64_t res_map_rule_id_;
   int64_t res_map_rule_param_idx_;
+  bool is_cli_return_rowid_;
 };
 
 class ObSqlPlanSet : public ObPlanSet
@@ -250,7 +268,7 @@ public:
   ObSqlPlanSet()
     : ObPlanSet(PST_SQL_CRSR),
       is_all_non_partition_(true),
-      table_locations_(), // use default behavior for memory release
+      table_locations_(alloc_),
       array_binding_plan_(),
       local_plan_(NULL),
       remote_plan_(NULL),
@@ -260,9 +278,13 @@ public:
       has_duplicate_table_(false),
       //has_array_binding_(false),
       is_contain_virtual_table_(false),
+#ifdef OB_BUILD_SPM
+      enable_inner_part_parallel_exec_(false),
+      is_spm_closed_(false)
+#else
       enable_inner_part_parallel_exec_(false)
+#endif
       {
-        table_locations_.set_attr(ObMemAttr(OB_SERVER_TENANT_ID, "TableLocations"));
       }
 
   virtual ~ObSqlPlanSet() {}
@@ -292,6 +314,10 @@ public:
   inline bool has_duplicate_table() const { return has_duplicate_table_; }
   //inline bool has_array_binding() const { return has_array_binding_; }
   inline bool enable_inner_part_parallel() const { return enable_inner_part_parallel_exec_; }
+#ifdef OB_BUILD_SPM
+  int add_evolution_plan_for_spm(ObPhysicalPlan *plan, ObPlanCacheCtx &ctx);
+  int get_evolving_evolution_task(EvolutionPlanList &evo_task_list);
+#endif
 private:
   enum
   {
@@ -321,6 +347,17 @@ private:
 
   int get_plan_special(ObPlanCacheCtx &pc_ctx,
                        ObPhysicalPlan *&plan);
+#ifdef OB_BUILD_SPM
+  int try_get_local_evolution_plan(ObPlanCacheCtx &pc_ctx,
+                                   ObPhysicalPlan *&plan,
+                                   bool &get_next);
+  int try_get_dist_evolution_plan(ObPlanCacheCtx &pc_ctx,
+                                  ObPhysicalPlan *&plan,
+                                  bool &get_next);
+  int try_get_evolution_plan(ObPlanCacheCtx &pc_ctx,
+                             ObPhysicalPlan *&plan,
+                             bool &get_next);
+#endif
   int try_get_local_plan(ObPlanCacheCtx &pc_ctx,
                          ObPhysicalPlan *&plan,
                          bool &get_next);
@@ -357,10 +394,14 @@ private:
   bool is_local_plan_opt_allowed(int last_retry_err);
 private:
   bool is_all_non_partition_; //判断该plan对应的表是否均为非分区表
-  common::ObSEArray<ObTableLocation, 1> table_locations_;
+  TableLocationFixedArray table_locations_;
   //used for array binding, only local plan
   ObPhysicalPlan *array_binding_plan_;
   ObPhysicalPlan *local_plan_;
+#ifdef OB_BUILD_SPM
+  ObEvolutionPlan local_evolution_plan_;
+  ObEvolutionPlan dist_evolution_plan_;
+#endif
   ObPhysicalPlan *remote_plan_;
   // for directly get plan
   ObPhysicalPlan *direct_local_plan_;
@@ -377,6 +418,9 @@ private:
   bool is_contain_virtual_table_;
   // px并行度是否大于1
   bool enable_inner_part_parallel_exec_;
+#ifdef OB_BUILD_SPM
+  bool is_spm_closed_;
+#endif
 };
 
 inline ObPlanSetType ObPlanSet::get_plan_set_type_by_cache_obj_type(ObLibCacheNameSpace ns)

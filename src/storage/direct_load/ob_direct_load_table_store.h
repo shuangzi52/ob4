@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #pragma once
 
 #include "share/table/ob_table_load_array.h"
@@ -28,13 +35,15 @@ public:
   ~ObDirectLoadTableStoreParam();
   bool is_valid() const;
   TO_STRING_KV(K_(snapshot_version), K_(table_data_desc), KP_(datum_utils), KP_(col_descs),
-               KP_(file_mgr), K_(is_multiple_mode), K_(is_fast_heap_table), KP_(insert_table_ctx),
-               KP_(fast_heap_table_ctx), KP_(dml_row_handler), KP_(extra_buf), K_(extra_buf_size));
+               KP_(cmp_funcs), KP_(file_mgr), K_(is_multiple_mode), K_(is_fast_heap_table),
+               KP_(insert_table_ctx), KP_(fast_heap_table_ctx), KP_(dml_row_handler),
+               KP_(extra_buf), K_(extra_buf_size));
 public:
   int64_t snapshot_version_;
   ObDirectLoadTableDataDesc table_data_desc_;
   const blocksstable::ObStorageDatumUtils *datum_utils_;
   const common::ObIArray<share::schema::ObColDesc> *col_descs_;
+  const blocksstable::ObStoreCmpFuncs *cmp_funcs_;
   ObDirectLoadTmpFileManager *file_mgr_;
   bool is_multiple_mode_;
   bool is_fast_heap_table_;
@@ -52,7 +61,7 @@ public:
   ObDirectLoadTableStoreBucket();
   ~ObDirectLoadTableStoreBucket();
   int init(const ObDirectLoadTableStoreParam &param, const common::ObTabletID &tablet_id);
-  int append_row(const common::ObTabletID &tablet_id, const blocksstable::ObDatumRow &datum_row);
+  int append_row(const common::ObTabletID &tablet_id, const table::ObTableLoadSequenceNo &seq_no, const blocksstable::ObDatumRow &datum_row);
   int close();
   int get_tables(common::ObIArray<ObIDirectLoadPartitionTable *> &table_array,
                  common::ObIAllocator &allocator);
@@ -72,7 +81,7 @@ public:
   ObDirectLoadTableStore() : allocator_("TLD_TSBucket"), is_inited_(false) {}
   ~ObDirectLoadTableStore();
   int init(const ObDirectLoadTableStoreParam &param);
-  int append_row(const common::ObTabletID &tablet_id, const blocksstable::ObDatumRow &datum_row);
+  int append_row(const common::ObTabletID &tablet_id, const table::ObTableLoadSequenceNo &seq_no, const blocksstable::ObDatumRow &datum_row);
   int close();
   void clean_up();
   int get_tables(common::ObIArray<ObIDirectLoadPartitionTable *> &table_array,

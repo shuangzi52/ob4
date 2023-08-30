@@ -36,7 +36,7 @@ int ObTxTableGuard::init(ObTxTable *tx_table)
 
 int ObTxTableGuard::check_row_locked(const transaction::ObTransID &read_tx_id,
                                      const transaction::ObTransID data_tx_id,
-                                     const int64_t sql_sequence,
+                                     const transaction::ObTxSEQ &sql_sequence,
                                      storage::ObStoreRowLockState &lock_state)
 {
   if (OB_NOT_NULL(tx_table_)) {
@@ -48,7 +48,7 @@ int ObTxTableGuard::check_row_locked(const transaction::ObTransID &read_tx_id,
 }
 
 int ObTxTableGuard::check_sql_sequence_can_read(const transaction::ObTransID tx_id,
-                                                const int64_t sql_sequence,
+                                                const transaction::ObTxSEQ &sql_sequence,
                                                 bool &can_read)
 {
   if (OB_NOT_NULL(tx_table_)) {
@@ -72,11 +72,14 @@ int ObTxTableGuard::get_tx_state_with_scn(const transaction::ObTransID tx_id,
   }
 }
 
-int ObTxTableGuard::try_get_tx_state(const transaction::ObTransID tx_id, int64_t &state, share::SCN &trans_version)
+int ObTxTableGuard::try_get_tx_state(const transaction::ObTransID tx_id,
+                                     int64_t &state,
+                                     share::SCN &trans_version,
+                                     share::SCN &recycled_scn)
 {
   if (OB_NOT_NULL(tx_table_)) {
     ObReadTxDataArg arg(tx_id, epoch_, mini_cache_);
-    return tx_table_->try_get_tx_state(arg, state, trans_version);
+    return tx_table_->try_get_tx_state(arg, state, trans_version, recycled_scn);
   } else {
     return OB_NOT_INIT;
   }
@@ -131,6 +134,30 @@ int ObTxTableGuard::self_freeze_task()
   } else {
     return OB_NOT_INIT;
   }
+}
+
+bool ObTxTableGuard::check_ls_offline()
+{
+  bool discover_ls_offline = false;
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(tx_table_)) {
+    ret = OB_NOT_INIT;
+    discover_ls_offline = false;
+    STORAGE_LOG(WARN, "tx table is nullptr", K(ret), K(discover_ls_offline));
+  } else {
+    int64_t cur_epoch = tx_table_->get_epoch();
+    ObTxTable::TxTableState tx_table_state = tx_table_->get_state();
+    if (cur_epoch != epoch_ || tx_table_state == ObTxTable::TxTableState::PREPARE_OFFLINE
+        || tx_table_state == ObTxTable::TxTableState::OFFLINE) {
+      discover_ls_offline = true;
+
+      STORAGE_LOG(INFO, "discover ls offline", K(discover_ls_offline), K(cur_epoch), K(epoch_),
+                  K(tx_table_state));
+    }
+  }
+
+  return discover_ls_offline;
 }
 
 }  // namespace storage

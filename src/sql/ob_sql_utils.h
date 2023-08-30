@@ -113,6 +113,36 @@ private:
   int ret_;
 };
 
+class ObISqlPrinter
+{
+protected:
+  virtual int inner_print(char *buf, int64_t buf_len, int64_t &pos) = 0;
+public:
+  virtual int do_print(ObIAllocator &allocator, ObString &result);
+  virtual ~ObISqlPrinter() = default;
+};
+
+class ObSqlPrinter : public ObISqlPrinter
+{
+public:
+  ObSqlPrinter(const ObStmt *stmt,
+               ObSchemaGetterGuard *schema_guard,
+               ObObjPrintParams print_params,
+               const ParamStore *param_store) :
+    stmt_(stmt),
+    schema_guard_(schema_guard),
+    print_params_(print_params),
+    param_store_(param_store)
+    {}
+  virtual int inner_print(char *buf, int64_t buf_len, int64_t &res_len) override;
+
+protected:
+  const ObStmt *stmt_;
+  ObSchemaGetterGuard *schema_guard_;
+  ObObjPrintParams print_params_;
+  const ParamStore *param_store_;
+};
+
 class ObSQLUtils
 {
 public:
@@ -147,7 +177,7 @@ public:
   static int get_phy_plan_type(common::ObIArray<share::ObPartitionLocation> &part_location_set,
                                const common::ObAddr &my_address,
                                ObPhyPlanType &plan_type);
-
+  static int has_outer_join_symbol(const ParseNode *node, bool &has);
   static int replace_questionmarks(ParseNode *tree,
                                    const ParamStore &params);
 
@@ -300,7 +330,9 @@ public:
                                           const stmt::StmtType stmt_type = stmt::T_NONE,
                                           const bool is_index_table = false);
   static int check_index_name(const common::ObCollationType cs_type, common::ObString &name);
-  static int check_column_name(const common::ObCollationType cs_type, common::ObString &name);
+  static int check_column_name(const common::ObCollationType cs_type,
+                               common::ObString &name,
+                               bool is_from_view = false);
   static int check_and_copy_column_alias_name(const common::ObCollationType cs_type, const bool is_auto_gen,
                                               common::ObIAllocator *allocator, common::ObString &name);
   static int check_and_convert_context_namespace(const common::ObCollationType cs_type,
@@ -368,11 +400,10 @@ public:
                              ObSchemaGetterGuard *schema_guard,
                              ObObjPrintParams print_params = ObObjPrintParams(),
                              const ParamStore *param_store = NULL);
-  static int print_sql(ObIAllocator &allocator,
-                       char *buf,
+  static int print_sql(char *buf,
                        int64_t buf_len,
+                       int64_t &pos,
                        const ObStmt *stmt,
-                       ObString &sql,
                        ObSchemaGetterGuard *schema_guard,
                        ObObjPrintParams print_params,
                        const ParamStore *param_store = NULL);
@@ -523,7 +554,8 @@ public:
 
   static int print_identifier(char *buf, const int64_t buf_len, int64_t &pos,
                               common::ObCollationType connection_collation,
-                              const common::ObString &identifier_name);
+                              const common::ObString &identifier_name,
+                              bool is_oracle_mode);
   static bool is_one_part_table_can_skip_part_calc(const share::schema::ObTableSchema &schema);
 
   static int create_encode_sortkey_expr(ObRawExprFactory &expr_factory,
@@ -538,7 +570,6 @@ public:
   static bool is_fk_nested_sql(ObExecContext *cur_ctx);
   static bool is_nested_sql(ObExecContext *cur_ctx);
   static bool is_select_from_dual(ObExecContext &ctx);
-  static bool is_batch_execute(ObSqlCtx &sql_ctx);
 
   static int get_obj_from_ext_obj(const ObObjParam &ext_obj, int64_t pos, ObObj *&obj);
   static int get_result_from_ctx(ObExecContext &exec_ctx,
@@ -573,6 +604,12 @@ public:
   static bool is_external_files_on_local_disk(const common::ObString &url);
   static int check_location_access_priv(const common::ObString &location, ObSQLSessionInfo *session);
 
+#ifdef OB_BUILD_SPM
+  static int handle_plan_baseline(const ObAuditRecordData &audit_record,
+                                  ObPhysicalPlan *plan,
+                                  const int ret_code,
+                                  ObSqlCtx &sql_ctx);
+#endif
   static int async_recompile_view(const share::schema::ObTableSchema &old_view_schema,
                                   ObSelectStmt *select_stmt,
                                   bool reset_column_infos,
@@ -592,6 +629,30 @@ public:
                                   uint64_t &object_id,
                                   share::schema::ObObjectType &obj_type,
                                   uint64_t &schema_version);
+  static bool check_need_disconnect_parser_err(const int ret_code);
+
+  static int print_identifier_require_quotes(ObCollationType collation_type,
+                                             const ObString &ident,
+                                             bool &require);
+
+  static int64_t get_next_ts(int64_t &old_ts) {
+    int64_t next_ts = common::OB_INVALID_TIMESTAMP;
+
+    while (true) {
+      int64_t origin_ts = ATOMIC_LOAD(&old_ts);
+      int64_t now = ObClockGenerator::getClock();
+      next_ts = (now > origin_ts) ? now : (origin_ts + 1);
+      if (origin_ts == ATOMIC_VCAS(&old_ts, origin_ts, next_ts)) {
+        break;
+      } else {
+        PAUSE();
+      }
+    };
+    return next_ts;
+  }
+  static int64_t combine_server_id(int64_t ts, uint64_t server_id) {
+    return (ts & ((1LL << 43) - 1LL)) | ((server_id & 0xFFFF) << 48);
+  }
 private:
   static int check_ident_name(const common::ObCollationType cs_type, common::ObString &name,
                               const bool check_for_path_char, const int64_t max_ident_len);
@@ -865,25 +926,6 @@ public:
   int64_t deleted_rows_;
 };
 
-struct ObParamPosIdx
-{
-  OB_UNIS_VERSION_V(1);
-public:
-  ObParamPosIdx()
-    : pos_(0),
-      idx_(0)
-  {}
-  ObParamPosIdx(int32_t pos, int32_t idx)
-    : pos_(pos),
-      idx_(idx)
-  {}
-  virtual ~ObParamPosIdx()
-  {}
-  TO_STRING_KV(N_POS, pos_,
-               N_IDX, idx_);
-  int32_t pos_;
-  int32_t idx_;
-};
 
 enum ObThreeStageAggrStage {
   NONE_STAGE,
@@ -971,16 +1013,6 @@ public:
   int64_t tenant_id_col_idx_;
 };
 
-class ObLinkStmtParam
-{
-public:
-  static int write(char *buf, int64_t buf_len, int64_t &pos, int64_t param_idx);
-  static int read_next(const char *buf, int64_t buf_len, int64_t &pos, int64_t &param_idx);
-  static int64_t get_param_len();
-private:
-  static const int64_t PARAM_LEN;
-};
-
 class ObSqlFatalErrExtraInfoGuard : public common::ObFatalErrExtraInfoGuard
 {
 public:
@@ -1014,22 +1046,27 @@ enum PreCalcExprExpectResult {
   PRE_CALC_ERROR,
   PRE_CALC_PRECISE,
   PRE_CALC_NOT_PRECISE,
-  PRE_CALC_ROWID
+  PRE_CALC_ROWID,
+  PRE_CALC_LOSSLESS_CAST, // only used in rewrite, will be converted to cast(expr, type) = expr
 };
 
 struct ObExprConstraint
 {
   ObExprConstraint() :
       pre_calc_expr_(NULL),
-      expect_result_(PRE_CALC_RESULT_NONE) {}
+      expect_result_(PRE_CALC_RESULT_NONE),
+      ignore_const_check_(false) {}
   ObExprConstraint(ObRawExpr *expr, PreCalcExprExpectResult expect_result) :
       pre_calc_expr_(expr),
-      expect_result_(expect_result) {}
+      expect_result_(expect_result),
+      ignore_const_check_(false) {}
   bool operator==(const ObExprConstraint &rhs) const;
   ObRawExpr *pre_calc_expr_;
   PreCalcExprExpectResult expect_result_;
+  bool ignore_const_check_;
   TO_STRING_KV(KP_(pre_calc_expr),
-               K_(expect_result));
+               K_(expect_result),
+               K_(ignore_const_check));
 };
 
 struct ObPreCalcExprConstraint : public common::ObDLinkBase<ObPreCalcExprConstraint>

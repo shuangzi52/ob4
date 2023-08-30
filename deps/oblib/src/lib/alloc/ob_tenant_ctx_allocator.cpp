@@ -23,6 +23,7 @@
 #include "lib/oblog/ob_log.h"
 #include "common/ob_smart_var.h"
 #include "rpc/obrpc/ob_rpc_packet.h"
+#include "common/errsim_module/ob_errsim_module_interface.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -372,7 +373,9 @@ int64_t ObTenantCtxAllocator::sync_wash(int64_t wash_size)
 
   auto stat = obj_mgr_.get_stat();
   const double min_utilization = 0.95;
-  if (stat.payload_ * min_utilization > stat.used_) {
+  int64_t min_memory_fragment = 64LL << 20;
+  if (stat.payload_ * min_utilization > stat.used_ ||
+      stat.payload_ - stat.used_ >= min_memory_fragment) {
     washed_size = obj_mgr_.sync_wash(wash_size);
   }
   if (washed_size != 0 && REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
@@ -399,16 +402,34 @@ void* ObTenantCtxAllocator::common_alloc(const int64_t size, const ObMemAttr &at
 {
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
   void *ret = nullptr;
+  AObject *obj = nullptr;
+  int64_t alloc_size = 0;
+  bool sample_allowed = false;
+  bool is_errsim = false;
   if (!attr.label_.is_valid()) {
     LIB_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "OB_MOD_DO_NOT_USE_ME ALLOC", K(size));
   }
-  bool sample_allowed = ObMallocSampleLimiter::malloc_sample_allowed(size, attr);
-  const int64_t alloc_size = sample_allowed ? (size + AOBJECT_BACKTRACE_SIZE) : size;
-  AObject *obj = allocator.alloc_object(alloc_size, attr);
-  if (OB_ISNULL(obj) && g_alloc_failed_ctx().need_wash()) {
-    int64_t total_size = ta.sync_wash();
-    obj = allocator.alloc_object(alloc_size, attr);
+
+#ifdef ERRSIM
+  const ObErrsimModuleType type = THIS_WORKER.get_module_type();
+  if (is_errsim_module(ta.get_tenant_id(), type.type_)) {
+    //errsim alloc memory failed.
+    obj = nullptr;
+    is_errsim = true;
   }
+#endif
+
+  if (OB_UNLIKELY(is_errsim)) {
+  } else {
+    sample_allowed = ObMallocSampleLimiter::malloc_sample_allowed(size, attr);
+    alloc_size = sample_allowed ? (size + AOBJECT_BACKTRACE_SIZE) : size;
+    obj = allocator.alloc_object(alloc_size, attr);
+    if (OB_ISNULL(obj) && g_alloc_failed_ctx().need_wash()) {
+      int64_t total_size = ta.sync_wash();
+      obj = allocator.alloc_object(alloc_size, attr);
+    }
+  }
+
   if (NULL != obj) {
     obj->on_malloc_sample_ = sample_allowed;
     ob_malloc_sample_backtrace(obj, size);
@@ -419,18 +440,17 @@ void* ObTenantCtxAllocator::common_alloc(const int64_t size, const ObMemAttr &at
     SANITY_POISON((void*)upper_align((int64_t)obj->data_ + size, 8),
                                      alloc_size - size + sizeof(AOBJECT_TAIL_MAGIC_CODE));
   }
-  if (OB_UNLIKELY(nullptr == obj) && REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+  if (OB_UNLIKELY(nullptr == obj) && TC_REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
     int level = ObFreeLogPrinter::get_level();
     ObFreeLogPrinter::get_instance().enable_free_log(attr.tenant_id_,
                                                      attr.ctx_id_, level);
-    const char *msg = alloc_failed_msg();
+    const char *msg = is_errsim ? "[ERRSIM] errsim inject memory error" : alloc_failed_msg();
     LOG_DBA_WARN(OB_ALLOCATE_MEMORY_FAILED, "[OOPS]", "alloc failed reason", KCSTRING(msg));
     _OB_LOG_RET(WARN, OB_ALLOCATE_MEMORY_FAILED, "oops, alloc failed, tenant_id=%ld, ctx_id=%ld, ctx_name=%s, ctx_hold=%ld, "
                 "ctx_limit=%ld, tenant_hold=%ld, tenant_limit=%ld",
                 attr.tenant_id_, attr.ctx_id_,
                 get_global_ctx_info().get_ctx_name(attr.ctx_id_),
                 ta.get_hold(), ta.get_limit(), ta.get_tenant_hold(), ta.get_tenant_limit());
-    ObMallocAllocator::get_instance()->print_tenant_memory_usage(attr.tenant_id_);
     // 49 is the user defined signal to dump memory
     raise(49);
   }
@@ -447,7 +467,11 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
   if (!attr.label_.is_valid()) {
     LIB_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "OB_MOD_DO_NOT_USE_ME REALLOC", K(size));
   }
+
   AObject *obj = NULL;
+  int64_t alloc_size = 0;
+  bool sample_allowed = false;
+  bool is_errsim = false;
   if (NULL != ptr) {
     obj = reinterpret_cast<AObject*>((char*)ptr - AOBJECT_HEADER_SIZE);
     abort_unless(obj->is_valid());
@@ -457,13 +481,27 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
     SANITY_POISON(obj->data_, obj->alloc_bytes_);
     get_mem_leak_checker().on_free(*obj);
   }
-  bool sample_allowed = ObMallocSampleLimiter::malloc_sample_allowed(size, attr);
-  const int64_t alloc_size = sample_allowed ? (size + AOBJECT_BACKTRACE_SIZE) : size;
-  obj = allocator.realloc_object(obj, alloc_size, attr);
-  if(OB_ISNULL(obj) && g_alloc_failed_ctx().need_wash()) {
-    int64_t total_size = ta.sync_wash();
-    obj = allocator.realloc_object(obj, alloc_size, attr);
+
+#ifdef ERRSIM
+  const ObErrsimModuleType type = THIS_WORKER.get_module_type();
+  if (is_errsim_module(ta.get_tenant_id(), type.type_)) {
+    //errsim alloc memory failed.
+    obj = nullptr;
+    is_errsim = true;
   }
+#endif
+
+  if (OB_UNLIKELY(is_errsim)) {
+  } else {
+    sample_allowed = ObMallocSampleLimiter::malloc_sample_allowed(size, attr);
+    alloc_size = sample_allowed ? (size + AOBJECT_BACKTRACE_SIZE) : size;
+    obj = allocator.realloc_object(obj, alloc_size, attr);
+    if(OB_ISNULL(obj) && g_alloc_failed_ctx().need_wash()) {
+      int64_t total_size = ta.sync_wash();
+      obj = allocator.realloc_object(obj, alloc_size, attr);
+    }
+  }
+
   if (obj != NULL) {
     obj->on_malloc_sample_ = sample_allowed;
     ob_malloc_sample_backtrace(obj, size);
@@ -473,11 +511,11 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
     SANITY_UNPOISON(obj->data_, size);
     SANITY_POISON((void*)upper_align((int64_t)obj->data_ + size, 8),
                                      alloc_size - size + sizeof(AOBJECT_TAIL_MAGIC_CODE));
-  } else if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+  } else if (TC_REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
     int level = ObFreeLogPrinter::get_level();
     ObFreeLogPrinter::get_instance().enable_free_log(attr.tenant_id_,
                                                      attr.ctx_id_, level);
-    const char *msg = alloc_failed_msg();
+    const char *msg = is_errsim ? "[ERRSIM] errsim inject memory error" : alloc_failed_msg();
     LOG_DBA_WARN(OB_ALLOCATE_MEMORY_FAILED, "[OOPS]", "alloc failed reason", KCSTRING(msg));
     _OB_LOG_RET(WARN, OB_ALLOCATE_MEMORY_FAILED, "oops, alloc failed, tenant_id=%ld, ctx_id=%ld, ctx_name=%s, ctx_hold=%ld, "
                 "ctx_limit=%ld, tenant_hold=%ld, tenant_limit=%ld",
@@ -512,18 +550,6 @@ void ObTenantCtxAllocator::common_free(void *ptr)
     abort_unless(block->obj_set_ != NULL);
 
     ObjectSet *os = block->obj_set_;
-#ifdef ENABLE_500_FALLBACK
-    auto *ta = chunk->block_set_->get_tenant_ctx_allocator();
-    const bool do_free = OB_LIKELY(!ta->has_deleted()) || ta->get_tenant_id() <= OB_USER_TENANT_ID;
-#else
-    const bool do_free = true;
-#endif
-    if (do_free) {
-      auto blk_mgr = os->get_block_mgr();
-      int64_t tenant_id = blk_mgr->get_tenant_id();
-      int64_t ctx_id = blk_mgr->get_ctx_id();
-      ObFreeLogPrinter::get_instance().print_free_log(tenant_id, ctx_id, obj);
-      os->free_object(obj);
-    }
+    os->free_object(obj);
   }
 }

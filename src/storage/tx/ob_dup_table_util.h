@@ -14,6 +14,7 @@
 // #include "lib/hash/ob_hashset.h"
 #include "logservice/ob_log_base_type.h"
 #include "storage/tx/ob_dup_table_tablets.h"
+#include "storage/tx/ob_dup_table_lease.h"
 #include "storage/tx/ob_trans_define.h"
 #include "storage/tx/ob_dup_table_stat.h"
 
@@ -96,17 +97,20 @@ class ObDupTableLSHandler : public logservice::ObIReplaySubHandler,
 {
 public:
   ObDupTableLSHandler()
-      : lease_mgr_ptr_(nullptr), ts_sync_mgr_ptr_(nullptr), tablets_mgr_ptr_(nullptr),
-        log_operator_(nullptr)
+      : ls_state_helper_("DupTableLSHandler"), lease_mgr_ptr_(nullptr), ts_sync_mgr_ptr_(nullptr),
+        tablets_mgr_ptr_(nullptr), log_operator_(nullptr)
   {
     reset();
   }
   // init by ObDupTabletScanTask or replay
   int init(bool is_dup_table);
 
+  void start();
   void stop();    // TODO  stop submit log before the log handler is invalid.
-  void wait();    // TODO
+  int safe_to_destroy(bool &is_dup_table_handler_safe);    // TODO
   void destroy(); // remove from dup_table_loop_worker
+  int offline();
+  int online();
   void reset();
 
   const share::ObLSID &get_ls_id() { return ls_id_; }
@@ -119,7 +123,18 @@ public:
   }
 
   bool is_master();
-  bool is_follower();
+  // bool is_follower();
+  bool is_inited();
+  // bool is_online();
+
+  TO_STRING_KV(K(ls_id_),
+               K(ls_state_helper_),
+               K(dup_ls_ckpt_),
+               KP(lease_mgr_ptr_),
+               KP(tablets_mgr_ptr_),
+               KP(ts_sync_mgr_ptr_),
+               KP(log_operator_),
+               K(interface_stat_));
 
 public:
   int ls_loop_handle();
@@ -162,10 +177,13 @@ public:
                                 const share::SCN &max_replayed_scn,
                                 bool &readable);
 
+  bool is_dup_table_lease_valid();
+
 public:
-  bool is_inited() { return is_inited_; }
   int64_t get_dup_tablet_count();
+  bool check_tablet_set_exist();
   bool has_dup_tablet();
+  bool is_dup_tablet(const common::ObTabletID &tablet_id);
   int gc_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval);
   int get_local_ts_info(DupTableTsInfo &ts_info);
   int get_cache_ts_info(const common::ObAddr &addr, DupTableTsInfo &ts_info);
@@ -185,48 +203,53 @@ public:
   int resume_leader();
   int switch_to_leader();
 
-  int set_dup_table_ls_meta(const ObDupTableLSCheckpoint::ObLSDupTableMeta &dup_ls_meta)
-  {
-    return dup_ls_ckpt_.set_dup_ls_meta(dup_ls_meta);
-  }
+  int set_dup_table_ls_meta(const ObDupTableLSCheckpoint::ObLSDupTableMeta &dup_ls_meta,
+                            bool need_flush_slog = false);
   int get_dup_table_ls_meta(ObDupTableLSCheckpoint::ObLSDupTableMeta &dup_ls_meta) const
   {
     return dup_ls_ckpt_.get_dup_ls_meta(dup_ls_meta);
   }
 
   share::SCN get_rec_scn() { return dup_ls_ckpt_.get_lease_log_rec_scn(); }
-  int flush(share::SCN &rec) { return dup_ls_ckpt_.flush(); }
+  int flush(share::SCN &rec);
 
   logservice::ObLogHandler *get_log_handler() { return log_handler_; }
 
-  void inc_committing_dup_trx_cnt() { ATOMIC_INC(&committing_dup_trx_cnt_); }
-  void dec_committing_dup_trx_cnt() { ATOMIC_DEC(&committing_dup_trx_cnt_); }
-  int64_t get_committing_dup_trx_cnt() { return ATOMIC_LOAD(&committing_dup_trx_cnt_); }
-
+  // void inc_committing_dup_trx_cnt() { ATOMIC_INC(&committing_dup_trx_cnt_); }
+  // void dec_committing_dup_trx_cnt() { ATOMIC_DEC(&committing_dup_trx_cnt_); }
 public:
   int64_t get_total_block_confirm_ref() { return ATOMIC_LOAD(&total_block_confirm_ref_); }
 
   int check_and_update_max_replayed_scn(const share::SCN &max_replayed_scn);
+
+  int64_t get_committing_dup_trx_cnt();
+  int add_commiting_dup_trx(const ObTransID &tx_id);
+  int remove_commiting_dup_trx(const ObTransID &tx_id);
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObDupTableLSHandler);
 
   int prepare_log_operator_();
   int get_min_lease_ts_info_(DupTableTsInfo &min_ts_info);
   int leader_takeover_(const bool is_resume);
-  int leader_revoke_();
+  int leader_revoke_(const bool is_forcedly);
 
   int try_to_confirm_tablets_(const share::SCN &confirm_ts);
 
+  int recover_ckpt_into_memory_();
+
 private:
   share::ObLSID ls_id_;
-  bool is_master_;  // set by role change
-  bool is_inited_;  // ste by replay or dup_tablet_scan_task_
-  bool is_stopped_; // TODO
-  // TODO: is_stopped_;
+
+  bool is_inited_;
+
+  // set these flag for a normal ls without dup_table
+  ObDupTableLSRoleStateHelper ls_state_helper_;
 
   int64_t total_block_confirm_ref_; // block new dup tablet confirmed
 
-  int64_t committing_dup_trx_cnt_;
+  ObSpinLock committing_dup_trx_lock_;
+  common::hash::ObHashSet<ObTransID> committing_dup_trx_set_;
 
   share::SCN self_max_replayed_scn_;
   int64_t last_max_replayed_scn_update_ts_;
@@ -293,6 +316,8 @@ public:
   int iterate_dup_ls(ObDupLSLeaseMgrStatIterator &collect_iter);
   int iterate_dup_ls(ObDupLSTabletSetStatIterator &collect_iter);
   int iterate_dup_ls(ObDupLSTabletsStatIterator &collect_iter);
+
+  bool is_useful_dup_ls(const share::ObLSID ls_id);
 
   TO_STRING_KV(K(is_inited_), K(dup_ls_id_set_.size()));
 

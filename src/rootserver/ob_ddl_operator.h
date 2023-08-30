@@ -199,18 +199,6 @@ public:
                        share::schema::ObTableSchema &new_table_schema,
                        common::ObMySQLTransaction &trans,
                        const common::ObString *ddl_stmt_str = NULL);
-  int add_tablegroup_partitions(const share::schema::ObTablegroupSchema &orig_tablegroup_schema,
-                                const share::schema::ObTablegroupSchema &inc_tablegroup_schema,
-                                const int64_t new_schema_version,
-                                share::schema::ObTablegroupSchema &new_tablegroup_schema,
-                                common::ObMySQLTransaction &trans,
-                                const common::ObString *ddl_stmt_str);
-  int drop_tablegroup_partitions(const share::schema::ObTablegroupSchema &orig_tablegroup_schema,
-                                 share::schema::ObTablegroupSchema &inc_tablegroup_schema,
-                                 const int64_t new_schema_version,
-                                 share::schema::ObTablegroupSchema &new_tablegroup_schema,
-                                 common::ObMySQLTransaction &trans,
-                                 const common::ObString *ddl_stmt_str);
   static int check_part_equal(
       const share::schema::ObPartitionFuncType part_type,
       const share::schema::ObPartition *r_part,
@@ -310,8 +298,7 @@ public:
       const common::ObIArray<uint64_t> &alter_column_ids,
       const common::ObString *ddl_stmt_str = NULL);
   int reinit_autoinc_row(const ObTableSchema &table_schema,
-                         common::ObMySQLTransaction &trans,
-                         const common::ObArray<ObAddr>* alive_server_list);
+                         common::ObMySQLTransaction &trans);
   int create_sequence_in_create_table(share::schema::ObTableSchema &table_schema,
                                       common::ObMySQLTransaction &trans,
                                       share::schema::ObSchemaGetterGuard &schema_guard,
@@ -514,6 +501,7 @@ public:
   virtual int rename_table(const share::schema::ObTableSchema &table_schema,
                            const common::ObString &new_table_name,
                            const uint64_t new_db_id,
+                           const bool need_reset_object_status,
                            common::ObMySQLTransaction &trans,
                            const common::ObString *ddl_stmt_str);
   virtual int update_index_status(
@@ -522,7 +510,8 @@ public:
               const uint64_t index_table_id,
               const share::schema::ObIndexStatus status,
               const bool in_offline_ddl_white_list,
-              common::ObMySQLTransaction &trans);
+              common::ObMySQLTransaction &trans,
+              const common::ObString *ddl_stmt_str);
 
   // tablespace
   virtual int create_tablespace(share::schema::ObTablespaceSchema &tablespace_schema,
@@ -1048,8 +1037,7 @@ private:
       const common::ObIArray<uint64_t> &table_ids,
       common::ObMySQLTransaction &trans);
 
-  int cleanup_autoinc_cache(const share::schema::ObTableSchema &table_schema,
-                            const common::ObArray<ObAddr>* alive_server_list = nullptr);
+  int cleanup_autoinc_cache(const share::schema::ObTableSchema &table_schema);
 
   int fill_trigger_id(share::schema::ObSchemaService &schema_service,
                       share::schema::ObTriggerInfo &new_trigger_info);

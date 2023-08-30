@@ -119,6 +119,7 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
   int64_t data_size = 0;
   obrpc::ObCopyMacroBlockHeader header;
   write_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_MIGRATE_WRITE);
+  write_info.io_desc_.set_group_id(ObIOModule::HA_MACRO_BLOCK_WRITER_IO);
 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
@@ -147,6 +148,7 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
       } else if (!write_handle.is_empty() && OB_FAIL(write_handle.wait(io_timeout_ms))) {
         STORAGE_LOG(WARN, "failed to wait write handle", K(ret));
       } else if (header.is_reuse_macro_block_) {
+        //TODO(muwei.ym) reuse macro block in 4.3
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("header is reuse macro block", K(ret));
       } else {

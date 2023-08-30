@@ -76,6 +76,15 @@ int ObTransformSimplifyExpr::transform_one_stmt(common::ObIArray<ObParentDMLStmt
       LOG_TRACE("succeed to remove dummy exprs", K(is_happened));
     }
   }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(remove_ora_decode(stmt, is_happened))) {
+      LOG_WARN("failed to remove ora_decode", K(ret));
+    } else {
+      trans_happened |= is_happened;
+      OPT_TRACE("remove ora_decode", is_happened);
+      LOG_TRACE("succeed to remove decode", K(is_happened));
+    }
+  }
   if (OB_SUCC(ret)){
     if (OB_FAIL(convert_nvl_predicate(stmt, is_happened))){
       LOG_WARN("failed to convert nvl predicate", K(ret));
@@ -582,7 +591,7 @@ int ObTransformSimplifyExpr::convert_preds_vector_to_scalar(ObDMLStmt *stmt, boo
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr*, 16> new_cond;
   bool is_happened = false;
-  if (OB_ISNULL(stmt)) {
+  if (OB_ISNULL(stmt) || OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("NULL stmt", K(ret));
   } else if (!stmt->is_sel_del_upd()) {
@@ -591,8 +600,8 @@ int ObTransformSimplifyExpr::convert_preds_vector_to_scalar(ObDMLStmt *stmt, boo
     /// 需要转换的谓词有: where, join condition.
     /// having 中能下降的都下降过了.
     for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_condition_size(); i++) {
-      if (OB_FAIL(inner_convert_preds_vector_to_scalar(
-                    stmt->get_condition_expr(i), new_cond, is_happened))) {
+      if (OB_FAIL(ObTransformUtils::convert_preds_vector_to_scalar(*ctx_,
+                                             stmt->get_condition_expr(i), new_cond, is_happened))) {
         LOG_WARN("failed to convert predicate vector to scalar", K(ret));
       }
     }
@@ -605,9 +614,9 @@ int ObTransformSimplifyExpr::convert_preds_vector_to_scalar(ObDMLStmt *stmt, boo
     }
     if (OB_SUCC(ret)) {
       for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_joined_tables().count(); i++) {
-        if (OB_FAIL(convert_join_preds_vector_to_scalar(
-                      stmt->get_joined_tables().at(i), trans_happened))) {
-          LOG_WARN("failed to convert join preds vector to scalar", K(ret));
+        if (OB_FAIL(recursively_convert_join_preds_vector_to_scalar(stmt->get_joined_tables().at(i),
+                                                                    trans_happened))) {
+          LOG_WARN("failed to convert join vector condition to scalar", K(ret));
         }
       }
     }
@@ -615,19 +624,30 @@ int ObTransformSimplifyExpr::convert_preds_vector_to_scalar(ObDMLStmt *stmt, boo
   return ret;
 }
 
-int ObTransformSimplifyExpr::convert_join_preds_vector_to_scalar(TableItem *table_item, bool &trans_happened)
+int ObTransformSimplifyExpr::recursively_convert_join_preds_vector_to_scalar(TableItem *table_item,
+                                                                             bool &trans_happened)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(table_item)) {
+  JoinedTable *joined_table = NULL;
+  if (OB_ISNULL(table_item) || OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("NULL table item", K(ret));
-  } else if (table_item->is_joined_table()) {
-    JoinedTable *joined_table = reinterpret_cast<JoinedTable*>(table_item);
+  } else if (!table_item->is_joined_table()) {
+  } else if (FALSE_IT(joined_table = reinterpret_cast<JoinedTable*>(table_item))){
+  } else if (OB_FAIL(recursively_convert_join_preds_vector_to_scalar(joined_table->left_table_,
+                                                                     trans_happened))) {
+    LOG_WARN("failed to convert join preds_vector to scalar", K(ret));
+  } else if (OB_FAIL(recursively_convert_join_preds_vector_to_scalar(joined_table->right_table_,
+                                                                     trans_happened))) {
+    LOG_WARN("failed to convert join preds_vector to scalar", K(ret));
+  } else {
     ObSEArray<ObRawExpr*, 16> new_join_cond;
     bool is_happened = false;
     for (int64_t i = 0; OB_SUCC(ret) && i < joined_table->get_join_conditions().count(); i++) {
-      if (OB_FAIL(inner_convert_preds_vector_to_scalar(
-                    joined_table->get_join_conditions().at(i), new_join_cond, is_happened))) {
+      if (OB_FAIL(ObTransformUtils::convert_preds_vector_to_scalar(*ctx_,
+                                                          joined_table->get_join_conditions().at(i),
+                                                          new_join_cond,
+                                                          is_happened))) {
         LOG_WARN("failed to convert predicate vector to scalar", K(ret));
       }
     }
@@ -638,85 +658,6 @@ int ObTransformSimplifyExpr::convert_join_preds_vector_to_scalar(TableItem *tabl
         LOG_WARN("failed to append join conditions", K(ret));
       }
     }
-  }
-  return ret;
-}
-
-int ObTransformSimplifyExpr::inner_convert_preds_vector_to_scalar(ObRawExpr *expr,
-                                                                  ObIArray<ObRawExpr*> &exprs,
-                                                                  bool &trans_happened)
-{
-  int ret = OB_SUCCESS;
-  bool need_push = true;
-  ObRawExprFactory *factory = NULL;
-  ObSQLSessionInfo *session = NULL;
-  bool is_stack_overflow = false;
-  if (OB_ISNULL(expr) || OB_ISNULL(ctx_) || OB_ISNULL(factory = ctx_->expr_factory_)
-      || OB_ISNULL(session = ctx_->session_info_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("NULL param", K(ret), K(expr), K_(ctx),
-             K(factory), K(session));
-  } else if (OB_FAIL(check_stack_overflow(is_stack_overflow))) {
-    LOG_WARN("failed to check stack overflow", K(ret));
-  } else if (is_stack_overflow) {
-    ret = OB_SIZE_OVERFLOW;
-    LOG_WARN("too deep recursive", K(ret), K(is_stack_overflow));
-  } else if ((expr->get_expr_type() == T_OP_EQ) || (expr->get_expr_type() == T_OP_NSEQ)) {
-    // 条件1: 是等号
-    ObOpRawExpr *op_expr = reinterpret_cast<ObOpRawExpr*>(expr);
-    ObRawExpr *param_expr1 = expr->get_param_expr(0);
-    ObRawExpr *param_expr2 = expr->get_param_expr(1);
-
-    if (OB_UNLIKELY(2 != op_expr->get_param_count())
-        || OB_ISNULL(param_expr1) || OB_ISNULL(param_expr2)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("param expr is wrong", K(op_expr->get_param_count()),
-               K(param_expr1), K(param_expr2));
-    } else if (T_OP_ROW == param_expr1->get_expr_type()
-               && T_OP_ROW == param_expr2->get_expr_type()) {
-      // 条件2: 两边都是 ROW
-      need_push = false;
-      trans_happened = true;
-      if (OB_UNLIKELY(!is_oracle_mode() && param_expr1->get_param_count() != param_expr2->get_param_count())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("param number not equal", K(ret), K(param_expr1->get_param_count()),
-                 K(param_expr2->get_param_count()));
-
-      } else if (OB_UNLIKELY(is_oracle_mode()
-                             && 1 > param_expr2->get_param_count()
-                             && param_expr1->get_param_count() != param_expr2->get_param_expr(0)->get_param_count()
-                             && param_expr1->get_param_count() != param_expr2->get_param_count())) {
-        ret = OB_ERR_INVALID_COLUMN_NUM;
-        LOG_WARN("invalid relational operator on oracle mode", K(ret),
-                 K(param_expr2->get_param_count()));
-      } else {
-        if (is_oracle_mode() && T_OP_ROW == param_expr2->get_param_expr(0)->get_expr_type()) {
-          param_expr2 = param_expr2->get_param_expr(0);
-        }
-        for (int64_t i = 0; OB_SUCC(ret) && i < param_expr1->get_param_count(); i++) {
-          ObOpRawExpr *new_op_expr = NULL;
-          if (OB_FAIL(factory->create_raw_expr(expr->get_expr_type(), new_op_expr))) {
-            LOG_WARN("failed to create raw expr", K(ret));
-          } else if (OB_ISNULL(new_op_expr)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("NULL new op expr", K(ret));
-          } else if (OB_FAIL(new_op_expr->set_param_exprs(
-                               param_expr1->get_param_expr(i), param_expr2->get_param_expr(i)))) {
-            LOG_WARN("failed to set param expr", K(ret));
-          } else if (OB_FAIL(new_op_expr->formalize(session))) {
-            LOG_WARN("failed to formalize expr", K(ret));
-          } else if (OB_FAIL(SMART_CALL(inner_convert_preds_vector_to_scalar(
-                                          reinterpret_cast<ObRawExpr*>(new_op_expr), exprs, trans_happened)))) {
-            /// 对拆分后 expr 继续递归
-            LOG_WARN("failed to call inner convert recursive", K(ret));
-          }
-        }
-      }
-    }
-  }
-  if (OB_SUCC(ret) && need_push && OB_FAIL(exprs.push_back(expr))) {
-    /// 不满足上述两个条件, 将该 expr 添加至输出.
-    LOG_WARN("failed to push back expr", K(ret));
   }
   return ret;
 }
@@ -2169,22 +2110,20 @@ int ObTransformSimplifyExpr::build_null_for_empty_set(const ObSelectStmt* sub_st
 int ObTransformSimplifyExpr::build_null_expr_and_cast(const ObRawExpr* expr, ObRawExpr*& cast_expr)
 {
   int ret = OB_SUCCESS;
-  ObRawExpr* null_expr = NULL;
   cast_expr = NULL;
   if (OB_ISNULL(expr) || OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("parameters have null", K(expr), K(ctx_));
-  } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*ctx_->expr_factory_, null_expr))) {
+  } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*ctx_->expr_factory_, cast_expr))) {
     LOG_WARN("failed to build null expr", K(ret));
-  } else if (OB_ISNULL(null_expr)) {
+  } else if (OB_ISNULL(cast_expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (OB_FAIL(ObRawExprUtils::try_add_cast_expr_above(ctx_->expr_factory_,
-              ctx_->session_info_,
-              *null_expr,
-              expr->get_result_type(),
-              cast_expr))) {
-    LOG_WARN("try add cast expr above failed", K(ret));
+  } else if (OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(*ctx_->expr_factory_,
+                                                                    expr,
+                                                                    cast_expr,
+                                                                    ctx_->session_info_))) {
+    LOG_WARN("failed to add cast for replace if need", K(ret));
   }
   return ret;
 }
@@ -2212,12 +2151,12 @@ int ObTransformSimplifyExpr::replace_expr_when_filter_is_false(ObRawExpr*& expr)
       } else if (OB_ISNULL(zero_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null", K(ret));
-      } else if (OB_FAIL(ObRawExprUtils::try_add_cast_expr_above(ctx_->expr_factory_,
-                  ctx_->session_info_,
-                  *zero_expr,
-                  expr->get_result_type(),
-                  cast_expr))) {
-        LOG_WARN("try add cast expr above failed", K(ret));
+      } else if (FALSE_IT(cast_expr = zero_expr)) {
+      } else if (OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(*ctx_->expr_factory_,
+                                                                   expr,
+                                                                   cast_expr,
+                                                                   ctx_->session_info_))) {
+        LOG_WARN("failed to add cast for replace if need", K(ret));
       } else {
         expr = cast_expr;
       }
@@ -2359,6 +2298,221 @@ int ObTransformSimplifyExpr::remove_false_true(ObRawExpr *expr,
         ret_expr = new_expr;
         trans_happened = true;
       }
+    }
+  }
+  return ret;
+}
+int ObTransformSimplifyExpr::remove_ora_decode(ObDMLStmt *stmt, bool &trans_happened)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObRawExpr *, 2> old_exprs;
+  ObSEArray<ObRawExpr *, 2> new_exprs;
+  ObSEArray<ObRawExpr *, 16> relation_exprs;
+  trans_happened = false;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("stmt is NULL", K(stmt));
+  } else if (OB_FAIL(stmt->get_relation_exprs(relation_exprs))) {
+    LOG_WARN("failed to get stmt's relation exprs");
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < relation_exprs.count(); ++i) {
+    if (OB_FAIL(inner_remove_ora_decode(relation_exprs.at(i), old_exprs, new_exprs))) {
+      LOG_WARN("failed to inner remove ora decode");
+    }
+  }
+  if (OB_SUCC(ret) && !old_exprs.empty()) {
+    if (OB_FAIL(stmt->replace_relation_exprs(old_exprs, new_exprs))) {
+      LOG_WARN("select_stmt replace inner stmt expr failed", K(ret));
+    } else {
+      trans_happened = true;
+    }
+  }
+  return ret;
+}
+
+int ObTransformSimplifyExpr::inner_remove_ora_decode(ObRawExpr *&expr,
+                                                     ObIArray<ObRawExpr *> &old_exprs,
+                                                     ObIArray<ObRawExpr *> &new_exprs)
+{
+  int ret = OB_SUCCESS;
+  ObRawExpr *new_expr = NULL;
+  if (OB_ISNULL(expr)){
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), KP(expr));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+      if (OB_FAIL(SMART_CALL(inner_remove_ora_decode(expr->get_param_expr(i),
+                                                     old_exprs,
+                                                     new_exprs)))) {
+        LOG_WARN("failed to do remove ora_decode", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret) && T_FUN_SYS_ORA_DECODE == expr->get_expr_type()) {
+    if (ObOptimizerUtil::find_item(old_exprs, expr)) {
+    } else if (OB_FAIL(try_remove_ora_decode(expr, new_expr))){
+      LOG_WARN("failed to do remove ora_decode", K(ret));
+    } else if (NULL == new_expr) {
+    } else if (OB_FAIL(old_exprs.push_back(expr))) {
+      LOG_WARN("failed to push back into old_exprs", K(ret));
+    } else if (OB_FAIL(new_exprs.push_back(new_expr))) {
+      LOG_WARN("failed to push back into new_exprs", K(ret));
+    }
+  }
+  return ret;
+}
+
+/*
+  decode(com_expr, search_expr0, result_expr0, search_expr1, result_expr1 ... search_exprN, result_exprN, default)
+*/
+int ObTransformSimplifyExpr::check_remove_ora_decode_valid(ObRawExpr *&expr,
+                                                           int64_t &result_idx,
+                                                           bool &is_valid) {
+  int ret = OB_SUCCESS;
+  is_valid = false;
+  int64_t param_num = 0;
+  int64_t const_search_num = 0;
+  ObRawExpr *com_expr = NULL;
+  bool is_all_const = true;
+  if (OB_ISNULL(expr) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->session_info_) ||
+      OB_ISNULL(ctx_->expr_factory_) || (OB_ISNULL(ctx_->allocator_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), KP(expr), KP(ctx_));
+  } else if (T_FUN_SYS_ORA_DECODE != expr->get_expr_type()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected type expr", K(ret), K(expr->get_expr_type()));
+  } else if (expr->is_const_expr()) {
+    is_valid = false; /* no need to replace */
+  } else if (FALSE_IT(param_num = expr->get_param_count())) {
+  } else if (OB_UNLIKELY(param_num < 3)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected param numm", K(ret), K(param_num));
+  } else if (OB_ISNULL(com_expr = expr->get_param_expr(0))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (com_expr->is_static_scalar_const_expr()) {
+    const bool has_default = (param_num - 1) % 2;
+    const int64_t search_num = (param_num - 1) / 2;
+    for (int64_t i = 0; OB_SUCC(ret) && is_all_const && i < search_num; ++i) {
+      ObRawExpr *search_expr = NULL;
+      int64_t search_idx = 2 * i + 1;
+      if (OB_ISNULL(search_expr = expr->get_param_expr(search_idx))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret), K(search_idx));
+      } else if (!search_expr->is_static_scalar_const_expr()) {
+        is_all_const = false;
+        const_search_num = i;
+      } else { /* search_expr is valid, continue */ }
+    }
+    if (OB_SUCC(ret) && is_all_const) {
+      const_search_num = search_num;
+    }
+  }
+  if (OB_SUCC(ret) && const_search_num > 0) {
+    ObSEArray<ObRawExpr *, 3> param_exprs;
+    ObConstRawExpr *int_expr = NULL;
+    ObRawExpr *decode_expr = NULL;
+    ObObj decode_obj;
+    int64_t result = 0;
+    bool calc_happened = false;
+    bool is_oracle = lib::is_oracle_mode();
+    if (OB_FAIL(param_exprs.push_back(com_expr))) {
+      LOG_WARN("failed to push back into param_exprs", K(ret));
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i <= const_search_num; ++i) {
+      int64_t param_idx = 2 * i + 1;
+      if (i < const_search_num && OB_FAIL(param_exprs.push_back(expr->get_param_expr(param_idx)))) {
+        LOG_WARN("failed to push back into search_exprs", K(ret));
+      } else if (is_oracle) {
+        number::ObNumber num;
+        if (OB_FAIL(num.from(static_cast<int64_t>(i), *ctx_->allocator_))) {
+          LOG_WARN("failed to cast int64 to num");
+        } else if (OB_FAIL(ObRawExprUtils::build_const_number_expr(*ctx_->expr_factory_,
+                                                                    ObNumberType, num, int_expr))) {
+          LOG_WARN("failed to build const expr", K(ret));
+        }
+      } else if (!is_oracle && ObRawExprUtils::build_const_int_expr(*ctx_->expr_factory_,
+                                                                          ObIntType, i, int_expr)) {
+        LOG_WARN("failed to build const expr", K(ret));
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_ISNULL(int_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("build unexpected NULL expr", K(ret), KP(int_expr));
+      } else if (OB_FAIL(param_exprs.push_back(int_expr))) {
+        LOG_WARN("failed to push back into result_exprs", K(ret));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(ObRawExprUtils::build_ora_decode_expr(ctx_->expr_factory_,
+                                                             *ctx_->session_info_,
+                                                             decode_expr,
+                                                             param_exprs))) {
+      LOG_WARN("failed to build ora_decode expr", K(ret));
+    } else if (ObTransformUtils::calc_const_expr_result(decode_expr, ctx_, decode_obj, calc_happened)) {
+      LOG_WARN("failed to calc const expr result", K(ret), K(*decode_expr));
+    } else if (!calc_happened) {
+      is_valid = false;
+    } else if (OB_UNLIKELY(!decode_obj.is_numeric_type())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to calc const expr result", K(ret), K(is_valid), K(decode_obj));
+    } else if (decode_obj.is_number() && OB_FAIL(decode_obj.get_number().cast_to_int64(result))) {
+      LOG_WARN("failed to cast to int64", K(ret));
+    } else if (decode_obj.is_integer_type()) {
+      result = decode_obj.get_int();
+    }
+    if (OB_SUCC(ret) && calc_happened) {
+      bool is_default = result == const_search_num;
+      if (!is_all_const && is_default) {
+        is_valid = false;
+      } else {
+        result_idx = is_default ? 2 * result + 1 : 2 * result + 2;
+        if  (OB_UNLIKELY(result_idx < 0) || OB_UNLIKELY(result_idx >= param_exprs.count()) ||
+             OB_UNLIKELY(result_idx > param_num)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get unexpected result", K(ret), K(result_idx));
+        } else if (OB_FAIL(ObTransformUtils::add_equal_expr_value_constraint(ctx_, decode_expr,
+                                                                     param_exprs.at(result_idx)))) {
+          LOG_WARN("failed to add equal expr value constraint", K(ret));
+        } else {
+          is_valid = true;
+        }
+      }
+    }
+  } /* else is_valid = false, then return */
+  return ret;
+}
+
+int ObTransformSimplifyExpr::try_remove_ora_decode(ObRawExpr *&expr,
+                                                   ObRawExpr *&new_expr)
+{
+  int ret = OB_SUCCESS;
+  bool is_valid = false;
+  int64_t result_idx = 0;
+  ObRawExpr *null_expr = NULL;
+  new_expr = NULL;
+  if (OB_ISNULL(expr) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_) ||
+      OB_ISNULL(ctx_->session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), KP(expr), KP(ctx_));
+  } else if (OB_FAIL(check_remove_ora_decode_valid(expr, result_idx, is_valid))) {
+    LOG_WARN("failed to check remove ora_decode", K(ret));
+  } else if (is_valid) {
+    if (result_idx < expr->get_param_count()) {
+      new_expr = expr->get_param_expr(result_idx);
+    } else if (OB_FAIL(ObRawExprUtils::build_null_expr(*ctx_->expr_factory_, null_expr))) {
+      LOG_WARN("failed to build null expr", K(ret));
+    } else if (OB_ISNULL(null_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret), KP(null_expr));
+    } else if (OB_FAIL(null_expr->formalize(ctx_->session_info_))) {
+      LOG_WARN("failed to formalize result expr", K(ret), K(null_expr));
+    } else {
+      new_expr = null_expr; /* using default null */
+    }
+    if (OB_SUCC(ret) && OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(*ctx_->expr_factory_,
+                                                            expr, new_expr, ctx_->session_info_))) {
+      LOG_WARN("try add cast expr above failed", K(ret));
     }
   }
   return ret;

@@ -21,34 +21,10 @@
 #include "lib/lock/ob_spin_rwlock.h"
 
 extern int64_t global_thread_stack_size;
-
 namespace oceanbase {
 namespace lib {
 
-enum ThreadCGroup
-{
-  INVALID_CGROUP = 0,
-  FRONT_CGROUP = 1,
-  BACK_CGROUP = 2,
-};
-
-class Threads;
-class IRunWrapper
-{
-public:
-  virtual ~IRunWrapper() {}
-  virtual int pre_run(Threads*)
-  {
-    int ret = OB_SUCCESS;
-    return ret;
-  }
-  virtual int end_run(Threads*)
-  {
-    int ret = OB_SUCCESS;
-    return ret;
-  }
-};
-
+class IRunWrapper;
 class Threads
 {
 public:
@@ -58,8 +34,7 @@ public:
         threads_(nullptr),
         stack_size_(global_thread_stack_size),
         stop_(true),
-        run_wrapper_(nullptr),
-        cgroup_(INVALID_CGROUP)
+        run_wrapper_(nullptr)
   {}
   virtual ~Threads();
   static IRunWrapper *&get_expect_run_wrapper();
@@ -86,15 +61,19 @@ public:
   int init();
   // IRunWrapper 用于创建多租户线程时指定租户上下文
   // cgroup_ctrl 和IRunWrapper配合使用，实现多租户线程的CPU隔离
-  void set_run_wrapper(IRunWrapper *run_wrapper, ThreadCGroup cgroup = ThreadCGroup::FRONT_CGROUP)
+  void set_run_wrapper(IRunWrapper *run_wrapper)
   {
     run_wrapper_ = run_wrapper;
-    cgroup_ = cgroup;
+  }
+  IRunWrapper * get_run_wrapper()
+  {
+    return run_wrapper_;
   }
   virtual int start();
   virtual void stop();
   virtual void wait();
   void destroy();
+  virtual void run(int64_t idx);
 
 public:
   template <class Functor>
@@ -104,7 +83,6 @@ public:
     int ret = OB_SUCCESS;
     return ret;
   }
-  ThreadCGroup get_cgroup() { return cgroup_; }
   virtual bool has_set_stop() const
   {
     IGNORE_RETURN lib::Thread::update_loop_ts();
@@ -115,18 +93,25 @@ public:
     IGNORE_RETURN lib::Thread::update_loop_ts();
     return stop_;
   }
+  pthread_t get_pthread(int64_t idx)
+  {
+    pthread_t pth = 0;
+    if (idx < n_threads_) {
+      pth = threads_[idx]->get_pthread();
+    }
+    return pth;
+  }
 protected:
   int64_t get_thread_count() const { return n_threads_; }
   uint64_t get_thread_idx() const { return thread_idx_; }
   void set_thread_idx(int64_t idx) { thread_idx_ = idx; }
 
 private:
-  virtual void run(int64_t idx);
   virtual void run1() {}
 
   int do_thread_recycle();
-  /// \brief Create thread with start entry \c entry.
-  int create_thread(Thread *&thread, std::function<void()> entry);
+  /// \brief Create thread
+  int create_thread(Thread *&thread, int64_t idx);
 
   /// \brief Destroy thread.
   void destroy_thread(Thread *thread);
@@ -139,12 +124,24 @@ private:
   int64_t stack_size_;
   bool stop_;
   // protect for thread count changing.
-  common::SpinRWLock lock_;
+  common::SpinRWLock lock_ __attribute__((__aligned__(16)));
   // tenant ctx
   IRunWrapper *run_wrapper_;
-  // thread cgroups
-  ThreadCGroup cgroup_;
-  //
+};
+
+class ObPThread : public Threads
+{
+public:
+  ObPThread(void *(*start_routine) (void *), void *arg)
+    : start_routine_(start_routine), arg_(arg)
+  {}
+  void run1() override
+  {
+    start_routine_(arg_);
+  }
+private:
+  void *(*start_routine_)(void *);
+  void *arg_;
 };
 
 using ThreadPool = Threads;

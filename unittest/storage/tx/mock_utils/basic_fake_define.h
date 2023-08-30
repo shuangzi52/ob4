@@ -100,7 +100,10 @@ public:
     OZ (map_.insert(tx_data->tx_id_, tx_data));
     return ret;
   }
-  virtual int check_with_tx_data(const ObTransID tx_id, ObITxDataCheckFunctor &fn, ObTxDataGuard &tx_data_guard) override
+  virtual int check_with_tx_data(const ObTransID tx_id,
+                                 ObITxDataCheckFunctor &fn,
+                                 ObTxDataGuard &tx_data_guard,
+                                 share::SCN &recycled_scn) override
   {
     int ret = OB_SUCCESS;
     OZ (map_.get(tx_id, tx_data_guard));
@@ -545,6 +548,12 @@ public:
       share::SCN::minus(scn, 1);
     }
     return OB_SUCCESS;
+  }
+
+  int get_append_mode_initial_scn(share::SCN &ref_scn) {
+    int ret = OB_SUCCESS;
+    ref_scn = share::SCN::invalid_scn();
+    return ret;
   }
 
   int get_inflight_cnt() {

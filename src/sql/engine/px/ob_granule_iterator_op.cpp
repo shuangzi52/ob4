@@ -39,6 +39,7 @@ ObGIOpInput::ObGIOpInput(ObExecContext &ctx, const ObOpSpec &spec)
     worker_id_(common::OB_INVALID_INDEX),
     pump_(nullptr),
     px_sequence_id_(OB_INVALID_ID),
+    rf_max_wait_time_(0),
     deserialize_allocator_(nullptr)
 {}
 
@@ -128,7 +129,7 @@ OB_DEF_SERIALIZE_SIZE(ObGIOpInput)
 }
 
 OB_SERIALIZE_MEMBER((ObGranuleIteratorSpec, ObOpSpec),
-                    ref_table_id_,
+                    index_table_id_,
                     tablet_size_,
                     affinitize_,
                     partition_wise_join_,
@@ -143,7 +144,7 @@ OB_SERIALIZE_MEMBER((ObGranuleIteratorSpec, ObOpSpec),
 
 ObGranuleIteratorSpec::ObGranuleIteratorSpec(ObIAllocator &alloc, const ObPhyOperatorType type)
 : ObOpSpec(alloc, type),
-  ref_table_id_(OB_INVALID_ID),
+  index_table_id_(OB_INVALID_ID),
   tablet_size_(common::OB_DEFAULT_TABLET_SIZE),
   affinitize_(false),
   partition_wise_join_(false),
@@ -176,6 +177,7 @@ ObGranuleIteratorOp::ObGranuleIteratorOp(ObExecContext &exec_ctx, const ObOpSpec
   total_count_(0),
   rf_msg_(NULL),
   rf_key_(),
+  rf_start_wait_time_(0),
   tablet2part_id_map_(),
   real_child_(NULL),
   is_parallel_runtime_filtered_(false)
@@ -480,7 +482,7 @@ int ObGranuleIteratorOp::try_get_rows(const int64_t max_row_cnt)
       if (!is_vectorized()) {
         if (OB_FAIL(child_->get_next_row())) {
           LOG_DEBUG("failed to get new row", K(ret),
-                    K(MY_SPEC.affinitize_), K(MY_SPEC.ref_table_id_), K(worker_id_));
+                    K(MY_SPEC.affinitize_), K(MY_SPEC.index_table_id_), K(worker_id_));
           if (OB_ITER_END != ret) {
             LOG_WARN("try fetch task failed", K(ret));
           } else {
@@ -489,7 +491,7 @@ int ObGranuleIteratorOp::try_get_rows(const int64_t max_row_cnt)
           }
         } else {
           LOG_DEBUG("get new row", K(ret),
-                    K(MY_SPEC.affinitize_), K(MY_SPEC.ref_table_id_), K(worker_id_));
+                    K(MY_SPEC.affinitize_), K(MY_SPEC.index_table_id_), K(worker_id_));
           got_next_row = true;
         }
       } else {
@@ -645,7 +647,9 @@ int ObGranuleIteratorOp::do_get_next_granule_task(bool &partition_pruning)
           LOG_WARN("fail to fetch rescan pw task infos", K(ret));
         }
       } else if (OB_FAIL(fetch_normal_pw_task_infos(*op_ids_pointer, gi_prepare_map, gi_task_infos))) {
-        LOG_WARN("fail to fetch normal pw task infos", K(ret));
+        if (OB_ITER_END != ret) {
+          LOG_WARN("fail to fetch normal pw task infos", K(ret));
+        }
       }
     }
 
@@ -663,13 +667,12 @@ int ObGranuleIteratorOp::do_get_next_granule_task(bool &partition_pruning)
   return ret;
 }
 
-
-int ObGranuleIteratorOp::do_join_filter_partition_pruning(
-    int64_t tablet_id,
-    bool &partition_pruning)
-{
+int ObGranuleIteratorOp::wait_runtime_ready(bool &partition_pruning) {
   int ret = OB_SUCCESS;
-  bool is_match = false;
+  if (0 == rf_start_wait_time_) {
+    rf_start_wait_time_ = ObTimeUtility::current_time();
+  }
+  ObGIOpInput *gi_input = static_cast<ObGIOpInput*>(input_);
   while (OB_SUCC(ret) && (OB_ISNULL(rf_msg_) || !rf_msg_->check_ready())) {
     if (OB_ISNULL(rf_msg_) && OB_FAIL(PX_P2P_DH.atomic_get_msg(rf_key_, rf_msg_))) {
       if (OB_HASH_NOT_EXIST == ret) {
@@ -686,16 +689,36 @@ int ObGranuleIteratorOp::do_join_filter_partition_pruning(
     if (OB_SUCC(ret)) {
       if (OB_ISNULL(rf_msg_) || !rf_msg_->check_ready()) {
         if (MY_SPEC.bf_info_.is_shuffle_) {
+          // For shuffled msg, no waiting time is required.
           partition_pruning = false;
           break;
+        } else {
+          // For local messages, the maximum waiting time does not exceed rf_max_wait_time.
+          int64_t cur_time = ObTimeUtility::current_time();
+          if (cur_time - rf_start_wait_time_ > gi_input->get_rf_max_wait_time() * 1000) {
+            partition_pruning = false;
+            break;
+          } else {
+            ob_usleep(100);
+          }
         }
       }
     }
   }
+  return ret;
+}
 
+int ObGranuleIteratorOp::do_join_filter_partition_pruning(
+    int64_t tablet_id,
+    bool &partition_pruning)
+{
+  int ret = OB_SUCCESS;
+  bool is_match = false;
+  if (OB_FAIL(wait_runtime_ready(partition_pruning))) {
+    LOG_WARN("failed to wait wait_runtime_ready");
+  }
   if (OB_SUCC(ret) && OB_NOT_NULL(rf_msg_) && rf_msg_->check_ready()) {
     uint64_t hash_val = ObExprJoinFilter::JOIN_FILTER_SEED;
-    ObDatum &datum = MY_SPEC.tablet_id_expr_->locate_expr_datum(eval_ctx_);
     if (MY_SPEC.bf_info_.skip_subpart_) {
       int64_t part_id = OB_INVALID_ID;
       if (OB_FAIL(try_build_tablet2part_id_map())) {
@@ -707,6 +730,7 @@ int ObGranuleIteratorOp::do_join_filter_partition_pruning(
       }
     }
     if (OB_SUCC(ret) && !is_match) {
+      ObDatum datum;
       datum.int_ = &tablet_id;
       datum.len_ = sizeof(tablet_id);
       ObRFBloomFilterMsg *bf_msg = static_cast<ObRFBloomFilterMsg *>(rf_msg_);
@@ -820,7 +844,7 @@ int ObGranuleIteratorOp::get_gi_task_consumer_node(ObOperator *cur,
             PHY_BLOCK_SAMPLE_SCAN == first_child->get_spec().type_ ||
             PHY_ROW_SAMPLE_SCAN == first_child->get_spec().type_) {
     child = first_child;
-  } else if (get_gi_task_consumer_node(first_child, child)) {
+  } else if (OB_FAIL(get_gi_task_consumer_node(first_child, child))) {
     LOG_WARN("failed to get gi task consumer node", K(ret));
   }
   if (OB_SUCC(ret) && OB_ISNULL(child)) {
@@ -1030,7 +1054,7 @@ int ObGranuleIteratorOp::fetch_normal_pw_task_infos(const common::ObIArray<int64
 int ObGranuleIteratorOp::try_build_tablet2part_id_map()
 {
   int ret = OB_SUCCESS;
-  if (OB_INVALID_ID == MY_SPEC.ref_table_id_) {
+  if (OB_INVALID_ID == MY_SPEC.index_table_id_) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("loc is unexpected", K(ret));
   } else if (tablet2part_id_map_.created()) {
@@ -1040,13 +1064,13 @@ int ObGranuleIteratorOp::try_build_tablet2part_id_map()
     LOG_WARN("get unexpected null", K(ret), K(ctx_));
   } else {
     const ObTableSchema *table_schema = NULL;
-    int64_t ref_table_id = MY_SPEC.ref_table_id_;
+    int64_t index_table_id = MY_SPEC.index_table_id_;
     if (OB_FAIL(ctx_.get_sql_ctx()->schema_guard_->get_table_schema(
-        MTL_ID(), ref_table_id, table_schema))) {
+        MTL_ID(), index_table_id, table_schema))) {
       LOG_WARN("fail to get table schema", K(ret));
     } else if (OB_ISNULL(table_schema)) {
       ret = OB_SCHEMA_ERROR;
-      LOG_WARN("null table schema", K(MTL_ID()), K(ref_table_id));
+      LOG_WARN("null table schema", K(MTL_ID()), K(index_table_id));
     } else if (PARTITION_LEVEL_TWO != table_schema->get_part_level()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected part level", K(ret));
@@ -1159,8 +1183,9 @@ int ObGranuleIteratorOp::do_parallel_runtime_filter_pruning()
             OZ(args.tablet_arrays_.push_back(pruning_remain_tablets));
             OZ(pump_->regenerate_gi_task());
           }
-          args.set_finish_pruning();
         }
+        args.set_pruning_ret(ret);
+        args.set_finish_pruning();
       } else {
         while (OB_SUCC(ret) && !args.is_finish_pruning()) {
           if (OB_FAIL(ctx_.fast_check_status())) {
@@ -1169,7 +1194,8 @@ int ObGranuleIteratorOp::do_parallel_runtime_filter_pruning()
             ob_usleep(100);
           }
         }
-        if (OB_SUCC(ret) && args.sharing_iter_end_) {
+        if (OB_SUCC(ret)
+           && (args.sharing_iter_end_ || OB_UNLIKELY(OB_SUCCESS != args.get_pruning_ret()))) {
           ret = OB_ITER_END;
         }
       }

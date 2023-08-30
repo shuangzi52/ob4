@@ -71,7 +71,9 @@ public:
 #if defined(OB_USE_ASAN) || defined(ENABLE_SANITY)
       if (OB_NOT_NULL(ret = ::malloc(size + 8))) {
 #else
-      if (OB_NOT_NULL(ret = ::mmap(nullptr, size + 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))) {
+      if (MAP_FAILED == (ret = ::mmap(nullptr, size + 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))) {
+        ret = nullptr;
+      } else {
 #endif
         *static_cast<uint64_t *>(ret) = size;
         ret = (char*)ret + 8;
@@ -135,11 +137,11 @@ static constexpr const char *usage_str =
 "int = set_log_probe(string)\n"
 "{{row1}, {row2}, ...} = select_mem_leak_checker_info()\n"
 "{{row1}, {row2}, ...} = select_compaction_diagnose_info()\n"
-"{{row1}, {row2}, ...} = select_dag_warning_history()\n"
 "{{row1}, {row2}, ...} = select_server_schema_info()\n"
 "{{row1}, {row2}, ...} = select_schema_slot()\n"
 "{{row1}, {row2}, ...} = dump_thread_info()\n"
 "{{row1}, {row2}, ...} = select_malloc_sample_info()\n"
+"int = enable_system_tenant_memory_limit(boolean)\n"
 ;
 
 class LuaVtableGenerator
@@ -516,7 +518,7 @@ int get_tenant_sysstat_by_name(lua_State* L)
     int64_t value = 0;
     ret = OB_ENTRY_NOT_EXIST;
     for (int i = 0; i < ObStatEventIds::STAT_EVENT_SET_END; ++i) {
-      if (0 == strcmp(OB_STAT_EVENTS[i].display_name_, name)) {
+      if (0 == strcmp(OB_STAT_EVENTS[i].name_, name)) {
         if (OB_FAIL(get_tenant_sysstat(tenant_id, i, value))) {
           OB_LOG(ERROR, "failed to get tenant diag info", K(ret), K(tenant_id), K(i), K(name));
         } else {
@@ -1406,7 +1408,7 @@ int select_dump_tenant_info(lua_State *L)
       // remain_slice
       gen.next_column(0);
       // token_cnt
-      gen.next_column(t.token_cnt_);
+      gen.next_column(t.worker_count());
       // ass_token_cnt
       gen.next_column(t.worker_count());
       // lq_tokens
@@ -1416,7 +1418,7 @@ int select_dump_tenant_info(lua_State *L)
       // stopped
       gen.next_column(t.stopped_);
       // idle_us
-      gen.next_column(t.idle_us_);
+      gen.next_column(0);
       // recv_hp_rpc_cnt
       gen.next_column(t.recv_hp_rpc_cnt_);
       // recv_np_rpc_cnt
@@ -1640,73 +1642,6 @@ int select_compaction_diagnose_info(lua_State *L)
   return 1;
 }
 
-// list{list, list...} = select_dag_warning_history()
-int select_dag_warning_history(lua_State *L)
-{
-  int argc = lua_gettop(L);
-  if (argc > 1) {
-    OB_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "call select_dag_warning_history() failed, bad arguments count, should be less than 2.");
-    lua_pushnil(L);
-  } else {
-    int ret = OB_SUCCESS;
-    share::ObDagWarningInfoIterator dag_warning_info_iter;
-    // OB_SYS_TENANT_ID means dump all
-    if (OB_FAIL(dag_warning_info_iter.open(OB_SYS_TENANT_ID))) {
-      OB_LOG(ERROR, "Fail to open merge info iter", K(ret));
-      lua_pushnil(L);
-    } else {
-      std::vector<const char*> columns = {
-        "tenant_id",
-        "task_id",
-        "module",
-        "type",
-        "ret",
-        "status",
-        "gmt_create",
-        "gmt_modified",
-        "retry_cnt",
-        "warning_info"
-      };
-      LuaVtableGenerator gen(L, columns);
-      share::ObDagWarningInfo dag_warning_info;
-      while (OB_SUCC(dag_warning_info_iter.get_next_info(dag_warning_info)) && !gen.is_end()) {
-        gen.next_row();
-        // tenant_id
-        gen.next_column(dag_warning_info.tenant_id_);
-        // task_id
-        {
-          char task_id_buf[common::OB_TRACE_STAT_BUFFER_SIZE];
-          int64_t n = dag_warning_info.task_id_.to_string(task_id_buf, sizeof(task_id_buf));
-          if (n < 0 || n >= sizeof(task_id_buf)) {
-            ret = OB_BUF_NOT_ENOUGH;
-          } else {
-            gen.next_column(task_id_buf);
-          }
-        }
-        // module
-        gen.next_column(share::ObIDag::get_dag_module_str(dag_warning_info.dag_type_));
-        // type
-        gen.next_column(share::ObIDag::get_dag_type_str(dag_warning_info.dag_type_));
-        // ret
-        gen.next_column(common::ob_error_name(dag_warning_info.dag_ret_));
-        // status
-        gen.next_column(ObDagWarningInfo::get_dag_status_str(dag_warning_info.dag_status_));
-        // gmt_create
-        gen.next_column(dag_warning_info.gmt_create_);
-        // gmt_modified
-        gen.next_column(dag_warning_info.gmt_modified_);
-        // retry_cnt
-        gen.next_column(dag_warning_info.retry_cnt_);
-        // warning_info
-        gen.next_column(dag_warning_info.warning_info_);
-
-        gen.row_end();
-      }
-    }
-  }
-  return 1;
-}
-
 // list{list, list...} = select_server_schema_info()
 int select_server_schema_info(lua_State *L)
 {
@@ -1846,9 +1781,10 @@ int select_schema_slot(lua_State *L)
   return 1;
 }
 
-#define GET_OTHER_TSI_ADDR(type, var_name, addr) \
+#define GET_OTHER_TSI_ADDR(var_name, addr) \
 const int64_t var_name##_offset = ((int64_t)addr - (int64_t)pthread_self()); \
-type var_name = *(type*)(thread_base + var_name##_offset);
+decltype(*addr) var_name = *(decltype(addr))(thread_base + var_name##_offset);
+
 // list{list, list...} = dump_threads_info()
 int dump_thread_info(lua_State *L)
 {
@@ -1868,6 +1804,7 @@ int dump_thread_info(lua_State *L)
       "wait_event"
     };
     LuaVtableGenerator gen(L, columns);
+    pid_t pid = getpid();
     StackMgr::Guard guard(g_stack_mgr);
     for(auto* header = *guard; OB_NOT_NULL(header) && !gen.is_end(); header = guard.next()) {
       auto* thread_base = (char*)(header->pth_);
@@ -1875,12 +1812,11 @@ int dump_thread_info(lua_State *L)
         // avoid SMART_CALL stack
         gen.next_row();
         // tname
-        GET_OTHER_TSI_ADDR(char*, tname, ob_get_tname());
+        GET_OTHER_TSI_ADDR(tname, &(ob_get_tname()[0]));
         // PAY ATTENTION HERE
-        tname = thread_base + tname_offset;
-        gen.next_column(tname);
+        gen.next_column(thread_base + tname_offset);
         // tid
-        GET_OTHER_TSI_ADDR(int64_t, tid, &get_tid_cache());
+        GET_OTHER_TSI_ADDR(tid, &get_tid_cache());
         gen.next_column(tid);
         // thread_base
         {
@@ -1889,18 +1825,28 @@ int dump_thread_info(lua_State *L)
           gen.next_column(addr);
         }
         // loop_ts
-        GET_OTHER_TSI_ADDR(int64_t, loop_ts, &oceanbase::lib::Thread::loop_ts_);
+        GET_OTHER_TSI_ADDR(loop_ts, &oceanbase::lib::Thread::loop_ts_);
         gen.next_column(loop_ts);
         // latch_hold
         {
-          GET_OTHER_TSI_ADDR(uint32_t**, locks_addr, &ObLatch::current_locks);
-          GET_OTHER_TSI_ADDR(int8_t, slot_cnt, &ObLatch::max_lock_slot_idx)
-          locks_addr = (uint32_t**)(thread_base + locks_addr_offset);
           char addrs[256];
+          GET_OTHER_TSI_ADDR(locks_addr, &(ObLatch::current_locks[0]));
+          GET_OTHER_TSI_ADDR(slot_cnt, &ObLatch::max_lock_slot_idx)
+          const int64_t cnt = std::min(ARRAYSIZEOF(ObLatch::current_locks), (int64_t)slot_cnt);
+          decltype(&locks_addr) locks = (decltype(&locks_addr))(thread_base + locks_addr_offset);
           addrs[0] = 0;
-          for (auto i = 0, offset1 = 0; i < slot_cnt; ++i) {
-            if (OB_NOT_NULL(locks_addr[i]) && offset1 < 256) {
-              offset1 += snprintf(addrs + offset1, 256 - offset1, "%p ", locks_addr[i]);
+          for (int64_t i = 0, j = 0; i < cnt; ++i) {
+            int64_t idx = (slot_cnt + i) % ARRAYSIZEOF(ObLatch::current_locks);
+            if (OB_NOT_NULL(locks[idx]) && j < 256) {
+              bool has_segv = false;
+              uint32_t val = 0;
+              struct iovec local_iov = {&val, sizeof(val)};
+              struct iovec remote_iov = {locks[idx], sizeof(val)};
+              ssize_t n = process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0);
+              if (n != sizeof(val)) {
+              } else if (0 != val) {
+                j += snprintf(addrs + j, 256 - j, "%p ", locks[idx]);
+              }
             }
           }
           if (0 == addrs[0]) {
@@ -1910,7 +1856,7 @@ int dump_thread_info(lua_State *L)
           }
         }
         // latch_wait
-        GET_OTHER_TSI_ADDR(uint32_t*, wait_addr, &ObLatch::current_wait);
+        GET_OTHER_TSI_ADDR(wait_addr, &ObLatch::current_wait);
         if (OB_NOT_NULL(wait_addr)) {
           char addr[32];
           snprintf(addr, 32, "%p", wait_addr);
@@ -1920,22 +1866,22 @@ int dump_thread_info(lua_State *L)
         }
         // trace_id
         {
-          GET_OTHER_TSI_ADDR(ObCurTraceId::TraceId, trace_id, ObCurTraceId::get_trace_id());
+          GET_OTHER_TSI_ADDR(trace_id, ObCurTraceId::get_trace_id());
           char trace_id_buf[40];
           IGNORE_RETURN trace_id.to_string(trace_id_buf, 40);
           gen.next_column(trace_id_buf);
         }
         // status
-        GET_OTHER_TSI_ADDR(uint8_t, is_blocking, &Thread::is_blocking_);
+        GET_OTHER_TSI_ADDR(blocking_ts, &Thread::blocking_ts_);
         {
-          GET_OTHER_TSI_ADDR(pthread_t, join_addr, &Thread::thread_joined_);
-          GET_OTHER_TSI_ADDR(int64_t, sleep_us, &Thread::sleep_us_);
+          GET_OTHER_TSI_ADDR(join_addr, &Thread::thread_joined_);
+          GET_OTHER_TSI_ADDR(sleep_us, &Thread::sleep_us_);
           const char* status_str = nullptr;
           if (0 != join_addr) {
             status_str = "Join";
           } else if (0 != sleep_us) {
             status_str = "Sleep";
-          } else if (0 != is_blocking) {
+          } else if (0 != blocking_ts) {
             status_str = "Wait";
           } else {
             status_str = "Run";
@@ -1944,38 +1890,44 @@ int dump_thread_info(lua_State *L)
         }
         // wait_event
         {
-          GET_OTHER_TSI_ADDR(uint32_t*, wait_addr, &ObLatch::current_wait);
-          GET_OTHER_TSI_ADDR(pthread_t, join_addr, &Thread::thread_joined_);
-          GET_OTHER_TSI_ADDR(int64_t, sleep_us, &Thread::sleep_us_);
-          GET_OTHER_TSI_ADDR(char*, rpc_dest_addr, &Thread::rpc_dest_addr_);
+          GET_OTHER_TSI_ADDR(wait_addr, &ObLatch::current_wait);
+          GET_OTHER_TSI_ADDR(join_addr, &Thread::thread_joined_);
+          GET_OTHER_TSI_ADDR(sleep_us, &Thread::sleep_us_);
+          GET_OTHER_TSI_ADDR(rpc_dest_addr, &Thread::rpc_dest_addr_);
+          GET_OTHER_TSI_ADDR(event, &Thread::wait_event_);
           constexpr int64_t BUF_LEN = 64;
           char wait_event[BUF_LEN];
+          ObAddr addr;
+          struct iovec local_iov = {&addr, sizeof(ObAddr)};
+          struct iovec remote_iov = {thread_base + rpc_dest_addr_offset, sizeof(ObAddr)};
           wait_event[0] = '\0';
           if (0 != join_addr) {
             IGNORE_RETURN snprintf(wait_event, BUF_LEN, "thread %u %ld", *(uint32_t*)(thread_base + tid_offset), tid_offset);
-          } else if (0 != sleep_us) {
-            IGNORE_RETURN snprintf(wait_event, BUF_LEN, "%ld us", sleep_us);
           } else if (OB_NOT_NULL(wait_addr)) {
-            bool has_segv = false;
             uint32_t val = 0;
-            do_with_crash_restore([&] {
-              val = *wait_addr;
-            }, has_segv);
-            if (has_segv) {
+            struct iovec local_iov = {&val, sizeof(val)};
+            struct iovec remote_iov = {wait_addr, sizeof(val)};
+            ssize_t n = process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0);
+            if (n != sizeof(val)) {
             } else if (0 != (val & (1<<30))) {
               IGNORE_RETURN snprintf(wait_event, BUF_LEN, "wrlock on %u", val & 0x3fffffff);
             } else {
               IGNORE_RETURN snprintf(wait_event, BUF_LEN, "%u rdlocks", val & 0x3fffffff);
             }
-          } else if (OB_NOT_NULL(rpc_dest_addr)) {
-            bool has_segv = false;
-            do_with_crash_restore([&] {
-              IGNORE_RETURN snprintf(wait_event, BUF_LEN, "rpc to %s", rpc_dest_addr);
-            }, has_segv);
-          } else if (0 != (is_blocking & Thread::WAIT_IN_TENANT_QUEUE)) {
+          } else if (sizeof(ObAddr) == process_vm_readv(pid, &local_iov, 1, &remote_iov, 1, 0)
+                     && addr.is_valid()) {
+            int ret = 0;
+            if ((ret = snprintf(wait_event, BUF_LEN, "rpc to ")) > 0) {
+              IGNORE_RETURN addr.to_string(wait_event + ret, BUF_LEN - ret);
+            }
+          } else if (0 != blocking_ts && (0 != (Thread::WAIT_IN_TENANT_QUEUE & event))) {
             IGNORE_RETURN snprintf(wait_event, BUF_LEN, "tenant worker request");
-          } else if (0 != (is_blocking & Thread::WAIT_FOR_IO_EVENT)) {
+          } else if (0 != blocking_ts && (0 != (Thread::WAIT_FOR_IO_EVENT & event))) {
             IGNORE_RETURN snprintf(wait_event, BUF_LEN, "IO events");
+          } else if (0 != sleep_us) {
+            IGNORE_RETURN snprintf(wait_event, BUF_LEN, "%ld us", sleep_us);
+          } else if (0 != blocking_ts) {
+            IGNORE_RETURN snprintf(wait_event, BUF_LEN, "%ld us", common::ObTimeUtility::fast_current_time() - blocking_ts);
           }
           gen.next_column(wait_event);
         }
@@ -2033,6 +1985,28 @@ int select_malloc_sample_info(lua_State *L)
 
       gen.row_end();
     }
+  }
+  return 1;
+}
+
+// int = enable_system_tenant_memory_limit(boolean)
+int enable_system_tenant_memory_limit(lua_State* L)
+{
+  int ret = OB_SUCCESS;
+  int argc = lua_gettop(L);
+  if (1 != argc) {
+    OB_LOG(ERROR, "call enable_system_tenant_memory_limit() failed, bad arguments count, should be 1.");
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    luaL_checktype(L, 1, LUA_TBOOLEAN);
+    int enable = lua_toboolean(L, 1);
+#ifdef ENABLE_500_MEMORY_LIMIT
+    ObMallocAllocator::get_instance()->set_500_tenant_limit(!enable/*unlimited*/);
+#endif
+    lua_pushinteger(L, 1);
+  }
+  if (OB_FAIL(ret)) {
+    lua_pushinteger(L, -1);
   }
   return 1;
 }
@@ -2160,11 +2134,11 @@ void APIRegister::register_api(lua_State* L)
   lua_register(L, "show_log_probe", show_log_probe);
   lua_register(L, "select_mem_leak_checker_info", select_mem_leak_checker_info);
   lua_register(L, "select_compaction_diagnose_info", select_compaction_diagnose_info);
-  lua_register(L, "select_dag_warning_history", select_dag_warning_history);
   lua_register(L, "select_server_schema_info", select_server_schema_info);
   lua_register(L, "select_schema_slot", select_schema_slot);
   lua_register(L, "dump_thread_info", dump_thread_info);
   lua_register(L, "select_malloc_sample_info", select_malloc_sample_info);
+  lua_register(L, "enable_system_tenant_memory_limit", enable_system_tenant_memory_limit);
 }
 
 int APIRegister::flush()

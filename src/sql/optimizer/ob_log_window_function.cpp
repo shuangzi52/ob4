@@ -342,7 +342,6 @@ int ObLogWindowFunction::compute_op_ordering()
   } else if (!single_part_parallel_) {
     is_local_order_ = (range_dist_parallel_ || is_fully_partition_wise()
                        || (get_sort_keys().empty()
-                           && LOG_EXCHANGE == child->get_type()
                            && child->get_is_local_order())
                       ) && !get_op_ordering().empty();
   }
@@ -388,24 +387,57 @@ bool ObLogWindowFunction::is_block_op() const
 int ObLogWindowFunction::print_outline_data(PlanText &plan_text)
 {
   int ret = OB_SUCCESS;
-  const ObDMLStmt *stmt = NULL;
+  const ObSelectStmt *stmt = NULL;
   ObString qb_name;
-  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt())) {
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = dynamic_cast<const ObSelectStmt*>(get_plan()->get_stmt()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected NULL", K(ret), K(get_plan()), K(stmt));
+  } else if (get_plan()->has_added_win_dist()) {
+    /* do nothing */
+  } else if (OB_FAIL(stmt->get_qb_name(qb_name))) {
+    LOG_WARN("get qb name failed", K(ret));
   } else {
-    if (!dist_hint_.empty()) {
-      ObWindowDistHint win_dist;
-      if (OB_FAIL(stmt->get_qb_name(qb_name))) {
-        LOG_WARN("get qb name failed", K(ret));
-      } else if (OB_FAIL(win_dist.get_algos().assign(dist_hint_))) {
-        LOG_WARN("array assign failed", K(ret));
-      } else {
-        win_dist.set_qb_name(qb_name);
-        if (OB_FAIL(win_dist.print_hint(plan_text))) {
-          LOG_WARN("print hint failed", K(ret));
-        }
-      }
+    get_plan()->set_added_win_dist();
+    ObWindowDistHint win_dist_hint;
+    win_dist_hint.set_qb_name(qb_name);
+    if (OB_FAIL(add_win_dist_options(this, stmt->get_window_func_exprs(), win_dist_hint))) {
+      LOG_WARN("failed to add win dist options", K(ret));
+    } else if (OB_FAIL(win_dist_hint.print_hint(plan_text))) {
+      LOG_WARN("print hint failed", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObLogWindowFunction::add_win_dist_options(const ObLogicalOperator *op,
+                                              const ObIArray<ObWinFunRawExpr*> &all_win_funcs,
+                                              ObWindowDistHint &win_dist_hint)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(op)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected NULL", K(ret), K(op));
+  } else if (LOG_WINDOW_FUNCTION != op->get_type()
+             && LOG_EXCHANGE != op->get_type()
+             && LOG_SORT != op->get_type()
+             && LOG_GRANULE_ITERATOR != op->get_type()
+             && LOG_TOPK != op->get_type()
+             && LOG_MATERIAL != op->get_type()) {
+    /* do nothing */
+  } else if (OB_FAIL(SMART_CALL(add_win_dist_options(op->get_child(ObLogicalOperator::first_child),
+                                                     all_win_funcs,
+                                                     win_dist_hint)))) {
+    LOG_WARN("failed to add win dist options", K(ret));
+  } else if (LOG_WINDOW_FUNCTION == op->get_type()) {
+    const ObLogWindowFunction *win_func = static_cast<const ObLogWindowFunction*>(op);
+    if (win_func->is_consolidator()) {
+      /* CONSOLIDATOR replaced win_expr, generate outline hint in PARTICIPATOR only */
+    } else if (OB_FAIL(win_dist_hint.add_win_dist_option(all_win_funcs,
+                                                         win_func->get_window_exprs(),
+                                                         win_func->get_win_dist_algo(),
+                                                         win_func->is_push_down(),
+                                                         win_func->get_use_hash_sort()))) {
+      LOG_WARN("failed to add win dist option", K(ret));
     }
   }
   return ret;
@@ -414,28 +446,46 @@ int ObLogWindowFunction::print_outline_data(PlanText &plan_text)
 int ObLogWindowFunction::print_used_hint(PlanText &plan_text)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(get_plan())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected NULL", K(ret), K(get_plan()));
+  const ObWindowDistHint *win_dist_hint = NULL;
+  const ObSelectStmt *stmt = NULL;
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = dynamic_cast<const ObSelectStmt*>(get_plan()->get_stmt()))) {
+    LOG_WARN("unexpected NULL", K(ret), K(get_plan()), K(stmt));
+  } else if (OB_FALSE_IT(win_dist_hint = get_plan()->get_log_plan_hint().get_window_dist())) {
+  } else if (NULL == win_dist_hint || get_plan()->has_added_win_dist()) {
+    /* do nothing */
   } else {
-    auto win_dist = get_plan()->get_log_plan_hint().get_window_dist();
-    if (NULL != win_dist && !win_dist->get_algos().empty()) {
-      if (is_array_equal(dist_hint_, win_dist->get_algos())) {
-        if (OB_FAIL(win_dist->print_hint(plan_text))) {
-          LOG_WARN("print hint failed", K(ret));
-        }
+    get_plan()->set_added_win_dist();
+    ObWindowDistHint outline_hint;
+    if (OB_FAIL(add_win_dist_options(this, stmt->get_window_func_exprs(), outline_hint))) {
+      LOG_WARN("failed to add win dist options", K(ret));
+    } else if (win_dist_hint->get_win_dist_options().count() > outline_hint.get_win_dist_options().count()) {
+      /* do nothing */
+    } else {
+      bool hint_match = true;
+      const ObIArray<ObWindowDistHint::WinDistOption> &hint_opts = win_dist_hint->get_win_dist_options();
+      const ObIArray<ObWindowDistHint::WinDistOption> &outline_opts = outline_hint.get_win_dist_options();
+      for (int64_t i = 0; hint_match && OB_SUCC(ret) && i < hint_opts.count(); ++i) {
+        const ObWindowDistHint::WinDistOption &hint_opt = hint_opts.at(i);
+        const ObWindowDistHint::WinDistOption &outline_opt = outline_opts.at(i);
+        hint_match = hint_opt.algo_ == outline_opt.algo_
+                    && hint_opt.use_hash_sort_ == outline_opt.use_hash_sort_
+                    && hint_opt.is_push_down_ == outline_opt.is_push_down_
+                    && (hint_opt.win_func_idxs_.empty()
+                        || is_array_equal(hint_opt.win_func_idxs_, outline_opt.win_func_idxs_));
+      }
+      if (OB_SUCC(ret) && hint_match && OB_FAIL(win_dist_hint->print_hint(plan_text))) {
+        LOG_WARN("print hint failed", K(ret));
       }
     }
   }
   return ret;
 }
 
-int ObLogWindowFunction::inner_replace_op_exprs(
-    const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs)
+int ObLogWindowFunction::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
   FOREACH_X(key, sort_keys_, OB_SUCC(ret)) {
-    if (OB_FAIL(replace_expr_action(to_replace_exprs, key->expr_))) {
+    if (OB_FAIL(replace_expr_action(replacer, key->expr_))) {
       LOG_WARN("replace expr failed", K(ret));
     }
   }
@@ -445,7 +495,7 @@ int ObLogWindowFunction::inner_replace_op_exprs(
     if (OB_ISNULL(win_expr)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("win expr is null", K(ret));
-    } else if (OB_FAIL(replace_expr_action(to_replace_exprs, win_expr))) {
+    } else if (OB_FAIL(replace_expr_action(replacer, win_expr))) {
       LOG_WARN("replace expr failed", K(ret));
     } else if (win_expr == win_exprs_.at(i)) {
       // do nothing

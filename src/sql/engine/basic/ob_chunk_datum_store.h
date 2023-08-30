@@ -673,12 +673,23 @@ public:
   class IterationAge
   {
   public:
+    IterationAge() : age_(0) {}
     int64_t get(void) const { return age_; }
     void inc(void) { age_ += 1; }
   private:
     int64_t age_;
   };
+  struct IteratedBlockHolder
+  {
+    IteratedBlockHolder() : block_list_() {}
+    ~IteratedBlockHolder()
+    {
+      release();
+    }
+    void release();
 
+    BlockList block_list_;
+  };
   class Iterator
   {
   public:
@@ -689,6 +700,7 @@ public:
       DISK_ITER_END = 0x02
     };
     friend class ObChunkDatumStore;
+    friend class IteratedBlockHolder;
     Iterator() : start_iter_(false),
                  store_(NULL),
                  cur_iter_blk_(NULL),
@@ -704,7 +716,8 @@ public:
                  read_blk_buf_(NULL),
                  aio_blk_(NULL),
                  aio_blk_buf_(NULL),
-                 age_(NULL) {}
+                 age_(NULL),
+                 blk_holder_ptr_(NULL) {}
     virtual ~Iterator() { reset_cursor(0); }
     int init(ObChunkDatumStore *row_store, const IterationAge *age = NULL);
     void set_iteration_age(const IterationAge *age) { age_ = age; }
@@ -763,10 +776,11 @@ public:
     void free_block(Block *blk, const int64_t size, bool force_free = false);
     void try_free_cached_blocks();
     int64_t get_cur_chunk_row_cnt() const { return chunk_n_rows_;}
+    void set_blk_holder_ptr(IteratedBlockHolder *ptr) { blk_holder_ptr_ = ptr;}
     TO_STRING_KV(KP_(store), KP_(cur_iter_blk),
          K_(cur_chunk_n_blocks), K_(cur_iter_pos), K_(file_size),
          KP_(chunk_mem), KP_(read_blk), KP_(read_blk_buf), KP_(aio_blk),
-         KP_(aio_blk_buf), K_(default_block_size));
+         KP_(aio_blk_buf), K_(default_block_size), KP_(blk_holder_ptr));
   private:
      explicit Iterator(ObChunkDatumStore *row_store);
   protected:
@@ -791,14 +805,86 @@ public:
      Block *aio_blk_; // not null means aio is reading.
      BlockBuffer *aio_blk_buf_;
 
-     BlockList free_list_;
-     // cached blocks for batch iterate
-     BlockList cached_;
+     /*
+      * Currently, the design philosophy of ObChunkDatumStore is as follows:
+      *  - Support concurrent read. External readers have no "side effects" on
+      *    ObChunkDatumStore and will not change any state in ObChunkDatumStore.
+      *  - From the reader/writer's perspective, the data in ObChunkDatumStore
+      *    is divided into two parts: blocks cached in memory and data persisted in files.
+      *
+      * ObChunkDatumStore's write strategy:
+      * All data is first written to the cache block.
+      * If the cache is full, the oldest data in the cache block is written to the disk,
+      * and then the data is written to the cache block. The final effect is that old data
+      * is on the disk and new data is in the cache, with the order of writing preserved.
+
+      * ObChunkDatumStore's read strategy:
+      * The reading order of data is consistent with the writing order,
+      * first reading from the disk file, and then reading from the cache block after
+      * finishing reading from the disk. An Iterator must be used to access data in ObChunkDatumStore.
+      * When the Iterator accesses data, it first reads from the disk and caches the disk data
+      * in the Iterator's private cache. When the Iterator is released, these cached data will also
+      * be released with the Iterator. After the disk data is read, the Iterator directly
+      * reads the block cache in ObChunkDatumStore based on its own record of the block offset.
+      *
+      * To wrap it up, the write & read mode is FIFO.
+      */
+
+      /*
+        In this illustration, ObChunkDatumStore is readonly.
+        Iterator 1 and Iterator 2 are accessing the same ObChunkDatumStore in parallel.
+        The Iterator caches data independently, and have its own private cur_nth_blk_.
+
+           +------------------------------------------------------+
+           |                Iterator 1                            |
+           |                      +-----------+  +----------+     |
+           |  cur_nth_blk_        | cached    |  |cached    |     |
+           |       |              | block     |  |block     |     |
+           |       +------+       +-----+-----+  +----+-----+     |
+           |              |             |             |           |
+           +--------------+-------------+-------------+-----------+
+                          |             |             |
+                          |             |             |
+                          |             |             |
+      +-------------------+-------------+-------------+----------------+
+      |                   |             |             |                |
+      |     +-------+ +---v---+     +---v-------------v----------+     |
+      |     |       | |       |     |                            |     |
+      |     |in mem | |in mem |     |       in disk              |     |
+      |     |block  | |block  |     |       block                |     |
+      |     |       | |       |     |                            |     |
+      |     |       | |       |     |                            |     |
+      |     |       | |       |     |                            |     |
+      |     +---^---+ +-------+     +------^--------^------------+     |
+      |         |                          |        |                  |
+      |         |      ObChunkDatumStore   |        |                  |
+      |         |                          |        |                  |
+      +---------+--------------------------+--------+------------------+
+                |                          |        |
+                |                          |        |
+                |                          |        |
+          +-----+--------------------------+--------+------------+
+          |     |                          |        |            |
+          |                      +---------+-+  +---+------+     |
+          |  cur_nth_blk_        | cached    |  |cached    |     |
+          |                      | block     |  |block     |     |
+          |                      +-----------+  +----------+     |
+          |               Iterator 2                             |
+          +------------------------------------------------------+
+
+     */
+     // idle memory blocks cached by iterator,
+     // used to cache data read from aio file
+     BlockList ifree_list_;
+     // active blocks for batch iterate
+     // used to output data
+     BlockList icached_;
 
      // inner iteration age is used for batch iteration with no outside age control.
      IterationAge inner_age_;
      const IterationAge *age_;
      int64_t default_block_size_;
+     IteratedBlockHolder *blk_holder_ptr_;
   };
 
   struct BatchCtx
@@ -1008,6 +1094,7 @@ private:
   bool need_dump(int64_t extra_size);
   BlockBuffer* new_block();
   void set_io(int64_t size, char *buf) { io_.size_ = size; io_.buf_ = buf; }
+  static void set_io(int64_t size, char *buf, blocksstable::ObTmpFileIOInfo &io) { io.size_ = size; io.buf_ = buf; }
   bool find_block_can_hold(const int64_t size, bool &need_shrink);
   int get_store_row(RowIterator &it, const StoredRow *&sr);
   inline void callback_alloc(int64_t size) { if (callback_ != nullptr) callback_->alloc(size); }

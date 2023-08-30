@@ -85,7 +85,8 @@ ObDelUpdResolver::ObDelUpdResolver(ObResolverParams &params)
   : ObDMLResolver(params),
     insert_column_ids_(),
     is_column_specify_(false),
-    is_oracle_tmp_table_(false)
+    is_oracle_tmp_table_(false),
+    oracle_tmp_table_type_(0)
 {
   // TODO Auto-generated constructor stub
 }
@@ -260,6 +261,17 @@ int ObDelUpdResolver::resolve_column_and_values(const ParseNode &assign_list,
           if (1 != stmt->get_table_size()) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("SET ROW must be used for single table", K(stmt->get_table_size()), K(ret));
+          } else if (params_.secondary_namespace_ == NULL) {
+            TableItem *table_item = stmt->get_table_item(0);
+            CK (OB_NOT_NULL(table_item));
+            if (OB_SUCC(ret)) {
+              ObString row = ObString::make_string("row");
+              ObString table_name = table_item->get_table_name().length() > 0 ?
+                                        table_item->get_table_name() : ObString::make_string(" ");
+              ret = OB_ERR_BAD_FIELD_ERROR; //oracle will report an ORA-00936 error, ob does not have the error code.
+              LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, row.length(), row.ptr(), table_name.length(), table_name.ptr());
+              LOG_WARN("column does not existed", K(ret));
+            }
           } else {
             TableItem *table_item = stmt->get_table_item(0);
             const share::schema::ObTableSchema *table_schema = NULL;
@@ -270,7 +282,10 @@ int ObDelUpdResolver::resolve_column_and_values(const ParseNode &assign_list,
               OZ (target_list.push_back(column_items.at(i).get_expr()));
             }
             OZ (expand_record_to_columns(*assign_list.children_[0], value_list));
-            CK (target_list.count() == value_list.count());
+            if (OB_SUCC(ret) && target_list.count() != value_list.count()) {
+              ret = OB_ERR_TOO_MANY_VALUES;
+              LOG_WARN("too many values", K(ret), K(target_list.count()), K(value_list.count()));
+            }
           }
         }
       }
@@ -591,6 +606,7 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
             LOG_WARN("no column expr returned", K(ret));
           } else if (OB_ISNULL(col_item = stmt->get_column_item_by_id(
               table_item->table_id_, col_exprs.at(0)->get_column_id()))) {
+            ret = OB_ERR_UNEXPECTED;
             LOG_WARN("get column item failed", K(ret));
           } else {
             assignment.column_expr_ = col_item->expr_;
@@ -708,9 +724,22 @@ int ObDelUpdResolver::add_assignment(common::ObIArray<ObTableAssignment> &assign
     //For generated column, when cascaded column is updated, the generated column will be updated with new column
     ObRawExprCopier copier(*params_.expr_factory_);
     for (int64_t i = 0; OB_SUCC(ret) && i < table_assign->assignments_.count(); ++i) {
-      if (OB_FAIL(copier.add_replaced_expr(table_assign->assignments_.at(i).column_expr_,
-                                           table_assign->assignments_.at(i).expr_))) {
-        LOG_WARN("failed to add replaced expr", K(ret));
+      if (!table_assign->assignments_.at(i).column_expr_->is_xml_column()) {
+        if (OB_FAIL(copier.add_replaced_expr(table_assign->assignments_.at(i).column_expr_,
+                                            table_assign->assignments_.at(i).expr_))) {
+          LOG_WARN("failed to add replaced expr", K(ret));
+        }
+      } else {
+        // is generated column and ref column is xmltype, generated column ref hiddlen column actually
+        // udt column replace is done in pre transfrom but here generate column need replace
+        const ObRawExpr *from_expr = ObRawExprUtils::get_sql_udt_type_expr_recursively(assign.expr_);
+        const ObRawExpr *to_expr = table_assign->assignments_.at(i).expr_;
+        if (OB_ISNULL(from_expr)) { // do nonthing
+        } else {
+          if (OB_FAIL(copier.add_replaced_expr(from_expr, to_expr))) {
+            LOG_WARN("failed to add replaced expr", K(ret));
+          }
+        }
       }
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < get_stmt()->get_subquery_expr_size(); ++i) {
@@ -851,7 +880,17 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
         } else {
           table_item.view_base_item_ = new_table_item;
           if (new_table_item->is_basic_table()) {
-            // find base table, do nothing
+            const ObTableSchema *base_table_schema = NULL;
+            if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
+                        new_table_item->ref_id_, base_table_schema))) {
+              LOG_WARN("get table schema failed", K(ret));
+            } else if (OB_ISNULL(base_table_schema)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("NULL table schema", K(ret));
+            } else if (OB_UNLIKELY(base_table_schema->is_vir_table())) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "DML operation on Virtual Table/Temporary Table");
+            }
           } else if (new_table_item->is_generated_table() || new_table_item->is_temp_table()) {
             const bool inner_log_error = false;
             if (new_table_item->is_view_table_ && is_oracle_mode()
@@ -869,6 +908,9 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
           } else if (new_table_item->is_fake_cte_table()) {
             ret = OB_ERR_ILLEGAL_VIEW_UPDATE;
             LOG_WARN("illegal view update", K(ret));
+          } else if (new_table_item->is_json_table()) {
+            ret = OB_ERR_NON_INSERTABLE_TABLE;
+            LOG_WARN("json table can not be insert", K(ret));
           } else {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("column is not updatable", K(ret), K(col_ref));
@@ -941,11 +983,25 @@ int ObDelUpdResolver::set_base_table_for_view(TableItem &table_item, const bool 
           LOG_WARN("delete join view", K(ret));
         }
       }
-      if (NULL == base) {
+      if (OB_FAIL(ret)) {
+      } else if (NULL == base) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("table item is null", K(ret));
-      } else if (base->is_basic_table() || base->is_link_table()) {
+      } else if (base->is_link_table()) {
         table_item.view_base_item_ = base;
+      } else if (base->is_basic_table()) {
+        table_item.view_base_item_ = base;
+        const ObTableSchema *base_table_schema = NULL;
+        if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
+                    base->ref_id_, base_table_schema))) {
+          LOG_WARN("get table schema failed", K(ret));
+        } else if (OB_ISNULL(base_table_schema)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("NULL table schema", K(ret));
+        } else if (OB_UNLIKELY(base_table_schema->is_vir_table())) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "DML operation on Virtual Table/Temporary Table");
+        }
       } else if (base->is_generated_table()) {
         table_item.view_base_item_ = base;
         const bool inner_log_error = false;
@@ -2546,7 +2602,8 @@ int ObDelUpdResolver::generate_column_conv_function(ObInsertTableInfo &table_inf
         LOG_WARN("fail to find column item", K(ret), K(column_id), K(column_item), K(*tbl_col));
       } else if (OB_FAIL(find_value_desc(table_info, column_id, column_ref))) {
         LOG_WARN("fail to check column is exists", K(ret), K(column_id));
-      } else if (tbl_col->is_xml_column() || (tbl_col->is_udt_hidden_column())) {
+      } else if ((!session_info_->get_ddl_info().is_ddl() || OB_ISNULL(column_ref)) &&
+                 ( tbl_col->is_xml_column() || (tbl_col->is_udt_hidden_column()))) {
         if (!tbl_col->is_xml_column()) {
           // do nothing, hidden column with build with xml column together
         } else if (OB_FAIL(build_column_conv_function_for_udt_column(table_info, i, column_ref))) {
@@ -3141,8 +3198,9 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
   ObArray<int64_t> value_idxs; //store the old order of columns in values_desc
   uint64_t value_count = OB_INVALID_ID;
   bool is_all_default = false;
+  bool is_update_view = false;
   if (OB_ISNULL(del_upd_stmt) || OB_ISNULL(node) || OB_ISNULL(session_info_) ||
-      T_VALUE_LIST != node->type_ || OB_ISNULL(node->children_)) {
+      T_VALUE_LIST != node->type_ || OB_ISNULL(node->children_) || OB_ISNULL(del_upd_stmt->get_query_ctx())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguemnt", K(del_upd_stmt), K(node), K(session_info_), K(ret));
   } else if (is_oracle_mode() && 1 < node->num_child_) {
@@ -3159,6 +3217,18 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
   if (FAILEDx(table_info.values_vector_.reserve(node->num_child_ * table_info.values_desc_.count()))) {
     // works for most cases. except label security/timestamp generation needs extend memory
     LOG_WARN("reserve memory fail", K(ret));
+  }
+  if (OB_SUCC(ret)) {
+    TableItem* table_item = NULL;
+    if (OB_FAIL(check_need_match_all_params(table_info.values_desc_,
+                                            del_upd_stmt->get_query_ctx()->need_match_all_params_))) {
+      LOG_WARN("check need match all params failed", K(ret));
+    } else if (OB_ISNULL(table_item = del_upd_stmt->get_table_item_by_id(table_info.table_id_))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (table_item->is_generated_table()) {
+      is_update_view = true;
+    }
   }
   if (OB_SUCC(ret)) {
     //move generated columns behind basic columns before resolve values
@@ -3239,8 +3309,11 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
               LOG_ERROR("fail to resolve sql expr", K(ret), K(expr));
             } else if (T_DEFAULT == expr->get_expr_type()) {
               ColumnItem *column_item = NULL;
-              if (OB_ISNULL(column_item = del_upd_stmt->get_column_item_by_id(table_info.table_id_,
-                                                                             column_id))) {
+              if (is_update_view && is_oracle_mode()) {
+                ret = OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS;
+                LOG_USER_ERROR(OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS);
+              } else if (OB_ISNULL(column_item = del_upd_stmt->get_column_item_by_id(table_info.table_id_,
+                                                                                     column_id))) {
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("get column item by id failed", K(table_info.table_id_), K(column_id));
               } else  if (column_expr->is_generated_column()) {
@@ -3257,8 +3330,7 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
             } else if (OB_FAIL(check_basic_column_generated(column_expr, del_upd_stmt,
                                                             is_generated_column))) {
               LOG_WARN("check column generated failed", K(ret));
-            } else if (is_generated_column && !session_info_->is_for_trigger_package()) {
-              //兼容oracle，如果是创建trigger过程中发现该错误，不报错，在执行阶段会报错
+            } else if (is_generated_column) {
               ret = OB_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN;
               if (!is_oracle_mode()) {
                 ColumnItem *orig_col_item = NULL;
@@ -3545,9 +3617,11 @@ int ObDelUpdResolver::build_hidden_pk_assignment(ObTableAssignment &ta,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("no column expr returned", K(ret));
       } else if (OB_ISNULL(col_expr = col_exprs.at(0))) {
-
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("no column expr returned", K(ret));
       } else if (OB_ISNULL(col_item = stmt->get_column_item_by_id(table_item->table_id_,
                                                                   col_exprs.at(0)->get_column_id()))) {
+        ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get column item failed", K(ret),
                  "table_id", table_item->table_id_,
                  "column_id", col_exprs.at(0)->get_column_id());
@@ -3924,7 +3998,8 @@ int ObDelUpdResolver::add_select_list_for_set_stmt(ObSelectStmt &select_stmt)
       res_type.reset();
       new_select_item.alias_name_ = select_item.alias_name_;
       new_select_item.expr_name_ = select_item.expr_name_;
-      new_select_item.is_real_alias_ = true;
+      new_select_item.is_real_alias_ = select_item.is_real_alias_ ||
+                                       ObRawExprUtils::is_column_ref_skip_implicit_cast(select_item.expr_);
       res_type = select_item.expr_->get_result_type();
       if (OB_FAIL(ObRawExprUtils::make_set_op_expr(*params_.expr_factory_, i, set_op_type, res_type,
                                                    session_info_, new_select_item.expr_))) {
@@ -3947,41 +4022,56 @@ int ObDelUpdResolver::add_new_sel_item_for_oracle_temp_table(ObSelectStmt &selec
 {
   int ret = OB_SUCCESS;
   if (is_oracle_tmp_table_) {
-    ObConstRawExpr *session_id_expr = NULL;
+    ObSysFunRawExpr *session_id_expr = NULL;
+    ObConstRawExpr *temp_table_type = NULL;
     ObConstRawExpr *sess_create_time_expr = NULL;
-    ObArray<SelectItem> select_items;
+    ObSEArray<SelectItem, 4> select_items;
     SelectItem select_item;
-    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, session_id_expr))) {
+    select_item.is_implicit_added_ = true;
+
+    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_GET_TEMP_TABLE_SESSID, session_id_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
     } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, sess_create_time_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
-    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr)) {
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, temp_table_type))) {
+      LOG_WARN("create raw expr failed", K(ret));
+    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr) || OB_ISNULL(temp_table_type)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("dummy expr is null", K(session_id_expr), K(sess_create_time_expr));
-    } else {
+      LOG_WARN("dummy expr is null", K(ret));
+    }
+    if (OB_SUCC(ret)) {
       ObObj val;
-      val.set_int(session_info_->get_sessid_for_table());
-      session_id_expr->set_value(val);
-      select_item.is_implicit_added_ = true;
+      val.set_int(oracle_tmp_table_type_);
+      temp_table_type->set_value(val);
+    }
+    if (OB_SUCC(ret)) {
+      session_id_expr->set_func_name(N_TEMP_TABLE_SSID);
       select_item.expr_ = session_id_expr;
-      if (OB_FAIL(select_items.push_back(select_item))) {
+      if (OB_FAIL(session_id_expr->add_param_expr(temp_table_type))) {
+        LOG_WARN("fail to add param expr", K(ret));
+      } else if (OB_FAIL(session_id_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(select_items.push_back(select_item))) {
         LOG_WARN("push subquery select items failed", K(ret));
-      } else if (session_info_->is_obproxy_mode() && 0 == session_info_->get_sess_create_time()) {
-        ret = OB_NOT_SUPPORTED;
-        SQL_RESV_LOG(WARN, "can't insert into oracle temporary table via obproxy, upgrade obproxy first", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "obproxy version is too old, insert into temporary table");
-      } else {
-        val.set_int(session_info_->get_sess_create_time());
-        sess_create_time_expr->set_value(val);
-        select_item.expr_ = sess_create_time_expr;
-        if (OB_FAIL(select_items.push_back(select_item))) {
-          LOG_WARN("push subquery select items failed", K(ret));
-        } else if (OB_FAIL(add_select_items(select_stmt, select_items))) {
-          LOG_WARN("failed to add select items", K(ret));
-        }
-        LOG_DEBUG("add __session_id & __sess_create_time to select item succeed");
       }
     }
+    if (OB_SUCC(ret)) {
+      ObObj val;
+      val.set_int(0);
+      sess_create_time_expr->set_value(val);
+      select_item.expr_ = sess_create_time_expr;
+      if (OB_FAIL(sess_create_time_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(select_items.push_back(select_item))) {
+        LOG_WARN("push subquery select items failed", K(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(add_select_items(select_stmt, select_items))) {
+        LOG_WARN("failed to add select items", K(ret));
+      }
+    }
+    LOG_DEBUG("add __session_id & __sess_create_time to select item succeed");
   }
   return ret;
 }
@@ -4055,36 +4145,41 @@ int ObDelUpdResolver::add_new_value_for_oracle_temp_table(ObIArray<ObRawExpr*> &
 {
   int ret = OB_SUCCESS;
   if (is_oracle_tmp_table_) {
-    ObConstRawExpr *session_id_expr = NULL;
+    ObSysFunRawExpr *session_id_expr = NULL;
     ObConstRawExpr *sess_create_time_expr = NULL;
+    ObConstRawExpr *temp_table_type = NULL;
     if (OB_ISNULL(session_info_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid session_info_ or insert_stmt", K(session_info_));
-    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, session_id_expr))) {
+      LOG_WARN("invalid session_info_ ", K(session_info_));
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_GET_TEMP_TABLE_SESSID, session_id_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
     } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, sess_create_time_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
-    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr)) {
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, temp_table_type))) {
+      LOG_WARN("create raw expr failed", K(ret));
+    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr) || OB_ISNULL(temp_table_type)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("dummy expr is null", K(session_id_expr), K(sess_create_time_expr));
     } else {
       ObObj val;
-      val.set_int(session_info_->get_sessid_for_table());
-      session_id_expr->set_value(val);
-      if (OB_FAIL(value_row.push_back(session_id_expr))) {
+      val.set_int(0);
+      sess_create_time_expr->set_value(val);
+      session_id_expr->set_func_name(N_TEMP_TABLE_SSID);
+      val.set_int(oracle_tmp_table_type_);
+      temp_table_type->set_value(val);
+      if (OB_FAIL(session_id_expr->add_param_expr(temp_table_type))) {
+        LOG_WARN("fail to add param expr", K(ret));
+      } else if (OB_FAIL(session_id_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(sess_create_time_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(value_row.push_back(session_id_expr))) {
         LOG_WARN("push back to output expr failed", K(ret));
-      } else if (session_info_->is_obproxy_mode() && 0 == session_info_->get_sess_create_time()) {
-        ret = OB_NOT_SUPPORTED;
-        SQL_RESV_LOG(WARN, "can't insert into oracle temporary table via obproxy, upgrade obproxy first", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "obproxy version is too old, insert into temporary table");
-      } else {
-        val.set_int(session_info_->get_sess_create_time());
-        sess_create_time_expr->set_value(val);
-        if (OB_FAIL(value_row.push_back(sess_create_time_expr))) {
-          LOG_WARN("push back to output expr failed", K(ret));
-        }
-        LOG_DEBUG("add session id & sess create time value succeed", K(session_id_expr), K(sess_create_time_expr), K(value_row), K(lbt()));
+      } else if (OB_FAIL(value_row.push_back(sess_create_time_expr))) {
+        LOG_WARN("push back to output expr failed", K(ret));
       }
+      LOG_DEBUG("add session id & sess create time value succeed",
+                K(session_id_expr), K(sess_create_time_expr), K(value_row));
     }
   }
   return ret;
@@ -4417,6 +4512,40 @@ int ObDelUpdResolver::recursive_search_sequence_expr(const ObRawExpr *default_ex
       if (child_expr->has_flag(CNT_SEQ_EXPR)
           && OB_FAIL(SMART_CALL(recursive_search_sequence_expr(child_expr)))) {
         LOG_WARN("resursive search sequence expr failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDelUpdResolver::check_need_match_all_params(const common::ObIArray<ObColumnRefRawExpr*> &value_descs, bool &need_match)
+{
+  int ret = OB_SUCCESS;
+  need_match = false;
+  ObSEArray<uint64_t, 4> col_ids;
+  ObBitSet<> column_bs;
+  for (int64_t i = 0; OB_SUCC(ret) && i < value_descs.count() && !need_match; ++i) {
+    ObColumnRefRawExpr *value_desc = value_descs.at(i);
+    if (OB_ISNULL(value_desc)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("value desc is null", K(ret), K(value_descs));
+    } else if (OB_FAIL(column_bs.add_member(value_desc->get_column_id()))) {
+      LOG_WARN("add column id failed", K(ret));
+    }
+  }
+  //if a depend column exists in value_desc, need match the datatypes of all params
+  for (int64_t i = 0; OB_SUCC(ret) && i < value_descs.count() && !need_match; ++i) {
+    if (value_descs.at(i)->is_generated_column()) {
+      col_ids.reset();
+      if (OB_FAIL(ObRawExprUtils::extract_column_ids(value_descs.at(i)->get_dependant_expr(),
+                                                    col_ids))) {
+        LOG_WARN("extract column exprs failed", K(ret));
+      } else {
+        for (int64_t j = 0; j < col_ids.count() && !need_match; ++j) {
+          if (column_bs.has_member(col_ids.at(j))) {
+            need_match = true;
+          }
+        }
       }
     }
   }

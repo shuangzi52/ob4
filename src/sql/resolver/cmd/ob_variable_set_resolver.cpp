@@ -41,9 +41,10 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
   if (OB_UNLIKELY(T_VARIABLE_SET != parse_tree.type_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("parse_tree.type_ must be T_VARIABLE_SET", K(ret), K(parse_tree.type_));
-  } else if (OB_ISNULL(session_info_) || OB_ISNULL(allocator_)) {
+  } else if (OB_ISNULL(session_info_) || OB_ISNULL(allocator_) || OB_ISNULL(schema_checker_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("session_info_ or allocator_ is NULL", K(ret), K(session_info_), K(allocator_));
+    LOG_ERROR("session_info_ or allocator_ is NULL", K(ret), K(session_info_), K(allocator_),
+              K(schema_checker_));
   } else if (OB_ISNULL(variable_set_stmt = create_stmt<ObVariableSetStmt>())) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("create variable set stmt failed", K(ret));
@@ -89,10 +90,13 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
             var_name.assign_ptr(var->str_value_, static_cast<int32_t>(var->str_len_));
           } else if (T_OBJ_ACCESS_REF == var->type_) { //Oracle mode
             const ParseNode *name_node = NULL;
-            if (OB_ISNULL(name_node = var->children_[0]) || OB_UNLIKELY(var->children_[1] != NULL) ||
-                OB_UNLIKELY(name_node->type_ != T_IDENT)) {
+            if (OB_ISNULL(name_node = var->children_[0])) {
               ret = OB_ERR_UNEXPECTED;
-              LOG_WARN("Variable name is not an identifier type", K(ret));
+              LOG_WARN("get unexpected null", K(ret));
+            } else if (OB_UNLIKELY(name_node->type_ != T_IDENT) || OB_UNLIKELY(var->children_[1] != NULL)) {
+              ret = OB_ERR_UNKNOWN_SET_OPTION;
+              LOG_WARN("unknown SET option", K(ret), K(name_node->type_), K(var->children_[1]));
+              LOG_USER_ERROR(OB_ERR_UNKNOWN_SET_OPTION, name_node->str_value_);
             } else {
               var_node.is_system_variable_ = true; //PL的set语句在PL resolver里解析，不会走到这里，所以到这里的肯定是系统变量的缺省写法
               var_name.assign_ptr(name_node->str_value_, static_cast<int32_t>(name_node->str_len_));
@@ -129,8 +133,9 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
               }
             } else if (T_OBJ_ACCESS_REF == set_node->children_[1]->type_) { //Oracle mode
               if (OB_ISNULL(set_node->children_[1]->children_[0]) || OB_UNLIKELY(set_node->children_[1]->children_[1] != NULL)) {
-                ret = OB_ERR_UNEXPECTED;
-                LOG_WARN("Variable value not a varchar nor identifier type", K(ret));
+                ret = OB_ERR_UNKNOWN_SET_OPTION;
+                LOG_WARN("unknown SET option", K(ret), K(set_node->children_[1]->children_[0]->type_));
+                LOG_USER_ERROR(OB_ERR_UNKNOWN_SET_OPTION, var->str_value_);
               } else {
                 MEMCPY(&value_node, set_node->children_[1]->children_[0], sizeof(ParseNode));
               }
@@ -150,12 +155,14 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
               MEMCPY(&value_node, set_node->children_[1], sizeof(ParseNode));
             }
             if (OB_SUCC(ret)) {
+#ifndef OB_BUILD_ORACLE_PARSER
               if (0 == var_node.variable_name_.case_compare("ob_compatibility_mode") &&
                   0 == strncasecmp(value_node.str_value_, "oracle",
                                    std::min(static_cast<int32_t>(value_node.str_len_), 6))) {
                 ret = OB_NOT_SUPPORTED;
                 LOG_USER_ERROR(OB_NOT_SUPPORTED, "Not support oracle mode");
               }
+#endif
               if (OB_SUCC(ret) &&
                   OB_FAIL(ObResolverUtils::resolve_const_expr(params_, value_node, var_node.value_expr_, NULL))) {
                 LOG_WARN("resolve variable value failed", K(ret));
@@ -179,6 +186,19 @@ int ObVariableSetResolver::resolve(const ParseNode &parse_tree)
             }
           }
         }
+      }
+    }
+
+    /* set global variable need 'alter system' priv*/
+    if (OB_SUCC(ret) &&
+        ObSchemaChecker::is_ora_priv_check() && variable_set_stmt->has_global_variable()) {
+      if (OB_FAIL(schema_checker_->check_ora_ddl_priv(session_info_->get_effective_tenant_id(),
+                                                      session_info_->get_priv_user_id(),
+                                                      ObString(""),
+                                                      stmt::T_VARIABLE_SET,
+                                                      session_info_->get_enable_role_array()))) {
+        LOG_WARN("failed to check privilege", K(session_info_->get_effective_tenant_id()),
+                                              K(session_info_->get_priv_user_id()));
       }
     }
   }

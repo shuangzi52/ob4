@@ -241,6 +241,7 @@ public:
   bool is_tenant_full_schema(const uint64_t tenant_id) const;
 
   bool is_tenant_not_refreshed(const uint64_t tenant_id);
+  bool is_tenant_refreshed(const uint64_t tenant_id) const;
 
   // sql should retry when tenant is normal but never refresh schema successfully.
   bool is_schema_error_need_retry(
@@ -356,11 +357,13 @@ public:
 friend class tools::ObAgentTaskGenerator;
 friend class tools::ObAgentTaskWorker;
 friend class ObDDLEpochMgr;
+  virtual void stop();
+  virtual void wait();
+  virtual int destroy();
 
 protected:
   ObMultiVersionSchemaService();
   virtual ~ObMultiVersionSchemaService();
-  virtual int destroy();
 
   virtual int publish_schema(const uint64_t tenant_id) override;
   virtual int init_multi_version_schema_struct(const uint64_t tenant_id) override;
@@ -445,9 +448,11 @@ private:
                                   ObSchemaMgrCache &schema_mgr_cache,
                                   ObSchemaMemMgr &schema_mem_mgr,
                                   ObSchemaMgrHandle &handle);
-  int alloc_schema_mgr_for_liboblog(ObSchemaMemMgr &mem_mgr_for_liboblog, ObSchemaMgr *&schema_mgr);
-  int free_schema_mgr_for_liboblog(ObSchemaMemMgr &mem_mgr_for_liboblog, ObSchemaMgr *schema_mgr);
-
+  int alloc_and_put_schema_mgr_(ObSchemaMemMgr &mem_mgr,
+                                ObSchemaMgr &latest_schema_mgr,
+                                ObSchemaMgrCache &schema_mgr_cache);
+  int switch_allocator_(ObSchemaMemMgr &mem_mgr,
+                        ObSchemaMgr *&latest_schema_mgr);
 private:
   static const int64_t MAX_VERSION_COUNT = 64;
   static const int64_t MAX_VERSION_COUNT_FOR_LIBOBLOG = 6;

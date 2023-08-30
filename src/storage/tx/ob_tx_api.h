@@ -22,11 +22,12 @@ int acquire_tx(ObTxDesc *&tx, const uint32_t session_id = 0);
  *
  * @tx:       the target transaction's descriptor
  * @tx_param: transaction parameters
+ * @tx_id:    the txid applied for when xa start
  *
  * Return:
  * OB_SUCCESS - OK
  */
-int start_tx(ObTxDesc &tx, const oceanbase::transaction::ObTxParam &tx_param);
+int start_tx(ObTxDesc &tx, const oceanbase::transaction::ObTxParam &tx_param, const ObTransID &tx_id = ObTransID());
 
 /**
  * abort_tx - abort transaction
@@ -234,6 +235,7 @@ int get_ls_read_snapshot_version(const share::ObLSID &local_ls_id,
  * OB_REPLICA_NOT_READABLE - snapshot is too stale
  */
 int get_weak_read_snapshot_version(const int64_t max_read_stale_time,
+                                   const bool local_single_ls,
                                    share::SCN &snapshot_version);
 /*
  * release_snapshot - release snapshot
@@ -312,7 +314,7 @@ void unregister_tx_snapshot_verify(ObTxReadSnapshot &snapshot);
  */
 int create_implicit_savepoint(ObTxDesc &tx,
                               const ObTxParam &tx_param,
-                              int64_t &savepoint,
+                              ObTxSEQ &savepoint,
                               const bool release = false);
 
 /**
@@ -368,7 +370,7 @@ int create_explicit_savepoint(ObTxDesc &tx,
  *                          rollback
  */
 int rollback_to_implicit_savepoint(ObTxDesc &tx,
-                                   const int64_t savepoint,
+                                   const ObTxSEQ savepoint,
                                    const int64_t expire_ts,
                                    const share::ObLSArray *extra_touched_ls);
 

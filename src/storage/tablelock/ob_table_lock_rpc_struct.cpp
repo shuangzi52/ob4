@@ -44,6 +44,9 @@ OB_SERIALIZE_MEMBER_INHERIT(ObLockObjRequest, ObLockRequest,
                             obj_type_,
                             obj_id_);
 
+OB_SERIALIZE_MEMBER_INHERIT(ObLockObjsRequest, ObLockRequest,
+                            objs_);
+
 OB_SERIALIZE_MEMBER_INHERIT(ObLockTableRequest, ObLockRequest,
                             table_id_);
 
@@ -53,10 +56,18 @@ OB_SERIALIZE_MEMBER_INHERIT(ObLockPartitionRequest, ObLockTableRequest,
 OB_SERIALIZE_MEMBER_INHERIT(ObLockTabletRequest, ObLockTableRequest,
                             tablet_id_);
 
+OB_SERIALIZE_MEMBER_INHERIT(ObLockTabletsRequest, ObLockTableRequest,
+                            tablet_ids_);
+
+OB_SERIALIZE_MEMBER_INHERIT(ObLockAloneTabletRequest, ObLockTabletsRequest,
+                            ls_id_);
+
 OB_SERIALIZE_MEMBER(ObTableLockTaskResult,
                     ret_code_,
                     tx_result_ret_code_,
-                    tx_result_);
+                    tx_result_,
+                    can_retry_,
+                    success_pos_);
 
 OB_DEF_SERIALIZE_SIZE(ObTableLockTaskRequest)
 {
@@ -162,6 +173,18 @@ OB_DEF_DESERIALIZE(ObLockTaskBatchRequest)
   return ret;
 }
 
+void ObLockParam::reset()
+{
+  lock_id_.reset();
+  lock_mode_ = NO_LOCK;
+  owner_id_.reset();
+  op_type_ = UNKNOWN_TYPE;
+  is_deadlock_avoid_enabled_ = false;
+  is_try_lock_ = true;
+  expired_time_ = 0;
+  schema_version_ = -1;
+}
+
 int ObLockParam::set(
     const ObLockID &lock_id,
     const ObTableLockMode lock_mode,
@@ -201,7 +224,9 @@ bool ObLockParam::is_valid() const
            (ObLockOBJType::OBJ_TYPE_COMMON_OBJ == lock_id_.obj_type_
             || ObLockOBJType::OBJ_TYPE_TENANT == lock_id_.obj_type_
             || ObLockOBJType::OBJ_TYPE_LS == lock_id_.obj_type_
-            || ObLockOBJType::OBJ_TYPE_EXTERNAL_TABLE_REFRESH == lock_id_.obj_type_)));
+            || ObLockOBJType::OBJ_TYPE_EXTERNAL_TABLE_REFRESH == lock_id_.obj_type_
+            || ObLockOBJType::OBJ_TYPE_ONLINE_DDL_TABLE == lock_id_.obj_type_
+            || ObLockOBJType::OBJ_TYPE_ONLINE_DDL_TABLET == lock_id_.obj_type_)));
 }
 
 void ObLockRequest::reset()
@@ -232,6 +257,23 @@ bool ObLockObjRequest::is_valid() const
           ObLockRequest::is_valid() &&
           is_lock_obj_type_valid(obj_type_) &&
           is_valid_id(obj_id_));
+}
+
+void ObLockObjsRequest::reset()
+{
+  ObLockRequest::reset();
+  objs_.reset();
+}
+
+bool ObLockObjsRequest::is_valid() const
+{
+  bool is_valid = true;
+  is_valid = (ObLockMsgType::LOCK_OBJ_REQ == type_ &&
+              ObLockRequest::is_valid());
+  for (int64_t i = 0; i < objs_.count() && is_valid; i++) {
+    is_valid = is_valid && objs_.at(i).is_valid();
+  }
+  return is_valid;
 }
 
 void ObLockTableRequest::reset()
@@ -275,6 +317,42 @@ bool ObLockTabletRequest::is_valid() const
           tablet_id_.is_valid());
 }
 
+void ObLockTabletsRequest::reset()
+{
+  ObLockTableRequest::reset();
+  tablet_ids_.reset();
+}
+
+bool ObLockTabletsRequest::is_valid() const
+{
+  bool is_valid = true;
+  is_valid = (ObLockMsgType::LOCK_TABLET_REQ == type_ &&
+              ObLockRequest::is_valid() &&
+              is_valid_id(table_id_));
+  for (int64_t i = 0; i < tablet_ids_.count() && is_valid; i++) {
+    is_valid = is_valid && tablet_ids_.at(i).is_valid();
+  }
+  return is_valid;
+}
+
+void ObLockAloneTabletRequest::reset()
+{
+  ObLockTabletsRequest::reset();
+  ls_id_.reset();
+}
+
+bool ObLockAloneTabletRequest::is_valid() const
+{
+  bool is_valid = true;
+  is_valid = (ObLockMsgType::LOCK_ALONE_TABLET_REQ == type_ &&
+              ObLockRequest::is_valid() &&
+              ls_id_.is_valid());
+  for (int64_t i = 0; i < tablet_ids_.count() && is_valid; i++) {
+    is_valid = is_valid && tablet_ids_.at(i).is_valid();
+  }
+  return is_valid;
+}
+
 int ObTableLockTaskRequest::set(
   const ObTableLockTaskType task_type,
   const share::ObLSID &lsid,
@@ -309,6 +387,11 @@ int ObTableLockTaskRequest::assign(const ObTableLockTaskRequest &arg)
 
 ObTableLockTaskRequest::~ObTableLockTaskRequest()
 {
+  reset();
+}
+
+void ObTableLockTaskRequest::reset()
+{
   auto txs = MTL(transaction::ObTransService*);
   if (OB_NOT_NULL(tx_desc_)) {
     if (need_release_tx_) {
@@ -318,6 +401,7 @@ ObTableLockTaskRequest::~ObTableLockTaskRequest()
   }
   task_type_ = INVALID_LOCK_TASK_TYPE;
   lsid_.reset();
+  param_.reset();
   tx_desc_ = nullptr;
   need_release_tx_ = false;
 }
@@ -378,6 +462,7 @@ bool ObLockTaskBatchRequest::is_valid() const
         valid = false;
       }
     }
+    valid = valid && tx_desc_->is_valid();
   } else {
     valid = false;
   }

@@ -462,7 +462,7 @@ int ObTableReplaceOp::do_replace_into()
   int ret = OB_SUCCESS;
   bool is_iter_end = false;
   while (OB_SUCC(ret) && !is_iter_end) {
-    int64_t savepoint_no = 0;
+    transaction::ObTxSEQ savepoint_no;
     // must set conflict_row fetch flag
     add_need_conflict_result_flag();
     NG_TRACE_TIMES(2, replace_load_all_row);
@@ -602,7 +602,7 @@ int ObTableReplaceOp::replace_conflict_row_cache()
     if (OB_SUCC(ret)) {
       ObDMLModifyRowNode modify_row(this, &ins_ctdef, &ins_rtdef, ObDmlEventType::DE_INSERTING);
       modify_row.new_row_ = insert_new_row;
-      if (need_after_row_process(del_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
+      if (need_after_row_process(ins_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
         LOG_WARN("failed to push dml modify row to modified row list", K(ret));
       }
     }

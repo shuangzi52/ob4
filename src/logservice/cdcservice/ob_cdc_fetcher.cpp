@@ -31,7 +31,8 @@ ObCdcFetcher::ObCdcFetcher()
   : is_inited_(false),
     tenant_id_(OB_INVALID_TENANT_ID),
     ls_service_(NULL),
-    large_buffer_pool_(NULL)
+    large_buffer_pool_(NULL),
+    log_ext_handler_(NULL)
 {
 }
 
@@ -42,7 +43,8 @@ ObCdcFetcher::~ObCdcFetcher()
 
 int ObCdcFetcher::init(const uint64_t tenant_id,
     ObLSService *ls_service,
-    archive::LargeBufferPool *buffer_pool)
+    archive::LargeBufferPool *buffer_pool,
+    logservice::ObLogExternalStorageHandler *log_ext_handler)
 {
   int ret = OB_SUCCESS;
 
@@ -50,7 +52,8 @@ int ObCdcFetcher::init(const uint64_t tenant_id,
     ret = OB_INIT_TWICE;
     LOG_WARN("inited twice", KR(ret));
   } else if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)
-      || OB_ISNULL(ls_service) || OB_ISNULL(buffer_pool)) {
+      || OB_ISNULL(ls_service) || OB_ISNULL(buffer_pool)
+      || OB_ISNULL(log_ext_handler)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_service), K(buffer_pool));
   } else {
@@ -58,6 +61,7 @@ int ObCdcFetcher::init(const uint64_t tenant_id,
     tenant_id_ = tenant_id;
     ls_service_ = ls_service;
     large_buffer_pool_ = buffer_pool;
+    log_ext_handler_ = log_ext_handler;
   }
 
   return ret;
@@ -70,6 +74,7 @@ void ObCdcFetcher::destroy()
     tenant_id_ = OB_INVALID_TENANT_ID;
     ls_service_ = NULL;
     large_buffer_pool_ = NULL;
+    log_ext_handler_ = NULL;
   }
 }
 
@@ -96,7 +101,7 @@ int ObCdcFetcher::fetch_log(const ObCdcLSFetchLogReq &req,
     PalfHandleGuard palf_handle_guard;
     PalfGroupBufferIterator group_iter;
     const ObCdcRpcId &rpc_id = req.get_client_id();
-    ClientLSKey ls_key(rpc_id.get_addr(), rpc_id.get_pid(), ls_id);
+    ClientLSKey ls_key(rpc_id.get_addr(), rpc_id.get_pid(), req.get_tenant_id(), ls_id);
     ClientLSCtxMap &ctx_map = MTL(ObLogService*)->get_cdc_service()->get_ls_ctx_map();
     ClientLSCtx *ls_ctx = NULL;
     int8_t fetch_log_flag = req.get_flag();
@@ -141,14 +146,7 @@ int ObCdcFetcher::fetch_log(const ObCdcLSFetchLogReq &req,
 
   // set debug error
   resp.set_debug_err(ret);
-  if (OB_SUCC(ret)) {
-    // do nothing
-  } else if (OB_LS_NOT_EXIST == ret) {
-    LOG_INFO("LS not exist when fetch log", KR(ret), K(tenant_id_), K(req));
-  } else {
-    LOG_WARN("fetch log error", KR(ret), K(tenant_id_), K(req));
-    ret = OB_ERR_SYS;
-  }
+  resp.set_err(ret);
 
   if (OB_SUCC(ret)) {
     const int64_t fetch_log_size = resp.get_pos();
@@ -160,8 +158,6 @@ int ObCdcFetcher::fetch_log(const ObCdcLSFetchLogReq &req,
   }
 
   fetch_log_time_stat.inc_fetch_total_time(ObTimeUtility::current_time() - cur_tstamp);
-
-  resp.set_err(ret);
 
   LOG_INFO("fetch_log done", K(req), K(resp), K(fetch_log_time_stat));
   return ret;
@@ -188,7 +184,7 @@ int ObCdcFetcher::fetch_missing_log(const obrpc::ObCdcLSFetchMissLogReq &req,
     const ObLSID &ls_id = req.get_ls_id();
     PalfHandleGuard palf_handle_guard;
     const ObCdcRpcId &rpc_id = req.get_client_id();
-    ClientLSKey ls_key(rpc_id.get_addr(), rpc_id.get_pid(), ls_id);
+    ClientLSKey ls_key(rpc_id.get_addr(), rpc_id.get_pid(), req.get_tenant_id(), ls_id);
     ClientLSCtxMap &ctx_map = MTL(ObLogService*)->get_cdc_service()->get_ls_ctx_map();
     ClientLSCtx *ls_ctx = NULL;
 
@@ -208,6 +204,7 @@ int ObCdcFetcher::fetch_missing_log(const obrpc::ObCdcLSFetchMissLogReq &req,
 
   // set debug error
   resp.set_debug_err(ret);
+
   if (OB_SUCC(ret)) {
     // do nothing
   } else if (OB_LS_NOT_EXIST == ret) {
@@ -298,11 +295,10 @@ int ObCdcFetcher::do_fetch_log_(const ObCdcLSFetchLogReq &req,
   } else { }
 
   // Update statistics
-  if (OB_SUCC(ret)) {
-    frt.fetch_status_.reset(reach_max_lsn, reach_upper_limit, scan_round_count);
-    resp.set_fetch_status(frt.fetch_status_);
-    // update_monitor(frt.fetch_status_);
-  } else {
+  frt.fetch_status_.reset(reach_max_lsn, reach_upper_limit, scan_round_count);
+  resp.set_fetch_status(frt.fetch_status_);
+  // update_monitor(frt.fetch_status_);
+  if (OB_FAIL(ret)) {
     LOG_WARN("fetch log fail", KR(ret), "CDC_Connector_PID", req.get_client_pid(),
         K(req), K(resp));
   }
@@ -361,7 +357,8 @@ int ObCdcFetcher::fetch_log_in_archive_(
     if (OB_FAIL(pre_scn.convert_from_ts(ctx.get_progress()/1000L))) {
       LOG_WARN("convert progress to scn failed", KR(ret), K(ctx));
     } else if (need_init_iter && OB_FAIL(remote_iter.init(tenant_id_, ls_id, pre_scn,
-                                                   start_lsn, LSN(LOG_MAX_LSN_VAL), large_buffer_pool_))) {
+                                                          start_lsn, LSN(LOG_MAX_LSN_VAL), large_buffer_pool_,
+                                                          log_ext_handler_))) {
       LOG_WARN("init remote log iterator failed", KR(ret), K(tenant_id_), K(ls_id));
     } else if (OB_FAIL(remote_iter.next(log_entry, lsn, buf, buf_size))) {
       // expected OB_ITER_END and OB_SUCCEES, error occurs when other code is returned.
@@ -369,7 +366,8 @@ int ObCdcFetcher::fetch_log_in_archive_(
         LOG_WARN("iterate remote log failed", KR(ret), K(need_init_iter), K(ls_id));
       }
     } else if (start_lsn != lsn) {
-      ret = OB_ERR_UNEXPECTED;
+      // to keep consistency with the ret code of palf
+      ret = OB_INVALID_DATA;
       LOG_WARN("remote iterator returned unexpected log entry lsn", K(start_lsn), K(lsn), K(log_entry), K(ls_id),
           K(remote_iter));
     } else {
@@ -406,7 +404,7 @@ int ObCdcFetcher::set_fetch_mode_before_fetch_log_(const ObLSID &ls_id,
     // set the switch interval to 10s in test switch fetch mode, the unit of measurement of log_ts(scn) is nano second.
     const int64_t SECOND_NS = 1000L * 1000 * 1000;
     SCN end_scn;
-    const int64_t SWITCH_INTERVAL = test_switch_fetch_mode ? 10L * SECOND_NS : 60L * SECOND_NS;
+    const int64_t SWITCH_INTERVAL = test_switch_fetch_mode ? 10L * SECOND_NS : 60 * SECOND_NS; //default 60s
     if (OB_FAIL(palf_guard.get_end_scn(end_scn))) {
       LOG_WARN("get palf end ts failed", KR(ret));
     } else {
@@ -502,6 +500,11 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
     LogGroupEntry log_group_entry;
     LSN lsn;
     FetchMode fetch_mode = get_fetch_mode_when_fetching_log_(ctx, fetch_archive_only);
+    if (fetch_mode != ctx.get_fetch_mode()) {
+      // when in force_fetch_archive mode, if we don't set fetch mode here,
+      // the ability of reading archive log concurrently can't be utilized
+      ctx.set_fetch_mode(fetch_mode, "ModeConsistence");
+    }
     int64_t finish_fetch_ts = OB_INVALID_TIMESTAMP;
     // update fetching rounds
     scan_round_count++;
@@ -561,10 +564,15 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
             }
           } else {
             // exit
+            resp.set_feedback_type(obrpc::ObCdcLSFetchLogResp::ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF);
             reach_max_lsn = true;
+            LOG_INFO("reach max lsn in archive but ls not exists in this server, need switch server", K(ls_id));
           }
-        } else if (OB_ALREADY_IN_NOARCHIVE_MODE == ret) {
-          // archive is not on
+        } else if (OB_NEED_RETRY == ret) {
+          frt.stop("ArchiveNeedRetry");
+          ret = OB_SUCCESS;
+        } else if (OB_ALREADY_IN_NOARCHIVE_MODE == ret || OB_ENTRY_NOT_EXIST == ret) {
+          // archive is not on or lsn less than the start_lsn in archive
           ret = OB_ERR_OUT_OF_LOWER_BOUND;
         } else {
           // other error code, retry because various error code would be returned, retry could fix some problem
@@ -600,9 +608,9 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
     if (OB_SUCC(ret) && fetch_log_succ) {
       check_next_group_entry_(lsn, log_group_entry, fetched_log_count, resp, frt, reach_upper_limit, ctx);
       resp.set_progress(ctx.get_progress());
-      if (frt.is_stopped()) {
-        // Stop fetching log
-      } else if (OB_FAIL(prefill_resp_with_group_entry_(ls_id, lsn, log_group_entry, resp, fetch_time_stat))) {
+      // There is reserved space for the last log group entry, so we assume that the buffer is always enough here,
+      // So we could fill response buffer without checking buffer full
+      if (OB_FAIL(prefill_resp_with_group_entry_(ls_id, lsn, log_group_entry, resp, fetch_time_stat))) {
         if (OB_BUF_NOT_ENOUGH == ret) {
           handle_when_buffer_full_(frt); // stop
           ret = OB_SUCCESS;
@@ -612,7 +620,9 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
       } else {
         // log fetched successfully
         fetched_log_count++;
-
+        if (resp.log_reach_threshold()) {
+          frt.stop("LogReachThreshold");
+        }
         LOG_TRACE("LS fetch a log", K(ls_id), K(fetched_log_count), K(frt));
       }
     }
@@ -635,8 +645,8 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
     ret = OB_SUCCESS;
   } else if (OB_ERR_OUT_OF_LOWER_BOUND == ret) {
     // log not exists
-    ret = OB_SUCCESS;
-    if (OB_FAIL(handle_log_not_exist_(ls_id, resp))) {
+    int tmp_ret = OB_SUCCESS;
+    if (OB_TMP_FAIL(handle_log_not_exist_(ls_id, resp))) {
       LOG_WARN("handle log_not_exist error", K(ret));
     }
   } else {
@@ -750,7 +760,6 @@ void ObCdcFetcher::handle_when_reach_max_lsn_in_palf_(const ObLSID &ls_id,
     ObCdcLSFetchLogResp &resp)
 {
   int ret = OB_SUCCESS;
-  bool is_ls_fall_behind = frt.is_ls_fall_behind();
 
   // Because we cannot determine whether this LS is a backward standby or a normal LS,
   // we can only check the LS.
@@ -759,10 +768,8 @@ void ObCdcFetcher::handle_when_reach_max_lsn_in_palf_(const ObLSID &ls_id,
   // 1. Reach max lsn but the progress is behind the upper limit
   // 2. No logs fetched in this round of RPC
   // 2. The overall progress is behind
-  if (fetched_log_count <= 0 && is_ls_fall_behind) {
-    if (OB_FAIL(check_lag_follower_(ls_id, palf_handle_guard, resp))) {
-      LOG_WARN("check_lag_follower_ fail", KR(ret), K(ls_id), K(frt));
-    }
+  if (OB_FAIL(check_lag_follower_(ls_id, palf_handle_guard, resp))) {
+    LOG_WARN("check_lag_follower_ fail", KR(ret), K(ls_id), K(frt));
   }
 }
 

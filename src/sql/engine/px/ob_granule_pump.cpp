@@ -865,6 +865,13 @@ int ObGranuleSplitter::get_query_range(ObExecContext &ctx,
         LOG_WARN("failed to final extract index skip query range", K(ret));
     } else {
       has_extract_query_range = true;
+      /* Here is an improvement made:
+        1. By default, access to each partition is always in sequential ascending order.
+        Compared to not sorting, this is an enhancement that is not always 100% necessary
+        (some scenarios do not require order), but the logic is acceptable.
+        2. If reverse order is required outside, then the reverse sorting should be done outside on its own.
+      */
+      std::sort(scan_ranges.begin(), scan_ranges.end(), ObNewRangeCmp());
     }
   }
 
@@ -1068,9 +1075,19 @@ int ObAffinitizeGranuleSplitter::split_tasks_affinity(ObExecContext &ctx,
           LOG_WARN("fail to build tablet idx map", K(ret));
         }
       }
+      if (OB_SUCC(ret)) {
+        // see issue
+        // for virtual table, we can directly mock a tablet id
+        // function build_tablet_idx_map will mock a idx map whose key
+        // varies from 1 to table_schema->get_all_part_num(), and the value = key + 1
+        // so we can directly set tablet_idx = tablet_loc.tablet_id_.id() + 1, the result is same
+        if (is_virtual_table(table_schema->get_table_id())) {
+          tablet_idx = tablet_loc.tablet_id_.id() + 1;
+        } else if (OB_FAIL(idx_map.get_refactored(tablet_loc.tablet_id_.id(), tablet_idx))) {
+          LOG_WARN("fail to get tablet idx", K(ret));
+        }
+      }
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(idx_map.get_refactored(tablet_loc.tablet_id_.id(), tablet_idx))) {
-        LOG_WARN("fail to get tablet idx", K(ret));
       } else if (OB_FAIL(ObPxAffinityByRandom::get_tablet_info(tablet_loc.tablet_id_.id(),
                                                                partitions_info_,
                                                                partition_row_info))) {
@@ -1571,7 +1588,7 @@ int ObGranulePump::regenerate_gi_task()
   no_more_task_from_shared_pool_ = false;
   for (int i = 0; i < pump_args_.count() && OB_SUCC(ret); ++i) {
     ObGranulePumpArgs &arg = pump_args_.at(i);
-    if (add_new_gi_task(arg)) {
+    if (OB_FAIL(add_new_gi_task(arg))) {
       LOG_WARN("failed to add new gi task", K(ret));
     }
   }

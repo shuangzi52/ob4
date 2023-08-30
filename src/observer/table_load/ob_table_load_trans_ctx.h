@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -23,10 +31,12 @@ public:
     obsys::ObRLockGuard guard(rwlock_);
     return trans_status_;
   }
-  OB_INLINE int get_error_code() const
+  OB_INLINE void get_trans_status(table::ObTableLoadTransStatusType &trans_status,
+                                  int &error_code) const
   {
     obsys::ObRLockGuard guard(rwlock_);
-    return error_code_;
+    trans_status = trans_status_;
+    error_code = error_code_;
   }
   int advance_trans_status(table::ObTableLoadTransStatusType trans_status);
   int set_trans_status_error(int error_code);

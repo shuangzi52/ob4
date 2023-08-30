@@ -364,36 +364,52 @@ bool ObLogMerge::is_delete_dml_info(const IndexDMLInfo *dml_info) const
 int ObLogMerge::gen_location_constraint(void *ctx)
 {
   int ret = OB_SUCCESS;
-  // constraints for merge partition pruning
   ObQueryCtx *query_ctx = NULL;
-  if (OB_ISNULL(get_stmt()) || OB_ISNULL(query_ctx = get_stmt()->get_query_ctx())) {
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(get_stmt())
+      || OB_ISNULL(query_ctx = get_stmt()->get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected null", K(ret), K(get_stmt()), K(query_ctx));
-  } else if (OB_FAIL(append(query_ctx->all_equal_param_constraints_, get_equal_infos()))) {
-    LOG_WARN("append equal param info failed", K(ret));
+    LOG_WARN("unexpected null", K(ret), K(get_plan()), K(get_stmt()), K(query_ctx));
   } else if (OB_FAIL(ObLogicalOperator::gen_location_constraint(ctx))) {
     LOG_WARN("failed to gen location constraint", K(ret));
-  } else { /* do nothing */ }
+  } else {
+    // constraints for merge partition pruning
+    ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
+    const ObIArray<std::pair<ObRawExpr*, ObRawExpr*>> &equal_pairs = get_equal_pairs();
+    const PreCalcExprExpectResult expect_result = PreCalcExprExpectResult::PRE_CALC_RESULT_TRUE;
+    ObRawExpr *equal_expr = NULL;
+    for (int64_t i = 0; OB_SUCC(ret) && i < equal_pairs.count(); ++i) {
+      if (OB_FAIL(ObRawExprUtils::build_common_binary_op_expr(opt_ctx.get_expr_factory(),
+                                                              T_OP_EQ,
+                                                              equal_pairs.at(i).first,
+                                                              equal_pairs.at(i).second,
+                                                              equal_expr))) {
+        LOG_WARN("failed to build common binary_op_expr");
+      } else if (OB_FAIL(equal_expr->formalize(opt_ctx.get_session_info()))) {
+        LOG_WARN("failed to formalize expr", K(ret));
+      } else if (OB_FAIL(query_ctx->all_expr_constraints_.push_back(ObExprConstraint(equal_expr, expect_result)))) {
+        LOG_WARN("failed to push back expr constraints", K(ret));
+      }
+    }
+  }
   return ret;
 }
 
-int ObLogMerge::inner_replace_op_exprs(
-    const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs)
+int ObLogMerge::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObLogDelUpd::inner_replace_op_exprs(to_replace_exprs))) {
+  if (OB_FAIL(ObLogDelUpd::inner_replace_op_exprs(replacer))) {
     LOG_WARN("failed to replace op exprs", K(ret));
-  } else if (OB_FAIL(replace_dml_info_exprs(to_replace_exprs, get_update_infos()))) {
+  } else if (OB_FAIL(replace_dml_info_exprs(replacer, get_update_infos()))) {
     LOG_WARN("failed to replace update dml info exprs");
-  } else if (OB_FAIL(replace_dml_info_exprs(to_replace_exprs, get_delete_infos()))) {
+  } else if (OB_FAIL(replace_dml_info_exprs(replacer, get_delete_infos()))) {
     LOG_WARN("failed to replace delete dml info exprs");
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
+  } else if (OB_FAIL(replace_exprs_action(replacer,
                         static_cast<ObMergeLogPlan &>(my_dml_plan_).get_insert_condition()))) {
     LOG_WARN("failed to replace insert condition exprs", K(ret));
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
+  } else if (OB_FAIL(replace_exprs_action(replacer,
                         static_cast<ObMergeLogPlan &>(my_dml_plan_).get_update_condition()))) {
     LOG_WARN("failed to replace update condition exprs", K(ret));
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
+  } else if (OB_FAIL(replace_exprs_action(replacer,
                         static_cast<ObMergeLogPlan &>(my_dml_plan_).get_delete_condition()))) {
     LOG_WARN("failed to replace delete condition exprs", K(ret));
   }

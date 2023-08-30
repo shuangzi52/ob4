@@ -61,8 +61,20 @@ public:
   bool is_insert_select() const { return is_insert_select_; }
   virtual bool is_single_value() const override
   {
-    return NULL != get_stmt() && get_stmt()->is_insert_stmt() &&
-           static_cast<const ObInsertStmt*>(get_stmt())->is_insert_single_value();
+    bool is_single_values = false;
+    if (NULL != get_stmt() && get_stmt()->is_insert_stmt() &&
+        static_cast<const ObInsertStmt*>(get_stmt())->is_insert_single_value()) {
+      is_single_values = true;
+    }
+
+    // After rewriting the multi-line insert, the SQL statement will become a single-line insert,
+    // so it is necessary to judge whether it is insert_batch_opt
+    if (is_single_values && OB_NOT_NULL(get_plan())) {
+      if (get_plan()->get_optimizer_context().is_do_insert_batch_opt()) {
+        is_single_values = false;
+      }
+    }
+    return is_single_values;
   }
 
   const ObIArray<IndexDMLInfo *> &get_replace_index_dml_infos() const
@@ -95,8 +107,7 @@ public:
   {
     return constraint_infos_;
   }
-  virtual int inner_replace_op_exprs(
-        const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs) override;
+  virtual int inner_replace_op_exprs(ObRawExprReplacer &replacer) override;
   virtual int get_plan_item_info(PlanText &plan_text,
                                 ObSqlPlanItem &plan_item) override;
 protected:

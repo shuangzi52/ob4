@@ -23,6 +23,9 @@
 #include "logservice/ob_log_handler.h"
 #include "storage/restore/ob_ls_restore_handler.h"
 #include "observer/ob_server_event_history_table_operator.h"
+#include "storage/high_availability/ob_transfer_service.h"
+#include "storage/tablet/ob_tablet_iterator.h"
+#include "storage/tablet/ob_tablet.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
 
 namespace oceanbase
@@ -354,7 +357,7 @@ bool ObCopyTabletsSSTableInfoArg::is_valid() const
   return OB_INVALID_ID != tenant_id_
       && ls_id_.is_valid()
       && ((need_check_seq_ && ls_rebuild_seq_ >= 0) || !need_check_seq_)
-      && tablet_sstable_info_arg_list_.count() > 0
+      && tablet_sstable_info_arg_list_.count() >= 0
       && version_ != OB_INVALID_ID;
 }
 
@@ -462,7 +465,8 @@ OB_SERIALIZE_MEMBER(ObFetchLSMetaInfoArg, tenant_id_, ls_id_, version_);
 
 ObFetchLSMetaInfoResp::ObFetchLSMetaInfoResp()
   : ls_meta_package_(),
-    version_(OB_INVALID_ID)
+    version_(OB_INVALID_ID),
+    has_transfer_table_(false)
 {
 }
 
@@ -470,6 +474,7 @@ void ObFetchLSMetaInfoResp::reset()
 {
   ls_meta_package_.reset();
   version_ = OB_INVALID_ID;
+  has_transfer_table_ = false;
 }
 
 bool ObFetchLSMetaInfoResp::is_valid() const
@@ -478,7 +483,7 @@ bool ObFetchLSMetaInfoResp::is_valid() const
       && version_ != OB_INVALID_ID;
 }
 
-OB_SERIALIZE_MEMBER(ObFetchLSMetaInfoResp, ls_meta_package_, version_);
+OB_SERIALIZE_MEMBER(ObFetchLSMetaInfoResp, ls_meta_package_, version_, has_transfer_table_);
 
 ObFetchLSMemberListArg::ObFetchLSMemberListArg()
   : tenant_id_(OB_INVALID_ID),
@@ -514,6 +519,43 @@ void ObFetchLSMemberListInfo::reset()
 }
 
 OB_SERIALIZE_MEMBER(ObFetchLSMemberListInfo, member_list_);
+
+ObFetchLSMemberAndLearnerListArg::ObFetchLSMemberAndLearnerListArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_()
+{
+}
+
+bool ObFetchLSMemberAndLearnerListArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_ && ls_id_.is_valid();
+}
+
+void ObFetchLSMemberAndLearnerListArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+}
+
+OB_SERIALIZE_MEMBER(ObFetchLSMemberAndLearnerListArg, tenant_id_, ls_id_);
+
+ObFetchLSMemberAndLearnerListInfo::ObFetchLSMemberAndLearnerListInfo()
+  : member_list_(),
+    learner_list_()
+{
+}
+
+bool ObFetchLSMemberAndLearnerListInfo::is_valid() const
+{
+  return member_list_.is_valid() || learner_list_.is_valid();
+}
+
+void ObFetchLSMemberAndLearnerListInfo::reset()
+{
+  member_list_.reset();
+  learner_list_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObFetchLSMemberAndLearnerListInfo, member_list_, learner_list_);
 
 ObCopySSTableMacroRangeInfoArg::ObCopySSTableMacroRangeInfoArg()
   : tenant_id_(OB_INVALID_ID),
@@ -736,6 +778,382 @@ bool ObRestoreUpdateLSMetaArg::is_valid() const
 OB_SERIALIZE_MEMBER(ObRestoreUpdateLSMetaArg, tenant_id_, ls_meta_package_);
 
 
+ObCheckSrcTransferTabletsArg::ObCheckSrcTransferTabletsArg()
+  : tenant_id_(OB_INVALID_ID),
+    src_ls_id_(),
+    tablet_info_array_()
+{
+}
+
+void ObCheckSrcTransferTabletsArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  src_ls_id_.reset();
+  tablet_info_array_.reset();
+}
+
+
+bool ObCheckSrcTransferTabletsArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && src_ls_id_.is_valid()
+         && !tablet_info_array_.empty();
+}
+
+OB_SERIALIZE_MEMBER(ObCheckSrcTransferTabletsArg, tenant_id_, src_ls_id_, tablet_info_array_);
+
+
+ObGetLSActiveTransCountArg::ObGetLSActiveTransCountArg()
+  : tenant_id_(OB_INVALID_ID),
+    src_ls_id_()
+{
+}
+
+void ObGetLSActiveTransCountArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  src_ls_id_.reset();
+}
+
+bool ObGetLSActiveTransCountArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && src_ls_id_.is_valid();
+}
+
+OB_SERIALIZE_MEMBER(ObGetLSActiveTransCountArg, tenant_id_, src_ls_id_);
+
+ObGetLSActiveTransCountRes::ObGetLSActiveTransCountRes()
+  : active_trans_count_(-1)
+{
+}
+
+void ObGetLSActiveTransCountRes::reset()
+{
+  active_trans_count_ = -1;
+}
+
+bool ObGetLSActiveTransCountRes::is_valid() const
+{
+  return active_trans_count_ >= 0;
+}
+
+OB_SERIALIZE_MEMBER(ObGetLSActiveTransCountRes, active_trans_count_);
+
+
+ObGetTransferStartScnArg::ObGetTransferStartScnArg()
+  : tenant_id_(OB_INVALID_ID),
+    src_ls_id_(),
+    tablet_list_()
+{
+}
+
+void ObGetTransferStartScnArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  src_ls_id_.reset();
+  tablet_list_.reset();
+}
+
+bool ObGetTransferStartScnArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && src_ls_id_.is_valid()
+         && !tablet_list_.empty();
+}
+
+OB_SERIALIZE_MEMBER(ObGetTransferStartScnArg, tenant_id_, src_ls_id_, tablet_list_);
+
+ObGetTransferStartScnRes::ObGetTransferStartScnRes()
+  : start_scn_()
+{
+}
+
+void ObGetTransferStartScnRes::reset()
+{
+  start_scn_.reset();
+}
+
+bool ObGetTransferStartScnRes::is_valid() const
+{
+  return start_scn_.is_valid();
+}
+
+OB_SERIALIZE_MEMBER(ObGetTransferStartScnRes, start_scn_);
+
+
+ObTransferTabletInfoArg::ObTransferTabletInfoArg()
+  : tenant_id_(OB_INVALID_ID),
+    src_ls_id_(),
+    dest_ls_id_(),
+    tablet_list_()
+{
+}
+
+void ObTransferTabletInfoArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  src_ls_id_.reset();
+  dest_ls_id_.reset();
+  tablet_list_.reset();
+}
+
+bool ObTransferTabletInfoArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && src_ls_id_.is_valid()
+         && dest_ls_id_.is_valid()
+         && !tablet_list_.empty();
+}
+
+OB_SERIALIZE_MEMBER(ObTransferTabletInfoArg, tenant_id_, src_ls_id_, dest_ls_id_, tablet_list_);
+
+ObFetchLSReplayScnArg::ObFetchLSReplayScnArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_()
+{
+}
+void ObFetchLSReplayScnArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+}
+bool ObFetchLSReplayScnArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && ls_id_.is_valid();
+}
+OB_SERIALIZE_MEMBER(ObFetchLSReplayScnArg, tenant_id_, ls_id_);
+ObFetchLSReplayScnRes::ObFetchLSReplayScnRes()
+  : replay_scn_()
+{
+}
+void ObFetchLSReplayScnRes::reset()
+{
+  replay_scn_.reset();
+}
+bool ObFetchLSReplayScnRes::is_valid() const
+{
+  return replay_scn_.is_valid();
+}
+OB_SERIALIZE_MEMBER(ObFetchLSReplayScnRes, replay_scn_);
+ObCheckTransferTabletBackfillArg::ObCheckTransferTabletBackfillArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    tablet_list_()
+{
+}
+bool ObCheckTransferTabletBackfillArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+         && ls_id_.is_valid()
+         && !tablet_list_.empty();
+}
+void ObCheckTransferTabletBackfillArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+  tablet_list_.reset();
+}
+OB_SERIALIZE_MEMBER(ObCheckTransferTabletBackfillArg, tenant_id_, ls_id_, tablet_list_);
+ObCheckTransferTabletBackfillRes::ObCheckTransferTabletBackfillRes()
+  : backfill_finished_(false)
+{
+}
+void ObCheckTransferTabletBackfillRes::reset()
+{
+  backfill_finished_ = false;
+}
+OB_SERIALIZE_MEMBER(ObCheckTransferTabletBackfillRes, backfill_finished_);
+
+ObStorageChangeMemberArg::ObStorageChangeMemberArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    need_get_config_version_(true)
+{
+}
+
+bool ObStorageChangeMemberArg::is_valid() const
+{
+  return OB_INVALID_ID == tenant_id_
+      && ls_id_.is_valid();
+}
+
+void ObStorageChangeMemberArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObStorageChangeMemberArg, tenant_id_, ls_id_, need_get_config_version_);
+
+ObStorageChangeMemberRes::ObStorageChangeMemberRes()
+  : config_version_(),
+    transfer_scn_()
+{
+}
+
+void ObStorageChangeMemberRes::reset()
+{
+  config_version_.reset();
+  transfer_scn_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObStorageChangeMemberRes, config_version_, transfer_scn_);
+
+ObCopyLSViewArg::ObCopyLSViewArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_()
+{
+}
+
+void ObCopyLSViewArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+}
+
+bool ObCopyLSViewArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+      && ls_id_.is_valid();
+}
+
+OB_SERIALIZE_MEMBER(ObCopyLSViewArg,
+    tenant_id_, ls_id_);
+
+ObStorageBlockTxArg::ObStorageBlockTxArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    gts_()
+{
+}
+
+bool ObStorageBlockTxArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+      && ls_id_.is_valid()
+      && gts_.is_valid();
+}
+
+void ObStorageBlockTxArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+  gts_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObStorageBlockTxArg, tenant_id_, ls_id_, gts_);
+
+ObStorageKillTxArg::ObStorageKillTxArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    gts_()
+{
+}
+
+bool ObStorageKillTxArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+      && ls_id_.is_valid()
+      && gts_.is_valid();
+}
+
+void ObStorageKillTxArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+  gts_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObStorageKillTxArg, tenant_id_, ls_id_, gts_);
+
+ObStorageUnBlockTxArg::ObStorageUnBlockTxArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    gts_()
+{
+}
+
+bool ObStorageUnBlockTxArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+      && ls_id_.is_valid()
+      && gts_.is_valid();
+}
+
+void ObStorageUnBlockTxArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+  gts_.reset();
+}
+
+OB_SERIALIZE_MEMBER(ObStorageUnBlockTxArg, tenant_id_, ls_id_, gts_);
+
+ObStorageWakeupTransferServiceArg::ObStorageWakeupTransferServiceArg()
+  : tenant_id_(OB_INVALID_ID)
+{
+}
+
+bool ObStorageWakeupTransferServiceArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_;
+}
+
+void ObStorageWakeupTransferServiceArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+}
+
+OB_SERIALIZE_MEMBER(ObStorageWakeupTransferServiceArg, tenant_id_);
+
+
+ObStorageConfigChangeOpArg::ObStorageConfigChangeOpArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    type_(MAX),
+    lock_owner_(0),
+    lock_timeout_(0)
+{
+}
+
+bool ObStorageConfigChangeOpArg::is_valid() const
+{
+  return OB_INVALID_ID != tenant_id_
+    && ls_id_.is_valid()
+    && type_ >= LOCK_CONFIG_CHANGE
+    && type_ < MAX;
+}
+
+void ObStorageConfigChangeOpArg::reset()
+{
+  tenant_id_ = OB_INVALID_ID;
+  ls_id_.reset();
+  type_ = MAX;
+  lock_owner_ = 0;
+  lock_timeout_ = 0;
+}
+
+OB_SERIALIZE_MEMBER(ObStorageConfigChangeOpArg, tenant_id_,
+  ls_id_, type_, lock_owner_, lock_timeout_);
+
+ObStorageConfigChangeOpRes::ObStorageConfigChangeOpRes()
+  : palf_lock_owner_(0),
+    is_locked_(false),
+    op_succ_(false)
+{
+}
+
+void ObStorageConfigChangeOpRes::reset()
+{
+  palf_lock_owner_ = 0;
+  is_locked_ = false;
+  op_succ_ = false;
+}
+
+OB_SERIALIZE_MEMBER(ObStorageConfigChangeOpRes, palf_lock_owner_, is_locked_, op_succ_);
+
 template <ObRpcPacketCode RPC_CODE>
 ObStorageStreamRpcP<RPC_CODE>::ObStorageStreamRpcP(common::ObInOutBandwidthThrottle *bandwidth_throttle)
   : bandwidth_throttle_(bandwidth_throttle),
@@ -749,11 +1167,13 @@ template <typename Data>
 int ObStorageStreamRpcP<RPC_CODE>::fill_data(const Data &data)
 {
   int ret = OB_SUCCESS;
-
+  const int64_t curr_ts = ObTimeUtil::current_time();
   if (NULL == (this->result_.get_data())) {
     STORAGE_LOG(WARN, "fail to alloc migration data buffer.");
     ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (serialization::encoded_length(data) > this->result_.get_remain()) {
+  } else if (serialization::encoded_length(data) > this->result_.get_remain()
+      || (curr_ts - last_send_time_ >= FLUSH_TIME_INTERVAL
+          && this->result_.get_capacity() != this->result_.get_remain())) {
     LOG_INFO("flush", K(this->result_));
     if (OB_FAIL(flush_and_wait())) {
       STORAGE_LOG(WARN, "failed to flush_and_wait", K(ret));
@@ -775,13 +1195,15 @@ template <ObRpcPacketCode RPC_CODE>
 int ObStorageStreamRpcP<RPC_CODE>::fill_buffer(blocksstable::ObBufferReader &data)
 {
   int ret = OB_SUCCESS;
-
+  const int64_t curr_ts = ObTimeUtil::current_time();
   if (NULL == (this->result_.get_data())) {
     STORAGE_LOG(WARN, "fail to alloc migration data buffer.");
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     while (OB_SUCC(ret) && data.remain() > 0) {
-      if (0 == this->result_.get_remain()) {
+      if (0 == this->result_.get_remain()
+          || (curr_ts - last_send_time_ >= FLUSH_TIME_INTERVAL
+              && this->result_.get_capacity() != this->result_.get_remain())) {
         if (OB_FAIL(flush_and_wait())) {
           STORAGE_LOG(WARN, "failed to flush_and_wait", K(ret));
         }
@@ -808,6 +1230,7 @@ template <typename Data>
 int ObStorageStreamRpcP<RPC_CODE>::fill_data_list(ObIArray<Data> &data_list)
 {
   int ret = OB_SUCCESS;
+  const int64_t curr_ts = ObTimeUtil::current_time();
 
   if (NULL == (this->result_.get_data())) {
     STORAGE_LOG(WARN, "fail to alloc migration data buffer.");
@@ -815,7 +1238,9 @@ int ObStorageStreamRpcP<RPC_CODE>::fill_data_list(ObIArray<Data> &data_list)
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < data_list.count(); ++i) {
       Data &data = data_list.at(i);
-      if (data.get_serialize_size() > this->result_.get_remain()) {
+      if (data.get_serialize_size() > this->result_.get_remain()
+          || (curr_ts - last_send_time_ >= FLUSH_TIME_INTERVAL
+              && this->result_.get_capacity() != this->result_.get_remain())) {
         if (OB_FAIL(flush_and_wait())) {
           STORAGE_LOG(WARN, "failed to flush_and_wait", K(ret));
         }
@@ -878,7 +1303,9 @@ int ObStorageStreamRpcP<RPC_CODE>::flush_and_wait()
       STORAGE_LOG(WARN, "failed limit out band", K(tmp_ret));
     }
 
-    if (OB_FAIL(this->flush(OB_DEFAULT_STREAM_WAIT_TIMEOUT))) {
+    if (OB_FAIL(this->check_timeout())) {
+      LOG_WARN("rpc is timeout, no need flush", K(ret));
+    } else if (OB_FAIL(this->flush(OB_DEFAULT_STREAM_WAIT_TIMEOUT))) {
       STORAGE_LOG(WARN, "failed to flush", K(ret));
     } else {
       this->result_.get_position() = 0;
@@ -936,9 +1363,11 @@ int ObHAFetchMacroBlockP::process()
   MTL_SWITCH(arg_.tenant_id_) {
     blocksstable::ObBufferReader data;
     char *buf = NULL;
-    last_send_time_ = ObTimeUtility::current_time();
+    last_send_time_ = this->get_receive_timestamp();
     int64_t occupy_size = 0;
     ObCopyMacroBlockHeader copy_macro_block_header;
+    const int64_t start_ts = ObTimeUtil::current_time();
+    const int64_t first_receive_ts = this->get_receive_timestamp();
 
     if (NULL == (buf = reinterpret_cast<char*>(allocator_.alloc(OB_MALLOC_BIG_BLOCK_SIZE)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1005,6 +1434,10 @@ int ObHAFetchMacroBlockP::process()
         }
       }
     }
+
+    LOG_INFO("finish fetch macro block", K(ret), K(total_macro_block_count_),
+        "cost_ts", ObTimeUtil::current_time() - start_ts,
+        "in rpc queue time", start_ts - first_receive_ts);
   }
   return ret;
 }
@@ -1025,12 +1458,25 @@ int ObFetchTabletInfoP::process()
     ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
     ObCopyTabletInfoObProducer producer;
     ObCopyTabletInfo tablet_info;
-    const int64_t MAX_TABLET_NUM = 100;
+    int64_t max_tablet_num = 32;
     int64_t tablet_count = 0;
+    const int64_t start_ts = ObTimeUtil::current_time();
+    const int64_t first_receive_ts = this->get_receive_timestamp();
+
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+    if (tenant_config.is_valid()) {
+      const int64_t tmp_max_tablet_num = tenant_config->_ha_tablet_info_batch_count;
+      if (0 != tmp_max_tablet_num) {
+        max_tablet_num = tmp_max_tablet_num;
+      }
+    }
+
     LOG_INFO("start to fetch tablet info", K(arg_));
 
-    last_send_time_ = ObTimeUtility::current_time();
-
+    last_send_time_ = this->get_receive_timestamp();
+    const int64_t cost_time = 10 * 1000 * 1000;
+    common::ObTimeGuard timeguard("ObFetchTabletInfoP", cost_time);
+    timeguard.click();
     if (NULL == (buf = reinterpret_cast<char*>(allocator_.alloc(OB_MALLOC_BIG_BLOCK_SIZE)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       STORAGE_LOG(WARN, "failed to alloc migrate data buffer.", K(ret));
@@ -1074,7 +1520,8 @@ int ObFetchTabletInfoP::process()
           } else {
             STORAGE_LOG(WARN, "failed to get next tablet meta info", K(ret));
           }
-        } else if (tablet_count >= MAX_TABLET_NUM) {
+        } else if (tablet_count >= max_tablet_num) {
+          timeguard.click();
           if (this->result_.get_position() > 0 && OB_FAIL(flush_and_wait())) {
             LOG_WARN("failed to flush and wait", K(ret), K(tablet_info));
           } else {
@@ -1089,6 +1536,7 @@ int ObFetchTabletInfoP::process()
           tablet_count++;
         }
       }
+      timeguard.click();
       if (OB_SUCC(ret)) {
         if (arg_.need_check_seq_) {
           if (OB_FAIL(compare_ls_rebuild_seq(arg_.tenant_id_, arg_.ls_id_, arg_.ls_rebuild_seq_))) {
@@ -1097,6 +1545,9 @@ int ObFetchTabletInfoP::process()
         }
       }
     }
+
+    LOG_INFO("finish fetch tablet info", K(ret), "cost_ts", ObTimeUtil::current_time() - start_ts,
+        "in rpc queue time", start_ts - first_receive_ts);
   }
   return ret;
 }
@@ -1113,13 +1564,14 @@ int ObFetchSSTableInfoP::process()
     ObLSHandle ls_handle;
     ObLSService *ls_service = nullptr;
     char * buf = NULL;
-    ObCopySSTableInfoObProducer producer;
     ObCopyTabletSSTableInfo sstable_info;
     ObMigrationStatus migration_status;
     ObLS *ls = nullptr;
+    const int64_t start_ts = ObTimeUtil::current_time();
+    const int64_t first_receive_ts = this->get_receive_timestamp();
     LOG_INFO("start to fetch tablet sstable info", K(arg_));
 
-    last_send_time_ = ObTimeUtility::current_time();
+    last_send_time_ = this->get_receive_timestamp();
 
     if (NULL == (buf = reinterpret_cast<char*>(allocator_.alloc(OB_MALLOC_BIG_BLOCK_SIZE)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1153,6 +1605,8 @@ int ObFetchSSTableInfoP::process()
         }
       }
     }
+    LOG_INFO("finish fetch sstable info", K(ret), "cost_ts", ObTimeUtil::current_time() - start_ts,
+        "in rpc queue time", start_ts - first_receive_ts);
   }
   return ret;
 }
@@ -1281,14 +1735,15 @@ int ObFetchLSInfoP::process()
       LOG_WARN("failed to get ls meta package and tablet ids", K(ret));
     } else if (OB_FAIL(result_.ls_meta_package_.ls_meta_.get_migration_status(migration_status))) {
       LOG_WARN("failed to get migration status", K(ret), K(result_));
-    } else if (!ObMigrationStatusHelper::check_can_migrate_out(migration_status)) {
+    } else if (!ObMigrationStatusHelper::check_can_migrate_out(migration_status) || ls->is_stopped()
+        || ls->is_offline()) {
       ret = OB_SRC_DO_NOT_ALLOWED_MIGRATE;
       STORAGE_LOG(WARN, "src migration status do not allow to migrate out", K(ret), "src migration status",
-          migration_status);
+          migration_status, KPC(ls));
     } else if (OB_FAIL(ObStorageHAUtils::get_server_version(result_.version_))) {
       LOG_WARN("failed to get server version", K(ret), K_(arg));
-    } else if (OB_FAIL(MTL(logservice::ObLogService*)->get_palf_role(ls->get_ls_id(), role, proposal_id))) {
-      STORAGE_LOG(WARN, "failed to get palf role", K(ret), K(arg_), "meta package", result_.ls_meta_package_);
+    } else if (OB_FAIL(log_handler->get_role(role, proposal_id))) {
+      LOG_WARN("failed to get role", K(ret), K(arg_));
     } else if (is_strong_leader(role)) {
       result_.is_log_sync_ = true;
     } else if (OB_FAIL(log_handler->is_in_sync(is_log_sync, is_need_rebuild))) {
@@ -1340,10 +1795,51 @@ int ObFetchLSMetaInfoP::process()
       LOG_WARN("failed to get ls meta package", K(ret), K(arg_));
     } else if (OB_FAIL(ObStorageHAUtils::get_server_version(result_.version_))) {
       LOG_WARN("failed to get server version", K(ret), K_(arg));
+    } else {
+      // TODO(yangyi.yyy): do not check transfer table for now, fix in 4.3
+      result_.has_transfer_table_ = false;
     }
   }
   return ret;
+}
 
+int ObFetchLSMetaInfoP::check_has_transfer_logical_table_(storage::ObLS *ls)
+{
+  int ret = OB_SUCCESS;
+  storage::ObLSTabletIterator tablet_iter(ObMDSGetTabletMode::READ_WITHOUT_CHECK);
+  if (OB_ISNULL(ls)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls not should be null", K(ret), KP(ls));
+  } else if (OB_FAIL(ls->build_tablet_iter(tablet_iter))) {
+    LOG_WARN("failed to build ls tablet iter", K(ret));
+  } else {
+    bool has_logical_table = true;
+    ObTabletHandle tablet_handle;
+    ObTablet *tablet = nullptr;
+    while (OB_SUCC(ret)) {
+      tablet_handle.reset();
+      tablet = nullptr;
+      if (OB_FAIL(tablet_iter.get_next_tablet(tablet_handle))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          LOG_WARN("failed to get tablet", K(ret), KPC(ls));
+        }
+      } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+      } else if (tablet->get_tablet_meta().tablet_id_.is_ls_inner_tablet()) {
+        //do nothing
+      } else if (tablet->get_tablet_meta().has_transfer_table()) {
+        bool has_dependent_ls = false;
+        result_.has_transfer_table_ = true;
+        LOG_INFO("tablet still has logical table", K(tablet_handle));
+        break;
+      }
+    }
+  }
+  return ret;
 }
 
 ObFetchLSMemberListP::ObFetchLSMemberListP()
@@ -1362,9 +1858,18 @@ int ObFetchLSMemberListP::process()
     logservice::ObLogHandler *log_handler = NULL;
     common::ObMemberList member_list;
     int64_t paxos_replica_num = 0;
+    logservice::ObLogService *log_service = nullptr;
+    ObRole role;
+    int64_t proposal_id = 0;
+    ObAddr election_leader;
     if (tenant_id != MTL_ID()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("rpc get member list tenant not match", K(ret), K(tenant_id));
+    } else if (OB_ISNULL(log_service = MTL(logservice::ObLogService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log service should not be NULL", K(ret), KP(log_service));
+    } else if (OB_FAIL(log_service->get_palf_role(ls_id, role, proposal_id))) {
+      LOG_WARN("failed to get role", K(ret), "arg", arg_);
     } else if (OB_ISNULL(ls_svr = MTL(ObLSService *))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("ls service should not be null", K(ret));
@@ -1376,12 +1881,73 @@ int ObFetchLSMemberListP::process()
     } else if (OB_ISNULL(log_handler = ls->get_log_handler())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("log handler should not be NULL", K(ret));
+    } else if (OB_FAIL(log_handler->get_election_leader(election_leader))) {
+      LOG_WARN("failed to get election leader", K(ret), KPC(ls));
+    } else if (!is_strong_leader(role) && GCTX.self_addr() != election_leader) {
+      ret = OB_LS_NOT_LEADER;
+      LOG_WARN("ls is not leader, cannot get member list", K(ret), K(role), K(arg_),
+          K(election_leader), "self", GCTX.self_addr());
     } else if (OB_FAIL(log_handler->get_paxos_member_list(member_list, paxos_replica_num))) {
       LOG_WARN("failed to get paxos member list", K(ret));
     } else if (OB_FAIL(result_.member_list_.deep_copy(member_list))) {
       LOG_WARN("failed to assign", K(ret), K(member_list));
     }
   }
+  return ret;
+}
+
+ObFetchLSMemberAndLearnerListP::ObFetchLSMemberAndLearnerListP()
+{
+}
+
+int ObFetchLSMemberAndLearnerListP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &ls_id = arg_.ls_id_;
+  MTL_SWITCH(tenant_id) {
+    ObLSService *ls_svr = NULL;
+    ObLSHandle ls_handle;
+    ObLS *ls = NULL;
+    logservice::ObLogHandler *log_handler = NULL;
+    common::ObMemberList member_list;
+    int64_t paxos_replica_num = 0;
+    logservice::ObLogService *log_service = nullptr;
+    ObRole role;
+    int64_t proposal_id = 0;
+    common::GlobalLearnerList learner_list;
+    if (tenant_id != MTL_ID()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("rpc get member list tenant not match", K(ret), K(tenant_id));
+    } else if (OB_ISNULL(log_service = MTL(logservice::ObLogService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log service should not be NULL", K(ret), KP(log_service));
+    } else if (OB_FAIL(log_service->get_palf_role(ls_id, role, proposal_id))) {
+      LOG_WARN("failed to get role", K(ret), "arg", arg_);
+    } else if (!is_strong_leader(role)) {
+      ret = OB_PARTITION_NOT_LEADER;
+      LOG_WARN("ls is not leader, cannot get member list", K(ret), K(role), K(arg_));
+    } else if (OB_ISNULL(ls_svr = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret));
+    } else if (OB_FAIL(ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("failed to get ls", K(ret), K(ls_id));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls should not be null", K(ret));
+    } else if (OB_ISNULL(log_handler = ls->get_log_handler())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log handler should not be NULL", K(ret));
+    } else if (OB_FAIL(log_handler->get_paxos_member_list_and_learner_list(member_list, paxos_replica_num, learner_list))) {
+      LOG_WARN("failed to get paxos member list and learner list", K(ret));
+    } else if (OB_FAIL(result_.member_list_.deep_copy(member_list))) {
+      LOG_WARN("failed to assign member list", K(ret), K(member_list));
+    } else if (OB_FAIL(result_.learner_list_.deep_copy(learner_list))) {
+      LOG_WARN("failed to assign learner list", K(ret), K(learner_list));
+    }
+
+  }
+
   return ret;
 }
 
@@ -1398,9 +1964,11 @@ int ObFetchSSTableMacroInfoP::process()
   ObLS *ls = nullptr;
   char * buf = NULL;
   ObMigrationStatus migration_status;
+  const int64_t start_ts = ObTimeUtil::current_time();
+  const int64_t first_receive_ts = this->get_receive_timestamp();
   LOG_INFO("start to fetch sstable macro info", K(arg_));
 
-  last_send_time_ = ObTimeUtility::current_time();
+  last_send_time_ = this->get_receive_timestamp();
   MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
 
   if (OB_FAIL(guard.switch_to(arg_.tenant_id_))) {
@@ -1437,6 +2005,9 @@ int ObFetchSSTableMacroInfoP::process()
       }
     }
   }
+
+  LOG_INFO("finish fetch sstable macro info", K(ret), "cost_ts", ObTimeUtil::current_time() - start_ts,
+      "in rpc queue time", start_ts - first_receive_ts);
   return ret;
 }
 
@@ -1507,6 +2078,176 @@ int ObFetchSSTableMacroInfoP::fetch_sstable_macro_range_info_(const obrpc::ObCop
   return ret;
 }
 
+ObCheckStartTransferTabletsP::ObCheckStartTransferTabletsP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObCheckStartTransferTabletsP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = nullptr;
+    ObLS *ls = nullptr;
+    ObDeviceHealthStatus dhs = DEVICE_HEALTH_NORMAL;
+    int64_t disk_abnormal_time = 0;
+    ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
+
+#ifdef ERRSIM
+    if (OB_SUCC(ret) && DEVICE_HEALTH_NORMAL == dhs && GCONF.fake_disk_error) {
+      dhs = DEVICE_HEALTH_ERROR;
+    }
+#endif
+    if (!arg_.is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("check src transfer tablets get invalid argument", K(ret), K(arg_));
+    } else if (DEVICE_HEALTH_NORMAL == dhs
+        && OB_FAIL(ObIOManager::get_instance().get_device_health_status(dhs, disk_abnormal_time))) {
+      STORAGE_LOG(WARN, "failed to check is disk error", KR(ret));
+    } else if (DEVICE_HEALTH_ERROR == dhs) {
+      ret = OB_DISK_ERROR;
+      STORAGE_LOG(ERROR, "observer has disk error, cannot restore", KR(ret),
+          "disk_health_status", device_health_status_to_str(dhs), K(disk_abnormal_time));
+    } else if (OB_FAIL(check_start_transfer_out_tablets_())) {
+      LOG_WARN("failed to check start transfer out tablets", K(ret), K(arg_));
+    } else if (OB_FAIL(check_start_transfer_in_tablets_())) {
+      LOG_WARN("failed to check start transfer in tablets", K(ret), K(arg_));
+    }
+  }
+  return ret;
+}
+
+// In addition to the tablet in the recovery process, if the major sstable does not exist on the tablet, the transfer start will fail.
+// For tablets with ddl sstable, you need to wait for ddl merge to complete
+int ObCheckStartTransferTabletsP::check_transfer_out_tablet_sstable_(const ObTablet *tablet)
+{
+  int ret = OB_SUCCESS;
+  ObTableStoreIterator ddl_iter;
+  ObTabletMemberWrapper<ObTabletTableStore> wrapper;
+  if (OB_ISNULL(tablet)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("tablet is null", K(ret));
+  } else if (OB_FAIL(tablet->fetch_table_store(wrapper))) {
+    LOG_WARN("fetch table store fail", K(ret), KP(tablet));
+  } else if (!wrapper.get_member()->get_major_sstables().empty()) {
+    // do nothing
+  } else if (OB_FAIL(tablet->get_ddl_sstables(ddl_iter))) {
+    LOG_WARN("failed to get ddl sstable", K(ret));
+  } else if (ddl_iter.is_valid()) { // indicates the existence of ddl sstable
+    ret = OB_MAJOR_SSTABLE_NOT_EXIST;
+    LOG_WARN("major sstable do not exit, need to wait ddl merge", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_);
+  } else if (tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
+    ret = OB_INVALID_TABLE_STORE;
+    LOG_WARN("neither major sstable nor ddl sstable exists", K(ret), K(ddl_iter));
+  }
+  return ret;
+}
+
+int ObCheckStartTransferTabletsP::check_start_transfer_out_tablets_()
+{
+  int ret = OB_SUCCESS;
+  ObLSHandle ls_handle;
+  ObLSService *ls_service = nullptr;
+  ObLS *ls = nullptr;
+  ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
+
+  if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+  } else if (OB_FAIL(ls_service->get_ls(arg_.src_ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("failed to get ls", K(ret), K(arg_));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("src ls should not be NULL", K(ret), K(arg_), KP(ls));
+  } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
+    LOG_WARN("failed to get migration status", K(ret), K(arg_));
+  } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+    ret = OB_STATE_NOT_MATCH;
+    LOG_WARN("src ls migration status is not none", K(ret), K(migration_status), KPC(ls), K(arg_));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < arg_.tablet_list_.count(); ++i) {
+      const ObTransferTabletInfo &tablet_info = arg_.tablet_list_.at(i);
+      ObTabletHandle tablet_handle;
+      ObTablet *tablet = nullptr;
+      ObTabletCreateDeleteMdsUserData user_data;
+      bool committed_flag = false;
+      if (!tablet_info.is_valid()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tablet info is invalid", K(ret), K(tablet_info), K(user_data), K(arg_));
+      } else if (OB_FAIL(ls->get_tablet(tablet_info.tablet_id_, tablet_handle, 0,
+          ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
+        LOG_WARN("failed to get tablet", K(ret), K(tablet_info));
+      } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+      } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, committed_flag))) {
+        LOG_WARN("failed to get lastest tablet status", K(ret), KPC(tablet));
+      } else if (!committed_flag) {
+        ret = OB_STATE_NOT_MATCH;
+        LOG_WARN("transfer src tablet still has uncommitted user data", K(ret), K(user_data), KPC(tablet));
+      } else if (ObTabletStatus::NORMAL != user_data.tablet_status_) {
+        ret = OB_STATE_NOT_MATCH;
+        LOG_WARN("transfer src tablet status is not match", K(ret), KPC(tablet), K(tablet_info), K(user_data));
+      } else if (tablet_info.transfer_seq_ != tablet->get_tablet_meta().transfer_info_.transfer_seq_) {
+        ret = OB_TABLET_TRANSFER_SEQ_NOT_MATCH;
+        LOG_WARN("tablet transfer seq is is not match", K(ret), KPC(tablet), K(tablet_info), K(user_data));
+      } else if (OB_FAIL(check_transfer_out_tablet_sstable_(tablet))) {
+        LOG_WARN("failed to check sstable", K(ret), KPC(tablet), K(user_data));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObCheckStartTransferTabletsP::check_start_transfer_in_tablets_()
+{
+  int ret = OB_SUCCESS;
+  ObLSHandle ls_handle;
+  ObLSService *ls_service = nullptr;
+  ObLS *ls = nullptr;
+  ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
+
+  if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+  } else if (OB_FAIL(ls_service->get_ls(arg_.dest_ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("failed to get ls", K(ret), K(arg_));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("src ls should not be NULL", K(ret), K(arg_), KP(ls));
+  } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
+    LOG_WARN("failed to get migration status", K(ret), K(arg_));
+  } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+    ret = OB_STATE_NOT_MATCH;
+    LOG_WARN("src ls migration status is not none", K(ret), K(migration_status), KPC(ls), K(arg_));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < arg_.tablet_list_.count(); ++i) {
+      const ObTransferTabletInfo &tablet_info = arg_.tablet_list_.at(i);
+      ObTabletHandle tablet_handle;
+      ObTablet *tablet = nullptr;
+      if (OB_FAIL(ls->get_tablet(tablet_info.tablet_id_, tablet_handle, 0,
+          ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
+        if (OB_TABLET_NOT_EXIST == ret) {
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("failed to get tablet", K(ret), K(tablet_info));
+        }
+      } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+      } else if (!tablet->is_empty_shell()) {
+        ret = OB_EAGAIN;
+        LOG_WARN("dest ls in start status should not exist transfer tablet, need retry", K(ret), KPC(tablet), K(tablet_info));
+      } else if (tablet->get_tablet_meta().transfer_info_.transfer_seq_ > tablet_info.transfer_seq_ + 1) {
+        ret = OB_TABLET_TRANSFER_SEQ_NOT_MATCH;
+        LOG_WARN("tablet is in empty shell but transfer seq not match", K(ret), KPC(tablet), K(tablet_info));
+      }
+    }
+  }
+  return ret;
+}
 
 ObNotifyRestoreTabletsP::ObNotifyRestoreTabletsP(
     common::ObInOutBandwidthThrottle *bandwidth_throttle)
@@ -1585,7 +2326,6 @@ ObInquireRestoreP::ObInquireRestoreP(
 
 }
 
-
 int ObInquireRestoreP::process()
 {
   int ret = OB_SUCCESS;
@@ -1652,7 +2392,6 @@ ObUpdateLSMetaP::ObUpdateLSMetaP(
 {
 
 }
-
 
 int ObUpdateLSMetaP::process()
 {
@@ -1749,7 +2488,7 @@ int ObLobQueryP::process_read()
     }
     if (OB_NOT_NULL(iter)) {
       iter->reset();
-      common::sop_return(ObLobQueryIter, iter);
+      OB_DELETE(ObLobQueryIter, "unused", iter);
     }
   }
   return ret;
@@ -1810,6 +2549,714 @@ int ObLobQueryP::process()
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid arg qtype.", K(ret), K(arg_));
+    }
+  }
+  return ret;
+}
+
+ObGetLSActiveTransCountP::ObGetLSActiveTransCountP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObGetLSActiveTransCountP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = nullptr;
+    ObLS *ls = nullptr;
+    bool is_follower = false;
+    ObDeviceHealthStatus dhs = DEVICE_HEALTH_NORMAL;
+    int64_t disk_abnormal_time = 0;
+    ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
+
+#ifdef ERRSIM
+    if (OB_SUCC(ret) && DEVICE_HEALTH_NORMAL == dhs && GCONF.fake_disk_error) {
+      dhs = DEVICE_HEALTH_ERROR;
+    }
+#endif
+    if (!arg_.is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get ls active trans count get invalid argument", K(ret), K(arg_));
+    } else if (DEVICE_HEALTH_NORMAL == dhs
+        && OB_FAIL(ObIOManager::get_instance().get_device_health_status(dhs, disk_abnormal_time))) {
+      STORAGE_LOG(WARN, "failed to check is disk error", KR(ret));
+    } else if (DEVICE_HEALTH_ERROR == dhs) {
+      ret = OB_DISK_ERROR;
+      STORAGE_LOG(ERROR, "observer has disk error, cannot restore", KR(ret),
+          "disk_health_status", device_health_status_to_str(dhs), K(disk_abnormal_time));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg_.src_ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("failed to get ls", K(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("src ls should not be NULL", K(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
+      LOG_WARN("failed to get migration status", K(ret), K(arg_));
+    } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("src ls migration status is not none", K(ret), K(migration_status), KPC(ls), K(arg_));
+    } else if (OB_FAIL(ls->get_active_tx_count(result_.active_trans_count_))) {
+      LOG_WARN("failed to get active trans count", K(ret), KPC(ls), K(arg_));
+    }
+  }
+  return ret;
+}
+
+ObGetTransferStartScnP::ObGetTransferStartScnP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObGetTransferStartScnP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = nullptr;
+    ObLS *ls = nullptr;
+    bool is_follower = false;
+    ObDeviceHealthStatus dhs = DEVICE_HEALTH_NORMAL;
+    int64_t disk_abnormal_time = 0;
+    ObTabletHandle tablet_handle;
+    ObTabletCreateDeleteMdsUserData user_data;
+
+#ifdef ERRSIM
+    if (OB_SUCC(ret) && DEVICE_HEALTH_NORMAL == dhs && GCONF.fake_disk_error) {
+      dhs = DEVICE_HEALTH_ERROR;
+    }
+#endif
+    if (!arg_.is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get ls active trans count get invalid argument", K(ret), K(arg_));
+    } else if (DEVICE_HEALTH_NORMAL == dhs
+        && OB_FAIL(ObIOManager::get_instance().get_device_health_status(dhs, disk_abnormal_time))) {
+      STORAGE_LOG(WARN, "failed to check is disk error", KR(ret));
+    } else if (DEVICE_HEALTH_ERROR == dhs) {
+      ret = OB_DISK_ERROR;
+      STORAGE_LOG(ERROR, "observer has disk error, cannot restore", KR(ret),
+          "disk_health_status", device_health_status_to_str(dhs), K(disk_abnormal_time));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg_.src_ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("failed to get ls", K(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("src ls should not be NULL", K(ret), K(arg_), KP(ls));
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < arg_.tablet_list_.count(); ++i) {
+        const ObTransferTabletInfo &tablet_info = arg_.tablet_list_.at(i);
+        ObTablet *tablet = nullptr;
+        if (OB_FAIL(ls->get_tablet(tablet_info.tablet_id_, tablet_handle, 0,
+            ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
+          LOG_WARN("failed to get tablet", K(ret), K(arg_));
+        } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+        } else if (tablet->get_tablet_meta().transfer_info_.transfer_seq_ != tablet_info.transfer_seq_) {
+          ret = OB_TABLET_TRANSFER_SEQ_NOT_MATCH;
+          LOG_WARN("transfer tablet seq is unexpected", K(ret), K(user_data), K(tablet_info), KPC(tablet));
+        } else if (OB_FAIL(ObTXTransferUtils::get_tablet_status(false/*get_commit*/, tablet_handle, user_data))) {
+          LOG_WARN("failed to get tablet status", K(ret), K(tablet_info));
+        } else if (ObTabletStatus::TRANSFER_OUT != user_data.tablet_status_) {
+          if (ObTabletStatus::NORMAL == user_data.tablet_status_) {
+            //tablet status is normal, set start_scn min which means get start scn need retry.
+            result_.start_scn_.set_min();
+            LOG_INFO("tablet status is normal, get min start scn", K(result_), K(tablet_handle), K(user_data));
+            break;
+          }
+        } else {
+          if (i > 0) {
+            if (user_data.transfer_scn_ != result_.start_scn_) {
+              ret = OB_EAGAIN;
+              LOG_WARN("tx data is not same, need retry", K(ret), K(tablet_handle), K(user_data), K(result_));
+            }
+          } else if (user_data.transfer_scn_.is_min()) {
+            result_.start_scn_.set_min();
+            LOG_INFO("tablet status is transfer out, but on_redo is not  executed. Retry is required");
+            break;
+          } else {
+            result_.start_scn_ = user_data.transfer_scn_;
+            LOG_INFO("succeed get start scn", K(result_), K(user_data));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+ObFetchTransferTabletsInfoP::ObFetchTransferTabletsInfoP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObFetchTransferTabletsInfoP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = nullptr;
+    ObLS *ls = nullptr;
+    char * buf = NULL;
+    ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
+    ObCopyTransferTabletInfoObProducer producer;
+    ObCopyTabletInfo tablet_info;
+    LOG_INFO("start to fetch transfer tablet info", K(arg_));
+
+    last_send_time_ = ObTimeUtility::current_time();
+
+    if (NULL == (buf = reinterpret_cast<char*>(allocator_.alloc(OB_MALLOC_BIG_BLOCK_SIZE)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_LOG(WARN, "failed to alloc migrate data buffer.", K(ret));
+    } else if (!result_.set_data(buf, OB_MALLOC_BIG_BLOCK_SIZE)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_LOG(WARN, "failed set data to result", K(ret));
+    } else if (OB_ISNULL(bandwidth_throttle_)) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(ERROR, "bandwidth_throttle_ must not null", K(ret),
+                  KP_(bandwidth_throttle));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg_.src_ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_UNLIKELY(nullptr == (ls = ls_handle.get_ls()))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
+      LOG_WARN("failed to log stream get migration status", K(ret), K(migration_status));
+    } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("migration status is unexpected", KR(ret), K(arg_), KPC(ls));
+    } else if (OB_FAIL(producer.init(arg_.tenant_id_, arg_.src_ls_id_, arg_.dest_ls_id_, arg_.tablet_list_))) {
+      LOG_WARN("failed to init copy tablet info producer", K(ret), K(arg_));
+    } else {
+      while (OB_SUCC(ret)) {
+        tablet_info.reset();
+        if (OB_FAIL(producer.get_next_tablet_info(tablet_info))) {
+          if (OB_ITER_END == ret) {
+            ret = OB_SUCCESS;
+            break;
+          } else {
+            STORAGE_LOG(WARN, "failed to get next tablet meta info", K(ret));
+          }
+        } else if (OB_FAIL(fill_data(tablet_info))) {
+          STORAGE_LOG(WARN, "fill to fill tablet info", K(ret), K(tablet_info));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+ObFetchLSReplayScnP::ObFetchLSReplayScnP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+int ObFetchLSReplayScnP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    SCN max_decided_scn;
+    LOG_INFO("start to fetch ls replay scn", K(arg_));
+    if (OB_ISNULL(bandwidth_throttle_)) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(ERROR, "bandwidth_throttle_ must not null", K(ret),
+                  KP_(bandwidth_throttle));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg_.ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_UNLIKELY(nullptr == (ls = ls_handle.get_ls()))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->get_max_decided_scn(max_decided_scn))) {
+      LOG_WARN("failed to log stream get migration status", K(ret), K_(arg));
+    } else {
+      result_.replay_scn_ = max_decided_scn;
+      LOG_INFO("get ls replay scn", K(max_decided_scn), K(arg_));
+    }
+  }
+  return ret;
+}
+ObCheckTransferTabletsBackfillP::ObCheckTransferTabletsBackfillP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+int ObCheckTransferTabletsBackfillP::process()
+{
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    ObTransferService *transfer_service = NULL;
+    LOG_INFO("check transfer tablet", K(arg_));
+    if (OB_ISNULL(bandwidth_throttle_)) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(ERROR, "bandwidth_throttle_ must not null", K(ret),
+                  KP_(bandwidth_throttle));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg_.ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_ISNULL(transfer_service = MTL(ObTransferService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("transfer service should not be null", K(ret), K_(arg));
+    } else {
+      bool backfill_finished = true;
+      for (int64_t i = 0; OB_SUCC(ret) && i < arg_.tablet_list_.count(); ++i) {
+        bool has_transfer_table = false;
+        const ObTransferTabletInfo &tablet_info = arg_.tablet_list_.at(i);
+        if (OB_FAIL(check_has_transfer_table_(tablet_info, ls, has_transfer_table))) {
+          LOG_WARN("failed to check has transfer table", K(ret), K(tablet_info));
+        } else if (has_transfer_table) {
+          backfill_finished = false;
+          LOG_INFO("[TRANSFER]tablet still has transfer table, backfill not finished", K(tablet_info), K(arg_));
+          break;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        result_.backfill_finished_ = backfill_finished;
+        if (!backfill_finished) {
+          transfer_service->wakeup();
+        }
+        LOG_INFO("[TRANSFER]check backfill tx finish", K(backfill_finished), K(arg_.tablet_list_), K(ls->get_ls_id()));
+      }
+    }
+  }
+  return ret;
+}
+int ObCheckTransferTabletsBackfillP::check_has_transfer_table_(
+    const ObTransferTabletInfo &tablet_info, storage::ObLS *ls, bool &has_transfer_table)
+{
+  int ret = OB_SUCCESS;
+  ObTabletHandle tablet_handle;
+  ObTablet *tablet = nullptr;
+  has_transfer_table = false;
+  if (OB_ISNULL(ls) || !tablet_info.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("ls is null or tablet info is invalid", K(ret), K(tablet_info));
+  } else if (OB_FAIL(ls->get_tablet(tablet_info.tablet_id_, tablet_handle, 0, ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
+    LOG_WARN("failed to get tablet", K(ret), K(tablet_info));
+  } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+  } else if (tablet_info.transfer_seq_ + 1 != tablet->get_tablet_meta().transfer_info_.transfer_seq_) {
+    ret = OB_TABLET_TRANSFER_SEQ_NOT_MATCH;
+    LOG_WARN("tablet transfer seq not match", K(ret), K(tablet_info), "transfer_seq", tablet->get_tablet_meta().transfer_info_.transfer_seq_);
+  } else if (tablet->get_tablet_meta().has_transfer_table()) {
+    has_transfer_table = true;
+    LOG_INFO("transfer table exist", K(tablet_info), K(tablet->get_tablet_meta()));
+  }
+  return ret;
+}
+
+ObStorageGetConfigVersionAndTransferScnP::ObStorageGetConfigVersionAndTransferScnP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObStorageGetConfigVersionAndTransferScnP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &ls_id = arg_.ls_id_;
+  const bool need_get_config_version = arg_.need_get_config_version_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    int64_t local_transfer_scn = 0;
+    if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->get_config_version_and_transfer_scn(need_get_config_version,
+                                                               result_.config_version_,
+                                                               result_.transfer_scn_))) {
+      LOG_WARN("failed to get config version and transfer scn", K(ret), K(tenant_id), K(ls_id));
+    } else {
+      LOG_INFO("get config version and transfer scn succ", K(tenant_id), K(ls_id), K(result_));
+    }
+  }
+  return ret;
+}
+
+ObStorageFetchLSViewP::ObStorageFetchLSViewP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle),
+      max_tablet_num_(0)
+{
+}
+
+int ObStorageFetchLSViewP::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("receive fetch ls view request", K_(arg));
+  MTL_SWITCH(arg_.tenant_id_) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    char * buf = NULL;
+    max_tablet_num_ = 32;
+    const int64_t start_ts = ObTimeUtil::current_time();
+    const int64_t first_receive_ts = this->get_receive_timestamp();
+
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+    if (tenant_config.is_valid()) {
+      const int64_t tmp_max_tablet_num = tenant_config->_ha_tablet_info_batch_count;
+      if (0 != tmp_max_tablet_num) {
+        max_tablet_num_ = tmp_max_tablet_num;
+      }
+    }
+
+    int64_t filled_tablet_count = 0;
+    int64_t total_tablet_count = 0;
+    last_send_time_ = this->get_receive_timestamp();
+
+    auto fill_ls_meta_f = [this](const ObLSMetaPackage &ls_meta)->int {
+      int ret = OB_SUCCESS;
+      if (OB_FAIL(fill_data(ls_meta))) {
+        LOG_WARN("failed to fill ls meta", K(ret), K(ls_meta));
+      }
+      return ret;
+    };
+
+    auto fill_tablet_meta_f = [this, &filled_tablet_count, &total_tablet_count](const obrpc::ObCopyTabletInfo &tablet_info)->int {
+      int ret = OB_SUCCESS;
+      if (!tablet_info.is_valid()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("fill tablet meta info get invalid argument", K(ret), K(tablet_info));
+      } else if (filled_tablet_count >= this->max_tablet_num_) {
+        if (this->result_.get_position() > 0 && OB_FAIL(flush_and_wait())) {
+          LOG_WARN("failed to flush and wait", K(ret), K(tablet_info));
+        } else {
+          LOG_INFO("batch flush and wait", K(filled_tablet_count), K(total_tablet_count));
+          filled_tablet_count = 0;
+        }
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(fill_data(tablet_info))) {
+        STORAGE_LOG(WARN, "fill to fill tablet info", K(ret), K(tablet_info));
+      } else {
+        ++filled_tablet_count;
+        ++total_tablet_count;
+      }
+      return ret;
+    };
+    const int64_t cost_time = 10 * 1000 * 1000;
+    common::ObTimeGuard timeguard("ObStorageFetchLSViewP", cost_time);
+    timeguard.click();
+    if (NULL == (buf = reinterpret_cast<char*>(allocator_.alloc(OB_MALLOC_BIG_BLOCK_SIZE)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc migrate data buffer.", K(ret));
+    } else if (!result_.set_data(buf, OB_MALLOC_BIG_BLOCK_SIZE)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed set data to result", K(ret));
+    } else if (OB_ISNULL(bandwidth_throttle_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("bandwidth_throttle_ must not null", K(ret), KP_(bandwidth_throttle));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
+    }
+
+    timeguard.click();
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(ls_service->get_ls(arg_.ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", K(ret), K_(arg));
+    }
+
+    timeguard.click();
+    if (OB_FAIL(ret)) {
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K_(arg), KP(ls));
+    } else if (OB_FAIL(ls->get_ls_meta_package_and_tablet_metas(
+                       false/* no need check archive */,
+                       fill_ls_meta_f,
+                       fill_tablet_meta_f))) {
+      LOG_WARN("failed to get ls meta package and tablet metas", K(ret), K_(arg));
+    }
+    LOG_INFO("finish fetch ls view", K(ret), K(total_tablet_count), "cost_ts", ObTimeUtil::current_time() - start_ts,
+        "in rpc queue time", start_ts - first_receive_ts);
+    timeguard.click();
+  }
+  return ret;
+}
+
+ObStorageBlockTxP::ObStorageBlockTxP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+int ObStorageBlockTxP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &src_ls_id = arg_.ls_id_;
+  const share::SCN &gts = arg_.gts_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_srv = NULL;
+    ObLS *ls = NULL;
+    logservice::ObLogService *log_service = nullptr;
+    ObRole role;
+    int64_t proposal_id = 0;
+    if (!arg_.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("get invalid args", K(ret), K_(arg));
+    } else if (OB_ISNULL(ls_srv = MTL(ObLSService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls srv should not be NULL", K(ret), KP(ls_srv));
+    } else if (OB_FAIL(ls_srv->get_ls(src_ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("ls_srv->get_ls() fail", K(ret), K(src_ls_id));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls is NULL", KR(ret), K(ls_handle));
+    } else if (OB_FAIL(ls->ha_block_tx(gts))) {
+      LOG_WARN("failed to kill all tx", K(ret), KPC(ls));
+    } else {
+      LOG_INFO("success to kill all tx", K(ret), K_(arg));
+    }
+  }
+  return ret;
+}
+
+ObStorageKillTxP::ObStorageKillTxP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+int ObStorageKillTxP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &src_ls_id = arg_.ls_id_;
+  const share::SCN &gts = arg_.gts_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_srv = NULL;
+    ObLS *ls = NULL;
+    logservice::ObLogService *log_service = nullptr;
+    ObRole role;
+    int64_t proposal_id = 0;
+    if (!arg_.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("get invalid args", K(ret), K_(arg));
+    } else if (OB_ISNULL(ls_srv = MTL(ObLSService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls srv should not be NULL", K(ret), KP(ls_srv));
+    } else if (OB_FAIL(ls_srv->get_ls(src_ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("ls_srv->get_ls() fail", K(ret), K(src_ls_id));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls is NULL", KR(ret), K(ls_handle));
+    } else if (OB_FAIL(ls->ha_kill_tx(gts))) {
+      LOG_WARN("failed to kill all tx", K(ret), KPC(ls));
+    } else {
+      LOG_INFO("success to kill all tx", K(ret), K_(arg));
+    }
+  }
+  return ret;
+}
+
+ObStorageUnBlockTxP::ObStorageUnBlockTxP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+int ObStorageUnBlockTxP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &src_ls_id = arg_.ls_id_;
+  const share::SCN &gts = arg_.gts_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_srv = NULL;
+    ObLS *ls = NULL;
+    logservice::ObLogService *log_service = nullptr;
+    ObRole role;
+    int64_t proposal_id = 0;
+    if (OB_ISNULL(ls_srv = MTL(ObLSService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls srv should not be NULL", K(ret), KP(ls_srv));
+    } else if (OB_FAIL(ls_srv->get_ls(src_ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("ls_srv->get_ls() fail", K(ret), K(src_ls_id));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls is NULL", KR(ret), K(ls_handle));
+    } else if (OB_FAIL(ls->ha_unblock_tx(gts))) {
+      LOG_WARN("failed to unblock normal", K(ret), K_(arg));
+    }
+  }
+  return ret;
+}
+
+ObStorageLockConfigChangeP::ObStorageLockConfigChangeP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObStorageLockConfigChangeP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &ls_id = arg_.ls_id_;
+  const int64_t lock_owner = arg_.lock_owner_;
+  const int64_t lock_timeout = arg_.lock_timeout_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    if (!arg_.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("get invalid args", K(ret), K_(arg));
+    } else if (arg_.type_ != ObStorageConfigChangeOpArg::LOCK_CONFIG_CHANGE) {
+      ret = OB_ERR_SYS;
+      LOG_WARN("type not match", K(ret), K_(arg));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->try_lock_config_change(lock_owner, lock_timeout))) {
+      LOG_WARN("failed to try lock config config", K(ret), K_(arg));
+    } else {
+      result_.op_succ_ = true;
+      LOG_INFO("lock config change success", K(arg_));
+    }
+  }
+  return ret;
+}
+
+ObStorageUnlockConfigChangeP::ObStorageUnlockConfigChangeP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObStorageUnlockConfigChangeP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &ls_id = arg_.ls_id_;
+  const int64_t lock_owner = arg_.lock_owner_;
+  const int64_t lock_timeout = arg_.lock_timeout_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    if (!arg_.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("get invalid args", K(ret), K_(arg));
+    } else if (arg_.type_ != ObStorageConfigChangeOpArg::UNLOCK_CONFIG_CHANGE) {
+      ret = OB_ERR_SYS;
+      LOG_WARN("type not match", K(ret), K_(arg));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->unlock_config_change(lock_owner, lock_timeout))) {
+      LOG_WARN("failed to try lock config config", K(ret), K_(arg));
+    } else {
+      result_.op_succ_ = true;
+      LOG_INFO("unlock config change success", K(arg_));
+    }
+  }
+  return ret;
+}
+
+ObStorageGetLogConfigStatP::ObStorageGetLogConfigStatP(
+    common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObStorageGetLogConfigStatP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  const share::ObLSID &ls_id = arg_.ls_id_;
+  MTL_SWITCH(tenant_id) {
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    ObLS *ls = NULL;
+    if (!arg_.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("get invalid args", K(ret), K_(arg));
+    } else if (arg_.type_ != ObStorageConfigChangeOpArg::GET_CONFIG_CHANGE_LOCK_STAT) {
+      ret = OB_ERR_SYS;
+      LOG_WARN("type not match", K(ret), K_(arg));
+    } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(arg_));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
+    } else if (OB_FAIL(ls->get_config_change_lock_stat(result_.palf_lock_owner_, result_.is_locked_))) {
+      LOG_WARN("failed to try lock config config", K(ret), K_(arg));
+    } else {
+      result_.op_succ_ = true;
+      LOG_INFO("get config change lock stat success", K(arg_), K(result_));
+    }
+  }
+  return ret;
+}
+
+ObStorageWakeupTransferServiceP::ObStorageWakeupTransferServiceP(
+      common::ObInOutBandwidthThrottle *bandwidth_throttle)
+    : ObStorageStreamRpcP(bandwidth_throttle)
+{
+}
+
+int ObStorageWakeupTransferServiceP::process()
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg_.tenant_id_;
+  MTL_SWITCH(tenant_id) {
+    ObTransferService *transfer_service = MTL(ObTransferService*);
+    if (OB_ISNULL(transfer_service)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("transfer service should not be NULL", K(ret), KP(transfer_service));
+    } else {
+      transfer_service->wakeup();
     }
   }
   return ret;
@@ -2056,6 +3503,444 @@ int ObStorageRpc::update_ls_meta(
   return ret;
 }
 
+int ObStorageRpc::check_start_transfer_tablets(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &src_ls_id,
+    const share::ObLSID &dest_ls_id,
+    const common::ObIArray<share::ObTransferTabletInfo> &tablet_array)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !src_ls_id.is_valid() || !dest_ls_id.is_valid() || tablet_array.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(src_ls_id), K(dest_ls_id), K(tablet_array));
+  } else {
+    ObTransferTabletInfoArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.src_ls_id_ = src_ls_id;
+    arg.dest_ls_id_ = dest_ls_id;
+    if (OB_FAIL(arg.tablet_list_.assign(tablet_array))) {
+      LOG_WARN("failed to assign tablet list", K(ret), K(tablet_array));
+    } else if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                                  .by(tenant_id)
+                                  .dst_cluster_id(src_info.cluster_id_)
+                                  .check_start_transfer_tablets(arg))) {
+      LOG_WARN("failed to check src transfer tablets", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
 
+int ObStorageRpc::get_ls_active_trans_count(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    int64_t &active_trans_count)
+{
+  int ret = OB_SUCCESS;
+  active_trans_count = -1;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObGetLSActiveTransCountRes res;
+    ObGetLSActiveTransCountArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.src_ls_id_ = ls_id;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .get_ls_active_trans_count(arg, res))) {
+      LOG_WARN("failed to get ls active trans count", K(ret), K(src_info), K(arg));
+    } else {
+      active_trans_count = res.active_trans_count_;
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::get_transfer_start_scn(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const common::ObIArray<share::ObTransferTabletInfo> &tablet_list,
+    SCN &transfer_start_scn)
+{
+  int ret = OB_SUCCESS;
+  transfer_start_scn.reset();
+  int64_t get_transfer_start_scn_timeout = 10_s;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+  if (tenant_config.is_valid()) {
+    get_transfer_start_scn_timeout = tenant_config->_transfer_start_rpc_timeout;
+  }
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObGetTransferStartScnRes res;
+    ObGetTransferStartScnArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.src_ls_id_ = ls_id;
+    if (OB_FAIL(arg.tablet_list_.assign(tablet_list))) {
+      LOG_WARN("failed to assign tablet list", K(ret), K(tablet_list));
+    } else if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                                  .by(tenant_id)
+                                  .dst_cluster_id(src_info.cluster_id_)
+                                  .timeout(get_transfer_start_scn_timeout)
+                                  .get_transfer_start_scn(arg, res))) {
+      LOG_WARN("failed to get transfer start scn", K(ret), K(src_info), K(arg));
+    } else {
+      transfer_start_scn = res.start_scn_;
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::fetch_ls_replay_scn(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    SCN &ls_replay_scn)
+{
+  int ret = OB_SUCCESS;
+  ls_replay_scn.reset();
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObFetchLSReplayScnArg arg;
+    ObFetchLSReplayScnRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .fetch_ls_replay_scn(arg, res))) {
+      LOG_WARN("failed to fetch ls replay scn", K(ret), K(src_info), K(arg));
+    } else {
+      ls_replay_scn = res.replay_scn_;
+    }
+  }
+  return ret;
+}
+int ObStorageRpc::check_tablets_logical_table_replaced(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &dest_ls_id,
+    const common::ObIArray<share::ObTransferTabletInfo>& tablet_array,
+    bool &backfill_finished)
+{
+  int ret = OB_SUCCESS;
+  backfill_finished = false;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !dest_ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(dest_ls_id));
+  } else {
+    ObCheckTransferTabletBackfillArg arg;
+    ObCheckTransferTabletBackfillRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = dest_ls_id;
+    if (OB_FAIL(arg.tablet_list_.assign(tablet_array))) {
+      LOG_WARN("failed to assign tablet array", K(ret), K(tablet_array));
+    } else if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                                  .by(tenant_id)
+                                  .dst_cluster_id(src_info.cluster_id_)
+                                  .check_transfer_tablet_backfill_completed(arg, res))) {
+      LOG_WARN("failed to check tablets backfill completed", K(ret), K(src_info), K(arg));
+    } else {
+      backfill_finished = res.backfill_finished_;
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::get_config_version_and_transfer_scn(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const bool need_get_config_version,
+    palf::LogConfigVersion &config_version,
+    share::SCN &transfer_scn)
+{
+  int ret = OB_SUCCESS;
+  config_version.reset();
+  transfer_scn.reset();
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageChangeMemberArg arg;
+    ObStorageChangeMemberRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.need_get_config_version_ = need_get_config_version;
+    const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .timeout(timeout)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .get_config_version_and_transfer_scn(arg, res))) {
+      LOG_WARN("failed to get config version and transfer scn", K(ret), K(src_info), K(arg));
+    } else {
+      config_version = res.config_version_;
+      transfer_scn = res.transfer_scn_;
+      FLOG_INFO("get config version and transfer scn succ", K(tenant_id), K(src_info), K(ls_id));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::block_tx(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const share::SCN &gts)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageBlockTxArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.gts_ = gts;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .block_tx(arg))) {
+      LOG_WARN("failed to block tx", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::kill_tx(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const share::SCN &gts)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageKillTxArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.gts_ = gts;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .kill_tx(arg))) {
+      LOG_WARN("failed to kill tx", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::unblock_tx(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const share::SCN &gts)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageUnBlockTxArg arg;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.gts_ = gts;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .unblock_tx(arg))) {
+      LOG_WARN("failed to unblock tx", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::lock_config_change(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const int64_t lock_owner,
+    const int64_t lock_timeout)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageConfigChangeOpArg arg;
+    ObStorageConfigChangeOpRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.type_ = ObStorageConfigChangeOpArg::LOCK_CONFIG_CHANGE;
+    arg.lock_owner_ = lock_owner;
+    arg.lock_timeout_ = lock_timeout;
+    const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .timeout(timeout)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .lock_config_change(arg, res))) {
+      LOG_WARN("failed to replace member", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::unlock_config_change(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    const int64_t lock_owner,
+    const int64_t lock_timeout)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageConfigChangeOpArg arg;
+    ObStorageConfigChangeOpRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.type_ = ObStorageConfigChangeOpArg::UNLOCK_CONFIG_CHANGE;
+    arg.lock_owner_ = lock_owner;
+    arg.lock_timeout_ = lock_timeout;
+    const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .timeout(timeout)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .unlock_config_change(arg, res))) {
+      LOG_WARN("failed to replace member", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::get_config_change_lock_stat(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info,
+    const share::ObLSID &ls_id,
+    int64_t &palf_lock_owner,
+    bool &is_locked)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid() || !ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info), K(ls_id));
+  } else {
+    ObStorageConfigChangeOpArg arg;
+    ObStorageConfigChangeOpRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    arg.type_ = ObStorageConfigChangeOpArg::GET_CONFIG_CHANGE_LOCK_STAT;
+    const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .timeout(timeout)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .get_config_change_lock_stat(arg, res))) {
+      LOG_WARN("failed to replace member", K(ret), K(src_info), K(arg));
+    } else {
+      palf_lock_owner = res.palf_lock_owner_;
+      is_locked = res.is_locked_;
+    }
+  }
+  return ret;
+}
+
+
+int ObStorageRpc::wakeup_transfer_service(
+    const uint64_t tenant_id,
+    const ObStorageHASrcInfo &src_info)
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (tenant_id == OB_INVALID_ID || !src_info.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(tenant_id), K(src_info));
+  } else {
+    ObStorageWakeupTransferServiceArg arg;
+    arg.tenant_id_ = tenant_id;
+    if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
+                           .dst_cluster_id(src_info.cluster_id_)
+                           .wakeup_transfer_service(arg))) {
+      LOG_WARN("failed to wakeup transfer service", K(ret), K(src_info), K(arg));
+    }
+  }
+  return ret;
+}
+
+int ObStorageRpc::fetch_ls_member_and_learner_list(
+    const uint64_t tenant_id,
+    const share::ObLSID &ls_id,
+    const ObStorageHASrcInfo &src_info,
+    obrpc::ObFetchLSMemberAndLearnerListInfo &member_info)
+{
+  int ret = OB_SUCCESS;
+  obrpc::ObFetchLSMemberAndLearnerListArg arg;
+  arg.tenant_id_ = tenant_id;
+  arg.ls_id_ = ls_id;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "storage rpc is not inited", K(ret));
+  } else if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_).dst_cluster_id(src_info.cluster_id_)
+      .fetch_ls_member_and_learner_list(arg, member_info))) {
+    LOG_WARN("fail to check ls is valid member", K(ret), K(tenant_id), K(ls_id));
+  }
+
+  return ret;
+}
 } // storage
 } // oceanbase

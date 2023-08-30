@@ -159,6 +159,7 @@ public:
   void free(Handle& ref);
   int64_t allocated() const { return ATOMIC_LOAD(&allocated_); }
   int64_t retired() const { return ATOMIC_LOAD(&retired_); }
+  int64_t reclaimed() const { return ATOMIC_LOAD(&reclaimed_); }
   int64_t hold() const {
     int64_t rsize = ATOMIC_LOAD(&reclaimed_);
     int64_t asize = ATOMIC_LOAD(&allocated_);
@@ -169,7 +170,12 @@ public:
   void set_memstore_threshold(int64_t memstore_threshold);
   bool need_do_writing_throttle() const;
   bool check_clock_over_seq(const int64_t seq);
+  int64_t get_clock();
   int64_t expected_wait_time(const int64_t seq) const;
+  int64_t get_max_cached_memstore_size() const
+  {
+    return MAX_CACHED_GROUP_COUNT * ATOMIC_LOAD(&nway_) * (PAGE_SIZE + ACHUNK_PRESERVE_SIZE);
+  }
 private:
   ObQSync& get_qs() {
     static ObQSync s_qs;

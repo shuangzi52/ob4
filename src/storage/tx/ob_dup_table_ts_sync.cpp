@@ -45,6 +45,17 @@ int ObDupTableLSTsSyncMgr::init(ObDupTableLSHandler *dup_ls_handle)
   return ret;
 }
 
+int ObDupTableLSTsSyncMgr::offline()
+{
+  int ret = OB_SUCCESS;
+  SpinWLockGuard guard(ts_sync_lock_);
+  if (OB_FAIL(clean_ts_info_cache_())) {
+    DUP_TABLE_LOG(WARN, "clean ts info cache", K(ret), KPC(this));
+  }
+
+  return ret;
+}
+
 int ObDupTableLSTsSyncMgr::validate_replay_ts(const common::ObAddr &dst,
                                               const share::SCN &target_replay_scn,
                                               const ObTransID &tx_id,
@@ -298,7 +309,7 @@ int ObDupTableLSTsSyncMgr::update_ts_info_(const common::ObAddr &addr,
   tmp_ts_info.update(ts_info);
 
   if (OB_FAIL(ret)) {
-  } else if (ts_info_cache_.set_refactored(addr, tmp_ts_info, 1)) {
+  } else if (OB_FAIL(ts_info_cache_.set_refactored(addr, tmp_ts_info, 1))) {
     DUP_TABLE_LOG(WARN, "set ts info failed", K(ret));
   }
   DUP_TABLE_LOG(DEBUG, "update ts info", K(ret), K(addr), K(tmp_ts_info));

@@ -240,7 +240,7 @@ int ObTableApiProcessorBase::get_ls_id(const ObTabletID &tablet_id, ObLSID &ls_i
 {
   int ret = OB_SUCCESS;
   bool is_cache_hit = false;
-  int64_t expire_renew_time = INT64_MAX;
+  int64_t expire_renew_time = 0; // not refresh ls location cache
   if (OB_FAIL(location_service_->get(MTL_ID(), tablet_id, expire_renew_time, is_cache_hit, ls_id))) {
     LOG_WARN("failed to get ls id", K(ret), K(is_cache_hit));
   }
@@ -255,9 +255,7 @@ int ObTableApiProcessorBase::check_user_access(const ObString &credential_str)
   const ObTableApiCredential *sess_credetial = nullptr;
   if (OB_FAIL(serialization::decode(credential_str.ptr(), credential_str.length(), pos, credential_))) {
     LOG_WARN("failed to serialize credential", K(ret), K(pos));
-  } else if (OB_FAIL(gctx_.table_service_->get_sess_mgr().get_sess_info(credential_.tenant_id_,
-                                                                       credential_.user_id_,
-                                                                       guard))) {
+  } else if (OB_FAIL(gctx_.table_service_->get_sess_mgr().get_sess_info(credential_, guard))) {
     LOG_WARN("fail to get session info", K(ret), K_(credential));
   } else if (OB_FAIL(guard.get_credential(sess_credetial))) {
     LOG_WARN("fail to get credential", K(ret));
@@ -401,7 +399,8 @@ int ObTableApiProcessorBase::setup_tx_snapshot_(transaction::ObTxDesc &trans_des
   } else {
     SCN weak_read_snapshot;
     if (OB_FAIL(txs->get_weak_read_snapshot_version(
-              transaction::ObWeakReadUtil::max_stale_time_for_weak_consistency(MTL_ID()),
+              -1, // system variable : max read stale time for user
+              false,
               weak_read_snapshot))) {
       LOG_WARN("fail to get weak read snapshot", K(ret));
     } else {
@@ -504,9 +503,12 @@ int ObTableApiProcessorBase::sync_end_trans(bool is_rollback, int64_t timeout_ts
     if (OB_FAIL(txs->rollback_tx(*trans_desc_))) {
       LOG_WARN("fail rollback trans when session terminate", K(ret), KPC_(trans_desc));
     }
-  } else if (OB_FAIL(txs->commit_tx(*trans_desc_, stmt_timeout_ts))) {
-    LOG_WARN("fail commit trans when session terminate",
-              K(ret), KPC_(trans_desc), K(stmt_timeout_ts));
+  } else {
+    ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
+    if (OB_FAIL(txs->commit_tx(*trans_desc_, stmt_timeout_ts))) {
+      LOG_WARN("fail commit trans when session terminate",
+                K(ret), KPC_(trans_desc), K(stmt_timeout_ts));
+    }
   }
 
   int tmp_ret = ret;
@@ -823,6 +825,7 @@ template class oceanbase::observer::ObTableRpcProcessor<ObTableRpcProxy::ObRpc<O
 template class oceanbase::observer::ObTableRpcProcessor<ObTableRpcProxy::ObRpc<OB_TABLE_API_EXECUTE_QUERY> >;
 template class oceanbase::observer::ObTableRpcProcessor<ObTableRpcProxy::ObRpc<OB_TABLE_API_QUERY_AND_MUTATE> >;
 template class oceanbase::observer::ObTableRpcProcessor<ObTableRpcProxy::ObRpc<OB_TABLE_API_EXECUTE_QUERY_SYNC> >;
+template class oceanbase::observer::ObTableRpcProcessor<ObTableRpcProxy::ObRpc<OB_TABLE_API_DIRECT_LOAD> >;
 
 template<class T>
 int ObTableRpcProcessor<T>::deserialize()

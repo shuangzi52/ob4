@@ -15,6 +15,7 @@
 
 #include "observer/ob_server_struct.h"          // GCTX
 #include "share/ob_ls_id.h"                     // ObLSID
+#include "lib/compress/ob_compress_util.h"      // ObCompressorType
 #include "logservice/palf/lsn.h"                // LSN
 #include "logservice/palf/log_group_entry.h"    // LogGroupEntry
 #include "logservice/palf/log_entry.h"          // LogEntry
@@ -74,6 +75,21 @@ public:
   void reset() {
     client_pid_ = 0;
     client_addr_.reset();
+  }
+
+  bool operator==(const ObCdcRpcId &that) const {
+    return client_pid_ == that.client_pid_ &&
+           client_addr_ == that.client_addr_;
+  }
+
+  bool operator!=(const ObCdcRpcId &that) const {
+    return !(*this == that);
+  }
+
+  ObCdcRpcId &operator=(const ObCdcRpcId &that) {
+    client_pid_ = that.client_pid_;
+    client_addr_ = that.client_addr_;
+    return *this;
   }
 
   void set_addr(ObAddr &addr) { client_addr_ = addr; }
@@ -236,6 +252,12 @@ public:
   void set_flag(int8_t flag) { flag_ |= flag; }
   int8_t get_flag() const { return flag_; }
 
+  void set_tenant_id(const uint64_t tenant_id) { tenant_id_ = tenant_id; }
+  uint64_t get_tenant_id() const { return tenant_id_; }
+
+  void set_compressor_type(const common::ObCompressorType &compressor_type) { compressor_type_ = compressor_type; }
+  common::ObCompressorType get_compressor_type() const { return compressor_type_; }
+
   TO_STRING_KV(K_(rpc_ver),
       K_(ls_id),
       K_(start_lsn),
@@ -243,7 +265,9 @@ public:
       K_(client_pid),
       K_(client_id),
       K_(progress),
-      K_(flag));
+      K_(flag),
+      K_(compressor_type),
+      K_(tenant_id));
 
   OB_UNIS_VERSION(1);
 
@@ -262,6 +286,8 @@ private:
   // server B can hardly locate log in archive.
   int64_t progress_;
   int8_t flag_;
+  common::ObCompressorType compressor_type_;
+  uint64_t tenant_id_;
 };
 
 // Statistics for LS
@@ -326,6 +352,8 @@ public:
     LAGGED_FOLLOWER = 0,         // lagged follower
     LOG_NOT_IN_THIS_SERVER = 1,  // this server does not server this log
     LS_OFFLINED = 2,             // LS offlined
+    ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF = 3,   // Reach Max LSN in archive log but cannot switch
+                                 // to palf because ls not exists in current server
   };
 public:
   ObCdcLSFetchLogResp() { reset(); }
@@ -401,6 +429,9 @@ public:
     pos_ += want_size;
     log_num_++;
   }
+  bool log_reach_threshold() const {
+    return pos_ > FETCH_BUF_THRESHOLD;
+  }
   bool is_valid() const
   {
     return pos_ >= 0 && pos_ <= FETCH_BUF_LEN;
@@ -420,6 +451,7 @@ public:
 
 private:
   static const int64_t FETCH_BUF_LEN = palf::MAX_LOG_BUFFER_SIZE * 8;
+  static const int64_t FETCH_BUF_THRESHOLD = FETCH_BUF_LEN - palf::MAX_LOG_BUFFER_SIZE;
 
 private:
   int64_t rpc_ver_;
@@ -478,11 +510,18 @@ public:
   void set_flag(int8_t flag) { flag_ |= flag; }
   int8_t get_flag() const { return flag_; }
 
+  void set_tenant_id(const uint64_t tenant_id) { tenant_id_ = tenant_id; }
+  uint64_t get_tenant_id() const { return tenant_id_; }
+
+  void set_compressor_type(const common::ObCompressorType &compressor_type) { compressor_type_ = compressor_type; }
+  common::ObCompressorType get_compressor_type() const { return compressor_type_; }
+
   TO_STRING_KV(K_(rpc_ver),
       K_(ls_id),
       K_(miss_log_array),
       K_(client_pid),
-      K_(flag));
+      K_(flag),
+      K_(compressor_type));
   OB_UNIS_VERSION(1);
 
 private:
@@ -492,6 +531,8 @@ private:
   uint64_t client_pid_;  // Process ID.
   ObCdcRpcId client_id_;
   int8_t flag_;
+  common::ObCompressorType compressor_type_;
+  uint64_t tenant_id_;
 };
 
 } // namespace obrpc

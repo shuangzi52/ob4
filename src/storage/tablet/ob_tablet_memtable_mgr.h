@@ -19,6 +19,8 @@
 #include "storage/ob_storage_struct.h"
 #include "storage/ob_storage_schema_recorder.h"
 #include "storage/compaction/ob_medium_compaction_mgr.h"
+#include "storage/multi_data_source/mds_table_handle.h"
+#include "storage/multi_data_source/mds_table_mgr.h"
 
 namespace oceanbase
 {
@@ -62,12 +64,7 @@ public:
                                       ObTableHandleV2 &handle) override;
   int get_last_frozen_memtable(ObTableHandleV2 &handle) const;
   virtual int get_boundary_memtable(ObTableHandleV2 &handle) override;
-  virtual int get_multi_source_data_unit(
-      memtable::ObIMultiSourceDataUnit *const multi_source_data_unit,
-      ObIAllocator *allocator = nullptr) const override;
-  virtual int get_memtable_for_multi_source_data_unit(
-      ObTableHandleV2 &handle,
-      const memtable::MultiSourceDataUnitType type) const override;
+  int release_tail_memtable(memtable::ObIMemtable *memtable);
   int create_memtable(const share::SCN clog_checkpoint_scn,
                       const int64_t schema_version,
                       const bool for_replay);
@@ -87,14 +84,9 @@ public:
   int set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle,
                                                bool is_force_freeze = false);
 
-  ObStorageSchemaRecorder &get_storage_schema_recorder()
-  {
-    return schema_recorder_;
-  }
-  compaction::ObTabletMediumCompactionInfoRecorder &get_medium_info_recorder()
-  {
-    return medium_info_recorder_;
-  }
+  ObStorageSchemaRecorder &get_storage_schema_recorder() { return schema_recorder_; }
+  compaction::ObTabletMediumCompactionInfoRecorder &get_medium_info_recorder() { return medium_info_recorder_; }
+
   virtual int init_storage_recorder(
       const ObTabletID &tablet_id,
       const share::ObLSID &ls_id,

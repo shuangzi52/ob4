@@ -490,11 +490,24 @@ int ObSerialDfoScheduler::dispatch_sqcs(ObExecContext &exec_ctx,
         } else if (OB_FAIL(OB_E(EventTable::EN_PX_SQC_INIT_FAILED) OB_SUCCESS)) {
           sqc.set_need_report(false);
           LOG_WARN("[SIM] server down. fail to init sqc", K(ret));
+          if (ignore_vtable_error && ObVirtualTableErrorWhitelist::should_ignore_vtable_error(ret)) {
+            ObFastInitSqcReportQCMessageCall call(&sqc, ret, phy_plan_ctx->get_timeout_timestamp(), true);
+            call.mock_sqc_finish_msg();
+            ret = OB_SUCCESS;
+            sqc.set_server_not_alive(true);
+          }
         } else if (OB_FAIL(proxy
                           .by(THIS_WORKER.get_rpc_tenant()?: session->get_effective_tenant_id())
                           .timeout(timeout_us)
                           .fast_init_sqc(args, &sqc_cb))) {
-          LOG_WARN("fail to init sqc", K(ret), K(sqc));
+          if (ignore_vtable_error && ObVirtualTableErrorWhitelist::should_ignore_vtable_error(ret)) {
+            LOG_WARN("ignore error when init sqc with virtual table failed", K(ret), K(sqc));
+            ObFastInitSqcReportQCMessageCall call(&sqc, ret, phy_plan_ctx->get_timeout_timestamp(), true);
+            call.mock_sqc_finish_msg();
+            ret = OB_SUCCESS;
+          } else {
+            LOG_WARN("fail to init sqc", K(ret), K(sqc));
+          }
           sqc.set_need_report(false);
           sqc.set_server_not_alive(true);
         }
@@ -559,6 +572,7 @@ int ObSerialDfoScheduler::do_schedule_dfo(ObExecContext &ctx, ObDfo &dfo) const
     if (OB_FAIL(ObDtlChannelGroup::link_channel(ci, ch))) {
       LOG_WARN("fail link channel", K(ci), K(ret));
     } else if (OB_ISNULL(ch)) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail add qc channel", K(ret));
     } else {
       ch->set_qc_owner();
@@ -719,6 +733,7 @@ int ObParallelDfoScheduler::do_schedule_dfo(ObExecContext &exec_ctx, ObDfo &dfo)
     if (OB_FAIL(ObDtlChannelGroup::link_channel(ci, ch))) {
       LOG_WARN("fail link channel", K(ci), K(ret));
     } else if (OB_ISNULL(ch)) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail add qc channel", K(ret));
     } else {
       ch->set_qc_owner();
@@ -1128,8 +1143,8 @@ int ObParallelDfoScheduler::dispatch_sqc(ObExecContext &exec_ctx,
       sqc.set_adjoining_root_dfo(true);
     }
   }
-  ObArray<ObPeerTaskState> peer_states;
-  ObArray<dtl::ObDtlChannel *> dtl_channels;
+  ObSEArray<ObPeerTaskState, 8> peer_states;
+  ObSEArray<dtl::ObDtlChannel *, 8> dtl_channels;
 
   // 分发 sqc 可能需要重试，
   // 分发 sqc 的 rpc 成功，但 sqc 上无法分配最小个数的 worker 线程，`dispatch_sqc`内部进行重试，

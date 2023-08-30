@@ -423,8 +423,7 @@ int MockObServer::handle(ObReq &req, ObResp &resp)
             OB_FAIL(tx_node_.txn_free_route__update_##tn##_state(session_.get_sessid(), tx_desc, free_route_ctx, buf, len, pos))) { \
           TRANS_LOG(ERROR, "update txn state fail", K(ret), "type", #T); \
         } else if (pos != len) {                                        \
-          ret = OB_ERR_UNEXPECTED;                                      \
-          TRANS_LOG(ERROR, "oops: pos != len, consume buffer incomplete", K(ret), K(pos), K(len), "state_type", #T); \
+          TRANS_LOG(WARN, "[maybe] pos != len, consume buffer incomplete", K(ret), K(pos), K(len), "state_type", #T); \
         }                                                               \
         break;
 #define TX_STATE_UPDATE_(T, tn) TX_STATE_UPDATE__(T, tn)
@@ -517,7 +516,7 @@ int MockObServer::do_handle_(ObReq &req, ObResp &resp)
     break;
   case ObReq::T::DUMMY_WRITE: {
     PREPARE_TX_PARAM(tx_param);
-    int64_t sp;
+    ObTxSEQ sp;
     ret = tx_node_.create_implicit_savepoint(*tx_desc, tx_param, sp, true);
   }
     break;
@@ -600,6 +599,7 @@ class ObTestTxFreeRoute : public ::testing::Test
 public:
   virtual void SetUp() override
   {
+    oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
     ObMallocAllocator::get_instance()->create_and_add_tenant_allocator(1001);
     const uint64_t tv = ObTimeUtility::current_time();
     ObCurTraceId::set(&tv);
@@ -946,8 +946,8 @@ TEST_F(ObTestTxFreeRoute, sample)
                 A_T(txn_free_route_ctx.dynamic_changed_),
                 A_T(txn_free_route_ctx.parts_changed_),
                 A_T(txn_free_route_ctx.extra_changed_),
-                A_F(txn_free_route_ctx.flag_.is_tx_terminated_),
-                A_F(txn_free_route_ctx.flag_.is_fallback_));
+                A_F(txn_free_route_ctx.flag_.is_tx_terminated()),
+                A_F(txn_free_route_ctx.flag_.is_fallback()));
   EX_START_TX(1);
   RESET_HOOKS_2();
   EXPECT_PROXY(POST_ROUTE, A_EQ(backend->server_, &server2));
@@ -1002,7 +1002,7 @@ TEST_F(ObTestTxFreeRoute, sample)
                 A_F(txn_free_route_ctx.dynamic_changed_),
                 A_F(txn_free_route_ctx.parts_changed_),
                 A_F(txn_free_route_ctx.extra_changed_),
-                A_F(txn_free_route_ctx.flag_.is_tx_terminated_));
+                A_F(txn_free_route_ctx.flag_.is_tx_terminated()));
   EX_DUMMY_WRITE(201,100);
   // step2
   RESET_HOOKS_2();
@@ -1014,7 +1014,7 @@ TEST_F(ObTestTxFreeRoute, sample)
                 A_F(txn_free_route_ctx.dynamic_changed_),
                 A_F(txn_free_route_ctx.parts_changed_),
                 A_T(txn_free_route_ctx.extra_changed_),
-                A_F(txn_free_route_ctx.flag_.is_tx_terminated_));
+                A_F(txn_free_route_ctx.flag_.is_tx_terminated()));
   EX_SAVEPOINT(202, 102);
   // step3
   RESET_HOOKS_2();

@@ -65,65 +65,63 @@ int ObMicroBlockDataHandle::get_data_block_data(
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(get_loaded_block_data(block_data))) {
-    //try sync io
-    ObMicroBlockId micro_block_id;
-    micro_block_id.macro_id_ = macro_block_id_;
-    micro_block_id.offset_ = micro_info_.offset_;
-    micro_block_id.size_ = micro_info_.size_;
-    if (OB_FAIL(ObStorageCacheSuite::get_instance().get_block_cache().load_block(
-        micro_block_id,
-        des_meta_,
-        nullptr,
-        &block_reader,
-        block_data,
-        nullptr))) {
-      LOG_WARN("Fail to load micro block, ", K(ret), K_(tenant_id), K_(macro_block_id), K_(micro_info));
-    }
-  }
-  return ret;
-}
-
-int ObMicroBlockDataHandle::get_index_block_data(
-    const ObTableReadInfo &read_info,
-    ObMicroBlockData &index_block)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!read_info.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid columns info", K(ret), K(read_info));
-  } else if (OB_FAIL(get_loaded_block_data(index_block))) {
-    try_release_loaded_index_block();
-    //try sync io
-    ObMicroBlockId micro_block_id;
-    micro_block_id.macro_id_ = macro_block_id_;
-    micro_block_id.offset_ = micro_info_.offset_;
-    micro_block_id.size_ = micro_info_.size_;
-    is_loaded_index_block_ = true;
-    if (OB_FAIL(ObStorageCacheSuite::get_instance().get_index_block_cache().load_block(
-        micro_block_id,
-        des_meta_,
-        &read_info,
-        nullptr,
-        loaded_index_block_data_,
-        allocator_))) {
-      LOG_WARN("Fail to load index micro block", K(ret), K_(macro_block_id), K(read_info), K(micro_block_id));
-      try_release_loaded_index_block();
+    if (THIS_WORKER.get_timeout_remain() <= 0) {
+      // already timeout, don't retry
+      LOG_WARN("get data block data already timeout", K(ret), K(THIS_WORKER.get_timeout_remain()));
     } else {
-      index_block = loaded_index_block_data_;
+      //try sync io
+      ObMicroBlockId micro_block_id;
+      micro_block_id.macro_id_ = macro_block_id_;
+      micro_block_id.offset_ = micro_info_.offset_;
+      micro_block_id.size_ = micro_info_.size_;
+      if (OB_FAIL(ObStorageCacheSuite::get_instance().get_block_cache().load_block(
+          micro_block_id,
+          des_meta_,
+          &block_reader,
+          block_data,
+          nullptr))) {
+        LOG_WARN("Fail to load micro block, ", K(ret), K_(tenant_id), K_(macro_block_id), K_(micro_info));
+      }
     }
   }
   return ret;
 }
 
-int ObMicroBlockDataHandle::get_cached_index_block_data(
-    const ObTableReadInfo &read_info,
-    ObMicroBlockData &index_block)
+int ObMicroBlockDataHandle::get_index_block_data(ObMicroBlockData &index_block)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!read_info.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid columns info", K(ret), K(read_info));
-  } else if (ObSSTableMicroBlockState::IN_BLOCK_CACHE != block_state_) {
+  if (OB_FAIL(get_loaded_block_data(index_block))) {
+    try_release_loaded_index_block();
+    if (THIS_WORKER.get_timeout_remain() <= 0) {
+      LOG_WARN("get index block data already timeout", K(ret), K(THIS_WORKER.get_timeout_remain()));
+      // already timeout, don't retry
+    } else {
+      //try sync io
+      ObMicroBlockId micro_block_id;
+      micro_block_id.macro_id_ = macro_block_id_;
+      micro_block_id.offset_ = micro_info_.offset_;
+      micro_block_id.size_ = micro_info_.size_;
+      is_loaded_index_block_ = true;
+      if (OB_FAIL(ObStorageCacheSuite::get_instance().get_index_block_cache().load_block(
+          micro_block_id,
+          des_meta_,
+          nullptr,
+          loaded_index_block_data_,
+          allocator_))) {
+        LOG_WARN("Fail to load index micro block", K(ret), K_(macro_block_id), K(micro_block_id));
+        try_release_loaded_index_block();
+      } else {
+        index_block = loaded_index_block_data_;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObMicroBlockDataHandle::get_cached_index_block_data(ObMicroBlockData &index_block)
+{
+  int ret = OB_SUCCESS;
+  if (ObSSTableMicroBlockState::IN_BLOCK_CACHE != block_state_) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Fail to get block data, unexpected block state", K(ret), K(block_state_));
   } else {
@@ -246,7 +244,8 @@ int ObMicroBlockHandleMgr::get_micro_block_handle(
     ret = OB_NOT_INIT;
     LOG_WARN("Block handle manager is not inited", K(ret));
   } else if (OB_ISNULL(idx_header)) {
-    LOG_WARN("invalid argument", K(ret));
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpect null index header", K(ret));
   } else {
     if (is_multi_) {
       if (is_ordered_) {

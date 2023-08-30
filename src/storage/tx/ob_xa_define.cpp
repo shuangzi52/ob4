@@ -228,26 +228,31 @@ bool ObXAFlag::is_valid(const int64_t flag, const int64_t xa_req_type)
 
   switch (xa_req_type) {
     case ObXAReqType::XA_START: {
-      const bool is_resumejoin = flag & (TMRESUME | TMJOIN);
-      if (!is_resumejoin) {
-        const int64_t mask = LOOSELY | TMREADONLY | TMSERIALIZABLE;
-        if (mask != (flag | mask)) {
-          ret_bool = false;
-        } else {
-          ret_bool = true;
-        }
+      if (((flag & OBTMRESUME) && ((flag & OBTMJOIN) || (flag & OBLOOSELY)))
+         || ((flag & OBLOOSELY) && (flag & OBTMJOIN))) {
+        ret_bool = false;
       } else {
-        if ((flag & TMJOIN) && (flag & TMRESUME)) {
-          ret_bool = false;
+        const bool is_resumejoin = flag & (OBTMRESUME | OBTMJOIN);
+        if (!is_resumejoin) {
+          const int64_t mask = OBLOOSELY | OBTMREADONLY | OBTMSERIALIZABLE;
+          if (mask != (flag | mask)) {
+            ret_bool = false;
+          } else {
+            ret_bool = true;
+          }
         } else {
-          ret_bool = true;
+          if ((flag & OBTMJOIN) && (flag & OBTMRESUME)) {
+            ret_bool = false;
+          } else {
+            ret_bool = true;
+          }
         }
       }
       break;
     }
     case ObXAReqType::XA_END: {
       const int64_t mask = 0x00000000FFFFFFFF;
-      if ((flag & mask) != TMSUSPEND && (flag & mask) != TMSUCCESS) {
+      if ((flag & mask) != OBTMSUSPEND && (flag & mask) != OBTMSUCCESS && (flag & mask) != OBTMFAIL) {
         ret_bool = false;
       } else {
         ret_bool = true;
@@ -262,7 +267,7 @@ bool ObXAFlag::is_valid(const int64_t flag, const int64_t xa_req_type)
     }
     case ObXAReqType::XA_COMMIT: {
       // noflags or onephase
-      if (flag != TMNOFLAGS && flag != TMONEPHASE) {
+      if (flag != OBTMNOFLAGS && flag != OBTMONEPHASE) {
         ret_bool = false;
       } else {
         ret_bool = true;
@@ -288,9 +293,9 @@ bool ObXAFlag::is_valid(const int64_t flag, const int64_t xa_req_type)
 bool ObXAFlag::is_valid_inner_flag(const int64_t flag)
 {
   bool ret_bool = true;
-  if ((flag & TMSUSPEND) && (flag & TMSUCCESS)) {
+  if ((flag & OBTMSUSPEND) && (flag & OBTMSUCCESS)) {
     ret_bool = false;
-  } else if (!(flag & TMSUSPEND) && !(flag & TMSUCCESS)) {
+  } else if (!(flag & OBTMSUSPEND) && !(flag & OBTMSUCCESS)) {
     ret_bool = false;
   } else {
     ret_bool = true;
@@ -303,10 +308,10 @@ bool ObXAFlag::is_tmnoflags(const int64_t flag, const int64_t xa_req_type)
 {
   bool ret_bool = true;
   if (ObXAReqType::XA_START == xa_req_type) {
-    const int64_t mask = LOOSELY | TMREADONLY | TMSERIALIZABLE;
+    const int64_t mask = OBLOOSELY | OBTMREADONLY | OBTMSERIALIZABLE;
     ret_bool = ((mask | flag) == mask);
   } else {
-    ret_bool = (TMNOFLAGS == flag);
+    ret_bool = (OBTMNOFLAGS == flag);
   }
   TRANS_LOG(INFO, "check tmnoflags", K(ret_bool), K(xa_req_type), KPHEX(&flag, sizeof(int64_t)));
   return ret_bool;
@@ -421,12 +426,46 @@ void ObXATimeoutTask::runTimerTask()
   }
 }
 
+void ObXAStatistics::reset()
+{
+  ATOMIC_STORE(&total_standby_clearup_count_, 0);
+  ATOMIC_STORE(&total_success_xa_start_, 0);
+  ATOMIC_STORE(&total_failure_xa_start_, 0);
+  ATOMIC_STORE(&total_success_xa_prepare_, 0);
+  ATOMIC_STORE(&total_failure_xa_prepare_, 0);
+  ATOMIC_STORE(&total_success_xa_1pc_commit_, 0);
+  ATOMIC_STORE(&total_failure_xa_1pc_commit_, 0);
+  ATOMIC_STORE(&total_success_xa_2pc_commit_, 0);
+  ATOMIC_STORE(&total_failure_xa_2pc_commit_, 0);
+  ATOMIC_STORE(&total_xa_rollback_, 0);
+  ATOMIC_STORE(&total_success_dblink_promotion_, 0);
+  ATOMIC_STORE(&total_failure_dblink_promotion_, 0);
+  ATOMIC_STORE(&total_success_dblink_, 0);
+  ATOMIC_STORE(&total_failure_dblink_, 0);
+}
+
 void ObXAStatistics::print_statistics(int64_t cur_ts)
 {
   const int64_t last_stat_ts = ATOMIC_LOAD(&last_stat_ts_);
   if (cur_ts - last_stat_ts >= STAT_INTERVAL) {
     if (ATOMIC_BCAS(&last_stat_ts_, last_stat_ts, cur_ts)) {
-      TRANS_LOG(INFO, "xa statistics", K(*this));
+      TRANS_LOG(INFO, "xa statistics",
+                      "total_active_xa_ctx_count", ATOMIC_LOAD(&total_active_xa_ctx_count_),
+                      "total_standby_clearup_count", ATOMIC_LOAD(&total_standby_clearup_count_),
+                      "total_success_xa_start", ATOMIC_LOAD(&total_success_xa_start_),
+                      "total_failure_xa_start", ATOMIC_LOAD(&total_failure_xa_start_),
+                      "total_success_xa_prepare", ATOMIC_LOAD(&total_success_xa_prepare_),
+                      "total_failure_xa_prepare", ATOMIC_LOAD(&total_failure_xa_prepare_),
+                      "total_success_xa_1pc_commit", ATOMIC_LOAD(&total_success_xa_1pc_commit_),
+                      "total_failure_xa_1pc_commit", ATOMIC_LOAD(&total_failure_xa_1pc_commit_),
+                      "total_success_xa_2pc_commit", ATOMIC_LOAD(&total_success_xa_2pc_commit_),
+                      "total_failure_xa_2pc_commit", ATOMIC_LOAD(&total_failure_xa_2pc_commit_),
+                      "total_failure_xa_rollback", ATOMIC_LOAD(&total_xa_rollback_),
+                      "total_success_dblink_promotion", ATOMIC_LOAD(&total_success_dblink_promotion_),
+                      "total_failure_dblink_promotion", ATOMIC_LOAD(&total_failure_dblink_promotion_),
+                      "total_success_dblink", ATOMIC_LOAD(&total_success_dblink_),
+                      "total_failure_dblink", ATOMIC_LOAD(&total_failure_dblink_));
+      reset();
     }
   }
 }

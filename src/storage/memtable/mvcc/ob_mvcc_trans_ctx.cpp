@@ -41,8 +41,9 @@ void RedoDataNode::set(const ObMemtableKey *key,
                        const uint32_t acc_checksum,
                        const int64_t version,
                        const int32_t flag,
-                       const int64_t seq_no,
-                       const common::ObTabletID &tablet_id)
+                       const transaction::ObTxSEQ seq_no,
+                       const common::ObTabletID &tablet_id,
+                       const int64_t column_cnt)
 {
   key_.encode(*key);
   old_row_ = old_row;
@@ -55,24 +56,32 @@ void RedoDataNode::set(const ObMemtableKey *key,
   seq_no_ = seq_no;
   callback_ = NULL;
   tablet_id_ = tablet_id;
+  column_cnt_ = column_cnt;
 }
 
-void TableLockRedoDataNode::set(
+int TableLockRedoDataNode::set(
     const ObMemtableKey *key,
     const oceanbase::transaction::tablelock::ObTableLockOp &lock_op,
     const common::ObTabletID &tablet_id,
     ObITransCallback *callback)
 {
-  key_.encode(*key);
-  lock_id_ = lock_op.lock_id_;
-  owner_id_ = lock_op.owner_id_;
-  lock_mode_ = lock_op.lock_mode_;
-  lock_op_type_ = lock_op.op_type_;
-  seq_no_ = lock_op.lock_seq_no_;
-  callback_ = callback;
-  tablet_id_ = tablet_id;
-  create_timestamp_ = lock_op.create_timestamp_;
-  create_schema_version_ = lock_op.create_schema_version_;
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(key) || !lock_op.is_valid() || !tablet_id.is_valid() || OB_ISNULL(callback)) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(ERROR, "invalid argument", K(ret), KP(key), K(lock_op), K(tablet_id), KP(callback));
+  } else {
+    key_.encode(*key);
+    lock_id_ = lock_op.lock_id_;
+    owner_id_ = lock_op.owner_id_;
+    lock_mode_ = lock_op.lock_mode_;
+    lock_op_type_ = lock_op.op_type_;
+    seq_no_ = lock_op.lock_seq_no_;
+    callback_ = callback;
+    tablet_id_ = tablet_id;
+    create_timestamp_ = lock_op.create_timestamp_;
+    create_schema_version_ = lock_op.create_schema_version_;
+  }
+  return ret;
 }
 
 void ObITransCallback::set_scn(const SCN scn)
@@ -376,14 +385,11 @@ void ObTransCallbackMgr::after_append(ObITransCallback *node, const int ret_code
   }
 }
 
-int ObTransCallbackMgr::rollback_to(const int64_t to_seq_no,
-                                    const int64_t from_seq_no)
+int ObTransCallbackMgr::rollback_to(const ObTxSEQ to_seq_no,
+                                    const ObTxSEQ from_seq_no)
 {
   int ret = OB_SUCCESS;
-  if (0 > to_seq_no || 0 > from_seq_no) {
-    ret = OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid argument", K(ret), K(from_seq_no), K(to_seq_no));
-  } else if (OB_FAIL(callback_list_.remove_callbacks_for_rollback_to(to_seq_no))) {
+  if (OB_FAIL(callback_list_.remove_callbacks_for_rollback_to(to_seq_no))) {
     TRANS_LOG(WARN, "invalid argument", K(ret), K(from_seq_no), K(to_seq_no));
   }
   return ret;
@@ -442,11 +448,13 @@ void ObTransCallbackMgr::reset_pdml_stat()
   force_merge_multi_callback_lists();
 }
 
-int ObTransCallbackMgr::remove_callbacks_for_fast_commit(bool &has_remove)
+int ObTransCallbackMgr::remove_callbacks_for_fast_commit(const ObITransCallback *generate_cursor,
+                                                         bool &meet_generate_cursor)
 {
   int ret = OB_SUCCESS;
 
-  if (OB_FAIL(callback_list_.remove_callbacks_for_fast_commit(has_remove))) {
+  if (OB_FAIL(callback_list_.remove_callbacks_for_fast_commit(generate_cursor,
+                                                              meet_generate_cursor))) {
     TRANS_LOG(WARN, "remove callbacks for fast commit fail", K(ret));
   }
 
@@ -1188,7 +1196,8 @@ int ObMvccRowCallback::get_redo(RedoDataNode &redo_node)
                   tnode_->version_,
                   0,
                   seq_no_,
-                  this->get_tablet_id());
+                  this->get_tablet_id(),
+                  column_cnt_);
     redo_node.set_callback(this);
   }
   return ret;
@@ -1256,7 +1265,7 @@ int64_t ObMvccRowCallback::to_string(char *buf, const int64_t buf_len) const
       "seq_no=%ld, memtable=%p, scn=%s",
       this, to_cstring(ctx_), is_link_, need_fill_redo_,
       to_cstring(value_), NULL == tnode_ ? "null" : to_cstring(*tnode_),
-      seq_no_, memtable_, to_cstring(scn_));
+      seq_no_.cast_to_int(), memtable_, to_cstring(scn_));
   return pos;
 }
 

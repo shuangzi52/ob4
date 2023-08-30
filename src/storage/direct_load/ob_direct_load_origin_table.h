@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yiren.ly <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #pragma once
 
 #include "share/schema/ob_table_dml_param.h"
@@ -49,16 +56,19 @@ public:
   bool is_valid() const { return is_inited_; }
   const ObDirectLoadOriginTableMeta &get_meta() const {return meta_; }
   const ObTabletHandle &get_tablet_handle() const { return tablet_handle_; }
-  const ObTableStoreIterator &get_table_iter() const { return table_iter_; }
+  const ObTableStoreIterator &get_table_iter() const { return *(table_iter_.table_iter()); }
   blocksstable::ObSSTable *get_major_sstable() const { return major_sstable_; }
-  TO_STRING_KV(K_(meta), K_(tablet_handle), K_(table_iter), KP_(major_sstable));
+  const common::ObIArray<blocksstable::ObSSTable *> &get_ddl_sstables() const { return ddl_sstables_; }
+  TO_STRING_KV(K_(meta), K_(tablet_handle), K_(table_iter), KP_(major_sstable), K_(ddl_sstables));
 private:
   int prepare_tables();
 private:
   ObDirectLoadOriginTableMeta meta_;
   ObTabletHandle tablet_handle_;
-  ObTableStoreIterator table_iter_;
+  ObTabletTableIterator table_iter_;
+  // ddl sstables may not merge to major sstable
   blocksstable::ObSSTable *major_sstable_;
+  common::ObArray<blocksstable::ObSSTable *> ddl_sstables_;
   bool is_inited_;
 };
 

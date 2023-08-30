@@ -29,6 +29,8 @@
 #include "rootserver/ob_root_utils.h"            // get_proposal_id_from_sys_ls
 #include "rootserver/ob_rs_event_history_table_operator.h" // ROOTSERVICE_EVENT_ADD
 #include "rootserver/ob_root_service.h"
+#include "lib/utility/utility.h"
+
 namespace oceanbase
 {
 using namespace common;
@@ -52,9 +54,7 @@ ObHeartbeatService::ObHeartbeatService()
       all_servers_info_in_table_(),
       inactive_zone_list_(),
       hb_responses_(),
-      need_process_hb_responses_(false),
-      need_update_server_tracer_(false),
-      is_rs_server_info_updated_(false)
+      need_process_hb_responses_(false)
 {
 }
 ObHeartbeatService::~ObHeartbeatService()
@@ -101,8 +101,6 @@ int ObHeartbeatService::init()
     inactive_zone_list_.set_attr(attr);
     hb_responses_.set_attr(attr);
     set_epoch_id_(palf::INVALID_PROPOSAL_ID);
-    need_update_server_tracer_ = false;
-    is_rs_server_info_updated_ = false;
     is_inited_ = true;
     HBS_LOG_INFO("ObHeartbeatService is inited");
   }
@@ -140,8 +138,6 @@ void ObHeartbeatService::destroy()
   is_inited_ = false;
   sql_proxy_ = NULL;
   srv_rpc_proxy_ = NULL;
-  need_update_server_tracer_ = false;
-  is_rs_server_info_updated_ = false;
   set_epoch_id_(palf::INVALID_PROPOSAL_ID);
   all_servers_hb_info_.destroy();
   HBS_LOG_INFO("ObHeartbeatService is destroyed");
@@ -191,10 +187,12 @@ void ObHeartbeatService::do_work()
         HBS_LOG_ERROR("unexpected thread_idx", KR(ret), K(thread_idx), K(thread_cnt));
       } else {
         if (0 == thread_idx) {
+          ObCurTraceId::init(GCONF.self_addr_);
           if (OB_FAIL(send_heartbeat_())) {
             LOG_WARN("fail to send heartbeat", KR(ret));
           }
         } else { // 1 == thread_idx
+          ObCurTraceId::init(GCONF.self_addr_);
           if (OB_FAIL(manage_heartbeat_())) {
             LOG_WARN("fail to manage heartbeat", KR(ret));
           }
@@ -235,12 +233,14 @@ int ObHeartbeatService::send_heartbeat_()
     ret = OB_ERR_UNEXPECTED;
     HBS_LOG_ERROR("srv_rpc_proxy_ is null", KR(ret), KP(srv_rpc_proxy_));
   } else {
+    ObTimeGuard time_guard("ObHeartbeatService::send_heartbeat_", 2 * 1000 * 1000);
     // step 1: prepare hb_requests based on the whitelist
     if (OB_FAIL(prepare_hb_requests_(hb_requests, tmp_whitelist_epoch_id))) {
       LOG_WARN("fail to prepare heartbeat requests", KR(ret));
     } else if (hb_requests.count() <= 0) {
       LOG_INFO("no heartbeat request needs to be sent");
     } else {
+      time_guard.click("end prepare_hb_requests");
       ObSendHeartbeatProxy proxy(*srv_rpc_proxy_, &obrpc::ObSrvRpcProxy::handle_heartbeat);
       int64_t timeout = GCONF.rpc_timeout;  // default value is 2s
       int tmp_ret = OB_SUCCESS;
@@ -263,12 +263,15 @@ int ObHeartbeatService::send_heartbeat_()
         LOG_WARN("fail to wait all batch result", KR(ret), KR(tmp_ret));
         ret = OB_SUCC(ret) ? tmp_ret : ret;
       }
+      time_guard.click("end wait_hb_responses");
       // step 4: save hb_responses
       if (FAILEDx(set_hb_responses_(tmp_whitelist_epoch_id, &proxy))) {
         LOG_WARN("fail to set hb_responses", KR(ret));
       }
+      time_guard.click("end set_hb_responses");
     }
   }
+  FLOG_INFO("send_heartbeat_ has finished one round", KR(ret));
   return ret;
 }
 int ObHeartbeatService::set_hb_responses_(const int64_t whitelist_epoch_id, ObSendHeartbeatProxy *proxy)
@@ -298,7 +301,7 @@ int ObHeartbeatService::set_hb_responses_(const int64_t whitelist_epoch_id, ObSe
       } else if (OB_FAIL(hb_responses_.push_back(*hb_response))) {
         LOG_WARN("fail to push an element into hb_responses_", KR(ret), KPC(hb_response));
       } else {
-        LOG_DEBUG("receive a heartbeat response", KPC(hb_response));
+        LOG_TRACE("receive a heartbeat response", KPC(hb_response));
       }
     }
   }
@@ -380,33 +383,20 @@ int ObHeartbeatService::manage_heartbeat_()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), K(is_inited_));
   } else {
+    ObTimeGuard time_guard("ObHeartbeatService::manage_heartbeat_", 2 * 1000 * 1000);
     int tmp_ret = OB_SUCCESS;
     if (OB_TMP_FAIL(prepare_whitelist_())) {
       ret = OB_SUCC(ret) ? tmp_ret : ret;
       LOG_WARN("fail to prepare whitelist", KR(ret), KR(tmp_ret));
     }
+    time_guard.click("end prepare_whitelist");
     if (OB_TMP_FAIL(process_hb_responses_())) {
       ret = OB_SUCC(ret) ? tmp_ret : ret;
       LOG_WARN("fail to prepare heartbeat response", KR(ret), KR(tmp_ret));
     }
-    if (need_update_server_tracer_) {
-      if (OB_TMP_FAIL(SVR_TRACER.refresh())) {
-        LOG_WARN("fail to refresh server tracer", KR(ret), KR(tmp_ret));
-      } else {
-        need_update_server_tracer_ = false;
-      }
-    }
-    if (is_rs_server_info_updated_) {
-      if (OB_ISNULL(GCTX.root_service_)) {
-        tmp_ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("GCTX.root_service_ is null", KR(ret), KR(tmp_ret), KP(GCTX.root_service_));
-      } else if (OB_TMP_FAIL(GCTX.root_service_->get_status_change_cb().on_server_status_change(GCTX.self_addr()))) {
-        LOG_WARN("fail to execute on_server_status_change", KR(ret), KR(tmp_ret), K(GCTX.self_addr()));
-      } else {
-        is_rs_server_info_updated_ = false;
-      }
-    }
+    time_guard.click("end process_hb_responses");
   }
+  FLOG_INFO("manage_heartbeat_ has finished one round", KR(ret));
   return ret;
 }
 int ObHeartbeatService::prepare_whitelist_()
@@ -420,6 +410,7 @@ int ObHeartbeatService::prepare_whitelist_()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), K(is_inited_));
   } else if (OB_ISNULL(sql_proxy_)) {
+    ret = OB_ERR_UNEXPECTED;
     LOG_WARN("sql_proxy_ is null", KR(ret), KP(sql_proxy_));
   } else if (OB_FAIL(check_or_update_service_epoch_(epoch_id))) {
     LOG_WARN("fail to check or update service epoch", KR(ret), K(epoch_id));
@@ -632,10 +623,6 @@ int ObHeartbeatService::check_server_without_hb_response_(
         K(server_hb_info));
   } else if ((now - server_hb_info.get_last_hb_time() > GCONF.lease_time
           && 0 == server_info_in_table.get_last_offline_time())) {
-    need_update_server_tracer_ = true;
-    if (GCTX.self_addr() == server_info_in_table.get_server()) {
-      is_rs_server_info_updated_ = true;
-    }
     if (OB_FAIL(update_table_for_online_to_offline_server_(
         server_info_in_table,
         now,
@@ -690,21 +677,46 @@ int ObHeartbeatService::update_table_for_online_to_offline_server_(
           K(server_info_in_table), K(now));
     }
   }
-  if (OB_UNLIKELY(!trans.is_started())) {
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(end_trans_and_refresh_server_(server_info_in_table.get_server(),
+          OB_SUCC(ret), trans))) {
+    LOG_WARN("failed to end trans", KR(ret), K(tmp_ret), K(server_info_in_table));
+    ret = OB_SUCC(ret) ? tmp_ret : ret;
+  }
+  return ret;
+}
+
+int ObHeartbeatService::end_trans_and_refresh_server_(
+      const ObAddr &server,
+      const bool commit,
+      common::ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!server.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("server is invalid", KR(ret), K(server));
+  } else if (!trans.is_started()) {
     LOG_WARN("the transaction is not started");
   } else {
     int tmp_ret = OB_SUCCESS;
-    if (OB_TMP_FAIL(trans.end(OB_SUCC(ret)))) {
-      HBS_LOG_WARN("fail to commit the transaction", KR(ret), KR(tmp_ret),
-          K(server_info_in_table.get_server()));
-      ret = OB_SUCC(ret) ? tmp_ret : ret;
+    if (OB_FAIL(trans.end(commit))) {
+      HBS_LOG_WARN("fail to commit the transaction", KR(ret),
+          K(server), K(commit));
     }
-    if (OB_FAIL(ret)) {
-      LOG_WARN("fail to update __all_server table", KR(ret));
+    //ignore error of refresh and on server_status_change
+    if (OB_TMP_FAIL(SVR_TRACER.refresh())) {
+      LOG_WARN("fail to refresh server tracer", KR(ret), KR(tmp_ret));
+    }
+    if (OB_ISNULL(GCTX.root_service_)) {
+      tmp_ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("GCTX.root_service_ is null", KR(ret), KR(tmp_ret), KP(GCTX.root_service_));
+    } else if (OB_TMP_FAIL(GCTX.root_service_->get_status_change_cb().on_server_status_change(server))) {
+      LOG_WARN("fail to execute on_server_status_change", KR(ret), KR(tmp_ret), K(server));
     }
   }
   return ret;
 }
+
 int ObHeartbeatService::init_server_hb_info_(
     const int64_t now,
     const share::ObServerInfoInTable &server_info_in_table,
@@ -775,10 +787,6 @@ int ObHeartbeatService::check_server_with_hb_response_(
         || 0 != server_info_in_table.get_last_offline_time()
         || server_info_in_table.get_build_version() != hb_response.get_build_version()
         || server_info_in_table.get_start_service_time() != hb_response.get_start_service_time()) {
-      need_update_server_tracer_ = true;
-      if (GCTX.self_addr() == server_info_in_table.get_server()) {
-        is_rs_server_info_updated_ = true;
-      }
       if (OB_FAIL(update_table_for_server_with_hb_response_(
           hb_response,
           server_info_in_table,
@@ -1064,18 +1072,11 @@ int ObHeartbeatService::update_table_for_server_with_hb_response_(
       }
     }
   }
-  if (OB_UNLIKELY(!trans.is_started())) {
-    LOG_WARN("the transaction is not started");
-  } else {
-    int tmp_ret = OB_SUCCESS;
-    if (OB_TMP_FAIL(trans.end(OB_SUCC(ret)))) {
-      LOG_WARN("fail to commit the transaction", KR(ret), KR(tmp_ret),
-          K(server_info_in_table), K(hb_response));
-      ret = OB_SUCC(ret) ? tmp_ret : ret;
-    }
-    if (OB_FAIL(ret)) {
-      LOG_WARN("fail to update __all_server table", KR(ret));
-    }
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(end_trans_and_refresh_server_(server_info_in_table.get_server(),
+          OB_SUCC(ret), trans))) {
+    LOG_WARN("failed to end trans", KR(ret), K(tmp_ret), K(server_info_in_table));
+    ret = OB_SUCC(ret) ? tmp_ret : ret;
   }
   return ret;
 }

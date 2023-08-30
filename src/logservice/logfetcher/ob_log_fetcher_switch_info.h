@@ -42,6 +42,9 @@ enum KickOutReason
 
   NEED_SWITCH_SERVER           = 10,  // There is a higher priority server that actively switch
   DISCARDED                    = 11,  // Partition is discard
+
+  // Feedback
+  ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF        = 12,  //same as ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF
 };
 const char *print_switch_reason(const KickOutReason reason);
 
@@ -51,10 +54,6 @@ struct KickOutInfo
   KickOutReason kick_out_reason_;
 
   KickOutInfo() : tls_id_(), kick_out_reason_(NONE) {}
-  explicit KickOutInfo(const logservice::TenantLSID &tls_id) :
-    tls_id_(tls_id),
-    kick_out_reason_(NONE)
-  {}
   KickOutInfo(const logservice::TenantLSID &tls_id, KickOutReason kick_out_reason) :
     tls_id_(tls_id),
     kick_out_reason_(kick_out_reason)

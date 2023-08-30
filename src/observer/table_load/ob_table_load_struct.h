@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -18,14 +26,6 @@ class ObObj;
 }
 namespace observer
 {
-
-enum class ObTableLoadDataType : int32_t
-{
-  OBJ_ARRAY = 0,  //obobj[]
-  STR_ARRAY = 1,  //string[]
-  RAW_STRING = 2,  //string
-  MAX_DATA_TYPE
-};
 
 struct ObTableLoadKey
 {
@@ -110,7 +110,6 @@ struct ObTableLoadParam
       need_sort_(false),
       px_mode_(false),
       online_opt_stat_gather_(false),
-      data_type_(ObTableLoadDataType::RAW_STRING),
       dup_action_(sql::ObLoadDupActionType::LOAD_INVALID_MODE)
   {
   }
@@ -138,7 +137,7 @@ struct ObTableLoadParam
 
   TO_STRING_KV(K_(tenant_id), K_(table_id), K_(parallel), K_(session_count), K_(batch_size),
                K_(max_error_row_count), K_(sql_mode), K_(column_count), K_(need_sort), K_(px_mode),
-               K_(online_opt_stat_gather), K_(data_type), K_(dup_action));
+               K_(online_opt_stat_gather), K_(dup_action));
 public:
   uint64_t tenant_id_;
   uint64_t table_id_;
@@ -151,7 +150,6 @@ public:
   bool need_sort_;
   bool px_mode_;
   bool online_opt_stat_gather_;
-  ObTableLoadDataType data_type_;
   sql::ObLoadDupActionType dup_action_;
 };
 

@@ -41,9 +41,10 @@ struct ObTxNodeArg
   // of the memtable. It is used for debug.
   int64_t memstore_version_;
   // seq_no_ is the sequence no of the executing sql
-  int64_t seq_no_;
+  transaction::ObTxSEQ seq_no_;
   // scn_ is thee log ts of the redo log
   share::SCN scn_;
+  int64_t column_cnt_;
 
   TO_STRING_KV(KP_(data),
                KP_(old_row),
@@ -51,36 +52,41 @@ struct ObTxNodeArg
                K_(acc_checksum),
                K_(memstore_version),
                K_(seq_no),
-               K_(scn));
+               K_(scn),
+               K_(column_cnt));
 
   // Constructor for leader
   ObTxNodeArg(const ObMemtableData *data,
               const ObRowData *old_row,
               const int64_t memstore_version,
-              const int64_t seq_no)
+              const transaction::ObTxSEQ seq_no,
+              const int64_t column_cnt)
     : data_(data),
     old_row_(old_row),
     modify_count_(UINT32_MAX),
     acc_checksum_(0),
     memstore_version_(memstore_version),
     seq_no_(seq_no),
-    scn_(share::SCN::max_scn()) {}
+    scn_(share::SCN::max_scn()),
+    column_cnt_(column_cnt) {}
 
   // Constructor for follower
   ObTxNodeArg(const ObMemtableData *data,
               const ObRowData *old_row,
               const int64_t memstore_version,
-              const int64_t seq_no,
+              const transaction::ObTxSEQ seq_no,
               const uint32_t modify_count,
               const uint32_t acc_checksum,
-              const share::SCN scn)
+              const share::SCN scn,
+              const int64_t column_cnt)
     : data_(data),
     old_row_(old_row),
     modify_count_(modify_count),
     acc_checksum_(acc_checksum),
     memstore_version_(memstore_version),
     seq_no_(seq_no),
-    scn_(scn) {}
+    scn_(scn),
+    column_cnt_(column_cnt) {}
 
   void reset() {
     data_ = NULL;
@@ -88,8 +94,9 @@ struct ObTxNodeArg
     modify_count_ = 0;
     acc_checksum_ = 0;
     memstore_version_ = 0;
-    seq_no_ = 0;
+    seq_no_.reset();
     scn_ = share::SCN::min_scn();
+    column_cnt_ = 0;
   }
 };
 
@@ -110,11 +117,14 @@ struct ObMvccWriteResult {
   // tx_node_ is the node used for insert, whether it is inserted is decided by
   // has_insert()
   ObMvccTransNode *tx_node_;
+  // is_checked_ is used to tell lock_rows_on_forzen_stores whether sequence_set_violation has finished its check
+  bool is_checked_;
 
   TO_STRING_KV(K_(can_insert),
                K_(need_insert),
                K_(is_new_locked),
                K_(lock_state),
+               K_(is_checked),
                KPC_(tx_node));
 
   ObMvccWriteResult()
@@ -122,7 +132,8 @@ struct ObMvccWriteResult {
     need_insert_(false),
     is_new_locked_(false),
     lock_state_(),
-    tx_node_(NULL) {}
+    tx_node_(NULL),
+    is_checked_(false) {}
 
   // has_insert indicates whether the insert is succeed
   // It is decided by both can_insert_ and need_insert_
@@ -135,6 +146,7 @@ struct ObMvccWriteResult {
     is_new_locked_ = false;
     lock_state_.reset();
     tx_node_ = NULL;
+    is_checked_ = false;
   }
 };
 

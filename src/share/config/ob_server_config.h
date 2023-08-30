@@ -56,6 +56,11 @@ const char* const FREEZE_TRIGGER_PERCENTAGE = "freeze_trigger_percentage";
 const char* const WRITING_THROTTLEIUNG_TRIGGER_PERCENTAGE = "writing_throttling_trigger_percentage";
 const char* const COMPATIBLE = "compatible";
 const char* const WEAK_READ_VERSION_REFRESH_INTERVAL = "weak_read_version_refresh_interval";
+const char* const PARTITION_BALANCE_SCHEDULE_INTERVAL = "partition_balance_schedule_interval";
+const char* const BALANCER_IDLE_TIME = "balancer_idle_time";
+const char* const LOG_DISK_UTILIZATION_LIMIT_THRESHOLD = "log_disk_utilization_limit_threshold";
+const char* const LOG_DISK_THROTTLING_PERCENTAGE = "log_disk_throttling_percentage";
+
 class ObServerMemoryConfig;
 
 class ObServerConfig : public ObCommonConfig
@@ -80,7 +85,6 @@ public:
 
   virtual ObServerRole get_server_type() const { return common::OB_SERVER; }
   virtual bool is_debug_sync_enabled() const { return static_cast<int64_t>(debug_sync_timeout) > 0; }
-  virtual bool is_rebalance_enabled() { return !in_major_version_upgrade_mode() && enable_rebalance; }
   virtual bool is_rereplication_enabled() { return !in_major_version_upgrade_mode() && enable_rereplication; }
 
   virtual double user_location_cpu_quota() const { return location_cache_cpu_quota; }
@@ -145,25 +149,34 @@ private:
 class ObServerMemoryConfig
 {
 public:
-  enum CapacityType {
+  enum DependentMemConfig {
+    MEMORY_LIMIT,
     SYSTEM_MEMORY,
-    HIDDEN_SYS_MEMORY,
+  };
+  enum AdaptiveMemConfig {
+    ADAPTIVE_SYSTEM_MEMORY,
+    ADAPTIVE_HIDDEN_SYS_MEMORY,
   };
   friend class unittest::ObSimpleClusterTestBase;
   friend class unittest::ObMultiReplicaTestBase;
   ObServerMemoryConfig();
   static ObServerMemoryConfig &get_instance();
   int reload_config(const ObServerConfig& server_config);
-  int64_t get_capacity_default_memory(CapacityType type, int64_t memory_limit);
   int64_t get_server_memory_limit() { return memory_limit_; }
   int64_t get_reserved_server_memory() { return system_memory_; }
   int64_t get_server_memory_avail() { return memory_limit_ - system_memory_; }
+  int64_t get_hidden_sys_memory() { return hidden_sys_memory_; }
+  //the extra_memory just used by real sys when non_mini_mode
+  int64_t get_extra_memory();
+
 private:
-// set_server_memory_limit just for mittest
-  void set_server_memory_limit(int64_t memory_limit);
+  int64_t get_adaptive_memory_config(const int64_t memory_size,
+                                     DependentMemConfig dep_mem_config,
+                                     AdaptiveMemConfig adap_mem_config);
 private:
   int64_t memory_limit_;
   int64_t system_memory_;
+  int64_t hidden_sys_memory_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObServerMemoryConfig);
 };

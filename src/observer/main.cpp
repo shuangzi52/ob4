@@ -23,6 +23,7 @@
 #include "lib/allocator/ob_libeasy_mem_pool.h"
 #include "lib/signal/ob_signal_struct.h"
 #include "lib/utility/ob_defer.h"
+#include "objit/ob_llvm_symbolizer.h"
 #include "observer/ob_server.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_server_utils.h"
@@ -90,7 +91,7 @@ static void print_version()
   MPRINT("BUILD_TIME: %s %s", build_date(), build_time());
   MPRINT("BUILD_FLAGS: %s%s", build_flags(), extra_flags);
   MPRINT("BUILD_INFO: %s\n", build_info());
-  MPRINT("Copyright (c) 2011-2022 OceanBase Inc.");
+  MPRINT("Copyright (c) 2011-present OceanBase Inc.");
   MPRINT();
 }
 
@@ -399,7 +400,7 @@ static int check_uid_before_start(const char *dir_path)
 
 static void print_all_thread(const char* desc)
 {
-  MPRINT("============= [%s]begin to show unstopped thread =============", desc);
+  MPRINT("============= [%s] begin to show unstopped thread =============", desc);
   DIR *dir = opendir("/proc/self/task");
   if (dir == NULL) {
     MPRINT("fail to print all thread");
@@ -421,20 +422,19 @@ static void print_all_thread(const char* desc)
       if (len > 0 && name[len - 1] == '\n') {
         name[len - 1] = '\0';
       }
-      MPRINT("tid: %s, name: %s", tid, name);
+      MPRINT("[%s] detect unstopped thread, tid: %s, name: %s", desc, tid, name);
       fclose(file);
     }
   }
   closedir(dir);
-  MPRINT("============= [%s]finish to show unstopped thread =============", desc);
+  MPRINT("============= [%s] finish to show unstopped thread =============", desc);
 }
 
-extern "C" {
-typedef void *(*reasy_pool_realloc_pt)(void *ptr, size_t size);
-void reasy_pool_set_allocator(reasy_pool_realloc_pt alloc);
-}
 int main(int argc, char *argv[])
 {
+#ifdef ENABLE_SANITY
+  backtrace_symbolize_func = oceanbase::common::backtrace_symbolize;
+#endif
   if (0 != pthread_getname_np(pthread_self(), ob_get_tname(), OB_THREAD_NAME_BUF_LEN)) {
     snprintf(ob_get_tname(), OB_THREAD_NAME_BUF_LEN, "observer");
   }
@@ -585,19 +585,14 @@ int main(int argc, char *argv[])
       } else if (OB_FAIL(observer.wait())) {
         LOG_ERROR("observer wait fail", K(ret));
       }
-      print_all_thread("BEFORE_DESTORY");
+      print_all_thread("BEFORE_DESTROY");
       observer.destroy();
-      ObKVGlobalCache::get_instance().destroy();
-      ObVirtualTenantManager::get_instance().destroy();
     }
     curl_global_cleanup();
     unlink(PID_FILE_NAME);
   }
 
   LOG_INFO("observer exits", "observer_version", PACKAGE_STRING);
-  OB_LOGGER.set_stop_append_log();
-  OB_LOGGER.set_enable_async_log(false);
-  OB_LOGGER.set_enable_log_limit(false);
-  print_all_thread("AFTER_DESTORY");
+  print_all_thread("AFTER_DESTROY");
   return ret;
 }

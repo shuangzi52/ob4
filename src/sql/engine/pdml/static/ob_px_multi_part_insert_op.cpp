@@ -52,7 +52,7 @@ int ObPxMultiPartInsertOp::inner_open()
     const ObPhysicalPlan *plan = GET_PHY_PLAN_CTX(ctx_)->get_phy_plan();
     if (ObTableDirectInsertService::is_direct_insert(*plan)) {
       int64_t task_id = ctx_.get_px_task_id() + 1;
-      if (OB_FAIL(ObTableDirectInsertService::open_task(plan->get_append_table_id(), task_id))) {
+      if (OB_FAIL(ObTableDirectInsertService::open_task(plan->get_append_table_id(), task_id, table_ctx_))) {
         LOG_WARN("failed to open table direct insert task", KR(ret),
             K(plan->get_append_table_id()), K(task_id));
       } else {
@@ -103,14 +103,16 @@ int ObPxMultiPartInsertOp::inner_get_next_row()
 int ObPxMultiPartInsertOp::inner_close()
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   const ObPhysicalPlan *plan = GET_PHY_PLAN_CTX(ctx_)->get_phy_plan();
   if (ObTableDirectInsertService::is_direct_insert(*plan)) {
     int64_t task_id = ctx_.get_px_task_id() + 1;
     int error_code = (static_cast<const ObPxMultiPartInsertOpInput *>(input_))->get_error_code();
-    if (OB_FAIL(ObTableDirectInsertService::close_task(plan->get_append_table_id(),
-                                                task_id,
-                                                error_code))) {
-      LOG_WARN("failed to close table direct insert task", KR(ret),
+    if (OB_TMP_FAIL(ObTableDirectInsertService::close_task(plan->get_append_table_id(),
+                                                           task_id,
+                                                           table_ctx_,
+                                                           error_code))) {
+      LOG_WARN("failed to close table direct insert task", KR(tmp_ret),
           K(plan->get_append_table_id()), K(task_id), K(error_code));
     }
   }
@@ -119,7 +121,7 @@ int ObPxMultiPartInsertOp::inner_close()
   } else {
     data_driver_.destroy();
   }
-
+  ret = (OB_SUCCESS == tmp_ret) ? ret : tmp_ret;
   return ret;
 }
 
@@ -131,7 +133,8 @@ int ObPxMultiPartInsertOp::process_row()
                                    eval_ctx_,
                                    ins_rtdef_.cur_row_num_,
                                    MY_SPEC.ins_ctdef_.column_infos_,
-                                   MY_SPEC.is_ignore_,
+                                   MY_SPEC.ins_ctdef_.das_ctdef_,
+                                   MY_SPEC.ins_ctdef_.is_single_value_,
                                    *this));
   OZ(ObDMLService::filter_row_for_view_check(MY_SPEC.ins_ctdef_.view_check_exprs_, eval_ctx_, is_filtered));
   OV(!is_filtered, OB_ERR_CHECK_OPTION_VIOLATED);

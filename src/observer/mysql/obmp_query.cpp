@@ -56,9 +56,6 @@
 #include "sql/monitor/ob_security_audit_utils.h"
 #include "observer/mysql/obmp_utils.h"
 #include "lib/ash/ob_active_session_guard.h"
-#ifdef PERF_MODE
-#include "observer/layer_perf/ob_layer_perf.h"
-#endif
 #include "lib/trace/ob_trace.h"
 
 using namespace oceanbase::rpc;
@@ -90,17 +87,6 @@ ObMPQuery::~ObMPQuery()
 int ObMPQuery::process()
 {
   int ret = OB_SUCCESS;
-  #ifdef PERF_MODE
-  // use for ob layer benchmark
-  //
-  bool layer_perf_hit = false;
-  ObLayerPerf layer_perf(this);
-  ret = layer_perf.process(layer_perf_hit);
-  if (layer_perf_hit) {
-    return ret;
-  }
-  #endif
-
   int tmp_ret = OB_SUCCESS;
   ObSQLSessionInfo *sess = NULL;
   uint32_t sessid = 0;
@@ -249,39 +235,16 @@ int ObMPQuery::process()
           }
         }
 
-        bool enable_batch_opt = session.is_enable_batched_multi_statement();;
         if (OB_FAIL(ret)) {
           //do nothing
         } else if (OB_FAIL(parser.split_multiple_stmt(sql_, queries, parse_stat))) {
           // 进入本分支，说明push_back出错，OOM，委托外层代码返回错误码
           // 且进入此分支之后，要断连接
           need_response_error = true;
-        } else if (enable_batch_opt &&
-            OB_FAIL(parser.reconstruct_insert_sql(sql_, queries, ins_queries, do_ins_batch_opt))) {
-          LOG_WARN("fail to reconstruct", K(ret), K(sql_));
         } else if (OB_UNLIKELY(queries.count() <= 0)) {
           ret = OB_ERR_UNEXPECTED;
           need_response_error = true;//进入此分支之后，要断连接，极其严重错误
           LOG_ERROR("emtpy query count. client would have suspended. never be here!", K_(sql), K(ret));
-        } else if (do_ins_batch_opt) {
-          bool optimization_done = false;
-          if (OB_FAIL(try_batched_multi_stmt_optimization(session,
-                                                          ins_queries,
-                                                          parse_stat,
-                                                          optimization_done,
-                                                          async_resp_used,
-                                                          need_disconnect,
-                                                          true))) {
-            LOG_WARN("fail to try batch", K(ret));
-          } else if (!optimization_done) {
-            // 如果 batch执行失败，那么还是回退成原本的单条执行
-            ret = process_single_stmt(ObMultiStmtItem(false, 0, sql_),
-                                      session,
-                                      has_more,
-                                      force_sync_resp,
-                                      async_resp_used,
-                                      need_disconnect);
-          }
         } else if (OB_UNLIKELY(1 == session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS)) {
           // 处理Multiple Statement
           /* MySQL处理Multi-Stmt出错时候的行为：
@@ -340,7 +303,7 @@ int ObMPQuery::process()
               //FIXME qianfu NG_TRACE_EXT(set_disconnect, OB_ID(disconnect), true, OB_ID(pos), "multi stmt begin");
               if (OB_UNLIKELY(parse_stat.parse_fail_
                   && (i == parse_stat.fail_query_idx_)
-                  && (OB_ERR_PARSE_SQL != parse_stat.fail_ret_))) {
+                  && ObSQLUtils::check_need_disconnect_parser_err(parse_stat.fail_ret_))) {
                 // 进入本分支，说明在multi_query中的某条query parse失败，如果不是语法错，则进入该分支
                 // 如果当前query_count 为1， 则不断连接;如果大于1，
                 // 则需要在发错误包之后断连接，防止客户端一直在等接下来的回包
@@ -354,7 +317,10 @@ int ObMPQuery::process()
                 // 但是目前的代码实现难以在不同的线程处理同一个请求的回包，
                 // 因此这里只允许只有一个query的multi query请求异步回包。
                 force_sync_resp = queries.count() <= 1? false : true;
-                ret = process_single_stmt(ObMultiStmtItem(true, i, queries.at(i)),
+                // is_part_of_multi 表示当前sql是 multi stmt 中的一条，
+                // 原来的值默认为true，会影响单条sql的二次路由，现在改为用 queries.count() 判断。
+                bool is_part_of_multi = queries.count() > 1 ? true : false;
+                ret = process_single_stmt(ObMultiStmtItem(is_part_of_multi, i, queries.at(i)),
                                           session,
                                           has_more,
                                           force_sync_resp,
@@ -394,11 +360,10 @@ int ObMPQuery::process()
     // THIS_WORKER.need_retry()是指是否扔回队列重试，包括大查询被扔回队列的情况。
     session.check_and_reset_retry_info(*cur_trace_id, THIS_WORKER.need_retry());
     session.set_last_trace_id(ObCurTraceId::get_trace_id());
-    int tmp_ret = OB_SUCCESS;
-    tmp_ret = record_flt_trace(session);
+    IGNORE_RETURN record_flt_trace(session);
   }
 
-  if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid()) {
+  if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid() && is_conn_valid()) {
     int tmp_ret = OB_SUCCESS;
     // Call setup_user_resource_group no matter OB_SUCC or OB_FAIL
     // because we have to reset conn.group_id_ according to user_name.
@@ -530,6 +495,8 @@ int ObMPQuery::process_single_stmt(const ObMultiStmtItem &multi_stmt_item,
                                          session.get_effective_tenant_id(),
                                          &session))) {
       LOG_WARN("failed to check_and_refresh_schema", K(ret));
+    } else if (OB_FAIL(session.update_timezone_info())) {
+      LOG_WARN("fail to update time zone info", K(ret));
     } else {
       need_response_error = false;
       //每次执行不同sql都需要更新
@@ -570,9 +537,7 @@ int ObMPQuery::process_single_stmt(const ObMultiStmtItem &multi_stmt_item,
       //otherwise there is a risk of coredump
       //@TODO: need to determine a mechanism to ensure the safety of memory access here
     }
-    if (enable_trace_log) {
-      ObThreadLogLevelUtils::clear();
-    }
+    ObThreadLogLevelUtils::clear();
     const int64_t debug_sync_timeout = GCONF.debug_sync_timeout;
     if (debug_sync_timeout > 0) {
       // ignore thread local debug sync actions to session actions failed
@@ -615,6 +580,7 @@ OB_NOINLINE int ObMPQuery::process_with_tmp_context(ObSQLSessionInfo &session,
                                                     bool &need_disconnect)
 {
   int ret = OB_SUCCESS;
+  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
   //create a temporary memory context to process retry or the rest sql of multi-query,
   //avoid memory dynamic leaks caused by query retry or too many multi-query items
   lib::ContextParam param;
@@ -630,6 +596,7 @@ OB_NOINLINE int ObMPQuery::process_with_tmp_context(ObSQLSessionInfo &session,
                      force_sync_resp,
                      async_resp_used,
                      need_disconnect);
+    ctx_.first_plan_hash_ = 0;
     ctx_.first_outline_data_.reset();
     ctx_.clear();
   }
@@ -1024,8 +991,23 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
     }
     bool is_need_retry = THIS_THWORKER.need_retry() ||
         RETRY_TYPE_NONE != retry_ctrl_.get_retry_type();
+#ifdef OB_BUILD_SPM
+    if (!is_need_retry) {
+      (void)ObSQLUtils::handle_plan_baseline(audit_record, plan, ret, ctx_);
+    }
+#endif
     (void)ObSQLUtils::handle_audit_record(is_need_retry, EXECUTE_LOCAL, session,
         ctx_.is_sensitive_);
+#ifdef OB_BUILD_AUDIT_SECURITY
+    // 对于触发重试的语句不需要进行审计，以免一条语句被审计多次
+    if (!retry_ctrl_.need_retry() && !async_resp_used) {
+      (void)ObSecurityAuditUtils::handle_security_audit(result,
+                                                        ctx_.schema_guard_,
+                                                        ctx_.cur_stmt_,
+                                                        ObString::make_empty_string(),
+                                                        ret);
+    }
+#endif
   }
   return ret;
 }
@@ -1272,7 +1254,13 @@ OB_INLINE int ObMPQuery::response_result(ObMySQLResultSet &result,
   ObSQLSessionInfo &session = result.get_session();
   CHECK_COMPATIBILITY_MODE(&session);
 
+#ifndef OB_BUILD_SPM
   bool need_trans_cb  = result.need_end_trans_callback() && (!force_sync_resp);
+#else
+  bool need_trans_cb  = result.need_end_trans_callback() &&
+                        (!force_sync_resp) &&
+                        (!ctx_.spm_ctx_.check_execute_status_);
+#endif
 
   // 通过判断 plan 是否为 null 来确定是 plan 还是 cmd
   // 针对 plan 和 cmd 分开处理，逻辑会较为清晰。

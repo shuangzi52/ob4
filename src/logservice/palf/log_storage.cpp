@@ -12,9 +12,11 @@
 
 #define USING_LOG_PREFIX PALF
 #include "log_storage.h"
-#include "lib/ob_errno.h"            // OB_INVALID_ARGUMENT
-#include "log_reader_utils.h"        // ReadBuf
+#include "lib/ob_errno.h"             // OB_INVALID_ARGUMENT
+#include "lib/stat/ob_session_stat.h" // Session
+#include "log_reader_utils.h"         // ReadBuf
 #include "palf_handle_impl.h"        // LogHotCache
+#include "share/rc/ob_tenant_base.h"
 #include "share/scn.h"
 
 namespace oceanbase
@@ -78,7 +80,7 @@ int LogStorage::init(const char *base_dir, const char *sub_dir, const LSN &base_
 int LogStorage::load_manifest_for_meta_storage(block_id_t &expected_next_block_id)
 {
   int ret = OB_SUCCESS;
-  block_id_t log_tail_block_id = lsn_2_block(log_tail_, PALF_BLOCK_SIZE);
+  block_id_t log_tail_block_id = lsn_2_block(log_tail_, logical_block_size_);
   // if last block is full, last_block_id will be the next block id of 'last block'
   // NB: nowdays, there is no possible which last block is empty but the header of this block is valid.
   block_id_t last_block_id = (0 == curr_block_writable_size_ ? log_tail_block_id - 1 : log_tail_block_id);
@@ -94,7 +96,7 @@ int LogStorage::load_manifest_for_meta_storage(block_id_t &expected_next_block_i
                  read_block_header_(last_block_id, log_block_header_))) {
     PALF_LOG(WARN, "read_block_header_ failed", K(ret), KPC(this));
   } else {
-    expected_next_block_id= lsn_2_block(log_block_header_.get_min_lsn(), PALF_BLOCK_SIZE);
+    expected_next_block_id= lsn_2_block(log_block_header_.get_min_lsn(), logical_block_size_);
     PALF_LOG(INFO, "load_manifest_for_meta_storage success", K(ret), KPC(this), K(expected_next_block_id));
   }
   return ret;
@@ -112,6 +114,8 @@ void LogStorage::destroy()
   log_tail_.reset();
   log_reader_.destroy();
   block_mgr_.destroy();
+  last_accum_read_statistic_time_ = OB_INVALID_TIMESTAMP;
+  accum_read_log_size_ = 0;
   PALF_LOG(INFO, "LogStorage destroy success");
 }
 
@@ -527,7 +531,10 @@ int LogStorage::update_manifest_used_for_meta_storage(const block_id_t expected_
   // log error in LogBlockMgr because 'log_tail_block_id' is not same as 'curr_writable_block_id'(LogBlockMgr)
   // assume 'log_tail_' is equal to PALF_PHY_BLOCK_SIZE, 'log_tail_block_id' is 1, however
   // 'curr_writable_block_id' is 0.
-  if (OB_FAIL(update_block_header_(last_block_id, LSN(expected_max_block_id*PALF_BLOCK_SIZE), SCN::min_scn()))) {
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "LogMetaStorage not inited", KPC(this), K(expected_max_block_id));
+  } else if (OB_FAIL(update_block_header_(last_block_id, LSN(expected_max_block_id*logical_block_size_), SCN::min_scn()))) {
     PALF_LOG(WARN, "append_block_header_ failed", K(ret), KPC(this), K(last_block_id), K(log_tail_block_id));
   } else {
     PALF_LOG(INFO, "update_manifest_used_for_meta_storage success", K(ret), KPC(this));
@@ -626,6 +633,7 @@ int LogStorage::do_init_(const char *base_dir,
     update_manifest_cb_ = update_manifest_cb;
     plugins_ = plugins;
     hot_cache_ = hot_cache;
+    last_accum_read_statistic_time_ = ObTimeUtility::fast_current_time();
     is_inited_ = true;
   }
   if (OB_FAIL(ret) && OB_INIT_TWICE != ret) {
@@ -865,6 +873,12 @@ int LogStorage::inner_pread_(const LSN &read_lsn,
              K(read_lsn),
              K(out_read_size),
              K(log_tail));
+    EVENT_TENANT_ADD(ObStatEventIds::PALF_READ_LOG_SIZE_FROM_DISK, out_read_size, MTL_ID());
+    ATOMIC_AAF(&accum_read_log_size_, out_read_size);
+    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_read_statistic_time_)) {
+      PALF_LOG(INFO, "[PALF STAT READ LOG SIZE FROM DISK]", KPC(this), K(accum_read_log_size_));
+      ATOMIC_STORE(&accum_read_log_size_, 0);
+    }
   }
 
   if (OB_NO_SUCH_FILE_OR_DIRECTORY == ret) {
@@ -886,6 +900,18 @@ void LogStorage::reset_log_tail_for_last_block_(const LSN &lsn, bool last_block_
 int LogStorage::update_manifest_(const block_id_t expected_next_block_id, const bool in_restart)
 {
   return update_manifest_cb_(expected_next_block_id, in_restart);
+}
+
+int LogStorage::get_logical_block_size(int64_t &logical_block_size) const
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "LogStorage not init", KPC(this));
+  } else {
+    logical_block_size = logical_block_size_;
+  }
+  return ret;
 }
 } // end namespace palf
 } // end namespace oceanbase

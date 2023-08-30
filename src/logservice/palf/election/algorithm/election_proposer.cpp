@@ -246,7 +246,7 @@ int ElectionProposer::register_renew_lease_task_()
     } else if (role_ != ObRole::LEADER) {
       LOG_RENEW_LEASE(ERROR, "unexpected role status");
     } else if (OB_UNLIKELY(leader_revoke_if_lease_expired_(RoleChangeReason::LeaseExpiredToRevoke))) {
-      LOG_RENEW_LEASE(ERROR, "leader lease expired, leader revoked");
+      LOG_RENEW_LEASE(WARN, "leader lease expired, leader revoked");
     } else if (prepare_success_ballot_ != ballot_number_) {// 需要进行leader prepare推大用于续约的ballot number
       LOG_RENEW_LEASE(INFO, "prepare_success_ballot_ not same as ballot_number_, maybe in Leader Prepare phase, gie up renew lease this time");
     } else {
@@ -354,6 +354,7 @@ void ElectionProposer::prepare(const ObRole role)
                                           p_election_->get_self_addr(),
                                           restart_counter_,
                                           ballot_number_,
+                                          p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                           p_election_->inner_priority_seed_,
                                           p_election_->get_membership_version_());
     (void) p_election_->refresh_priority_();
@@ -383,6 +384,7 @@ void ElectionProposer::on_prepare_request(const ElectionPrepareRequestMsg &prepa
   if (prepare_req.get_ballot_number() <= ballot_number_) {
     if (prepare_req.get_ballot_number() < ballot_number_) {// 对于旧消息发送拒绝响应
       ElectionPrepareResponseMsg prepare_res_reject(p_election_->get_self_addr(),
+                                                    p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                                     prepare_req);
       prepare_res_reject.set_rejected(ballot_number_);
       if (CLICK_FAIL(p_election_->send_(prepare_res_reject))) {
@@ -414,6 +416,7 @@ void ElectionProposer::on_prepare_request(const ElectionPrepareRequestMsg &prepa
                                                      p_election_->get_self_addr(),
                                                      restart_counter_,
                                                      ballot_number_,
+                                                     p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                                      p_election_->inner_priority_seed_,
                                                      p_election_->get_membership_version_());
       if (CLICK_FAIL(prepare_followed_req.set(p_election_->get_priority_(),
@@ -490,6 +493,7 @@ void ElectionProposer::propose()
                                       p_election_->get_self_addr(),
                                       restart_counter_,
                                       prepare_success_ballot_,
+                                      p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                       current_ts,
                                       new_lease_interval,
                                       memberlist_with_states_.get_member_list()
@@ -561,10 +565,12 @@ void ElectionProposer::on_accept_response(const ElectionAcceptResponseMsg &accep
     ElectionAcceptResponseMsg mock_self_accept_response_msg(p_election_->self_addr_,
                                                             p_election_->inner_priority_seed_,
                                                             p_election_->get_membership_version_(),
+                                                            p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                                             ElectionAcceptRequestMsg(p_election_->id_,
                                                                                      p_election_->self_addr_,
                                                                                      restart_counter_,
                                                                                      ballot_number_,
+                                                                                     p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                                                                      0,
                                                                                      record_lease_interval_,
                                                                                      p_election_->get_membership_version_()));
@@ -635,6 +641,7 @@ void ElectionProposer::inner_change_leader_to(const ObAddr &dst)
                                             p_election_->get_self_addr(),
                                             restart_counter_,
                                             ballot_number_,
+                                            p_election_->get_ls_biggest_min_cluster_version_ever_seen_(),
                                             switch_source_leader_ballot,
                                             p_election_->get_membership_version_());
   if (OB_LIKELY(leader_revoke_if_lease_expired_(RoleChangeReason::ChangeLeaderToRevoke))) {

@@ -177,6 +177,7 @@ public:
   // default value '0:not_skip'
   T_DEF_BOOL(skip_ob_version_compat_check, OB_CLUSTER_PARAMETER, 0, "0:not_skip, 1:skip")
 
+#ifndef OB_USE_DRCMSG
   // default DFT_BR(LogRecordImpl), add DFT_BR_PB
   // passed in via IObLog::init interface
   // string LogMsgFactory::DFT_ColMeta = "ColMetaImpl";
@@ -185,6 +186,17 @@ public:
   // string LogMsgFactory::DFT_METAS = "MetaDataCollectionsImpl";
   // string LogMsgFactory::DFT_LR = "LogRecordImpl";
   DEF_STR(drc_message_factory_binlog_record_type, OB_CLUSTER_PARAMETER, "LogRecordImpl", "LogMsgFactory::DFT_BR");
+#else
+  // default DFT_BR(BinlogRecordImpl), add DFT_BR_PB
+  // passed in via IObLog::init interface
+  // string DRCMessageFactory::DFT_ColMeta = "ColMetaImpl";
+  // string DRCMessageFactory::DFT_TableMeta = "TableMetaImpl";
+  // string DRCMessageFactory::DFT_DBMeta = "DBMetaImpl";
+  // string DRCMessageFactory::DFT_METAS = "MetaDataCollectionsImpl";
+  // string DRCMessageFactory::DFT_BR = "BinlogRecordImpl";
+  // string DRCMessageFactory::DFT_BR_PB = "BinlogRecordProtobuf";
+  DEF_STR(drc_message_factory_binlog_record_type, OB_CLUSTER_PARAMETER, "BinlogRecordImpl", "DRCMessageFactory::DFT_BR");
+#endif
 
   // whether to check ObTraceId
   T_DEF_BOOL(need_verify_ob_trace_id, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
@@ -243,6 +255,7 @@ public:
   T_DEF_INT_INFT(io_thread_num, OB_CLUSTER_PARAMETER, 4, 1, "io thread number");
   T_DEF_INT(idle_pool_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 32, "idle pool thread num");
   T_DEF_INT(dead_pool_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "dead pool thread num");
+  T_DEF_INT(cdc_read_archive_log_concurrency, OB_CLUSTER_PARAMETER, 8, 1, 64, "log external storage handler thread num");
   T_DEF_INT(stream_worker_thread_num, OB_CLUSTER_PARAMETER, 8, 1, 64, "stream worker thread num");
   T_DEF_INT(start_lsn_locator_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 32, "start lsn locator thread num");
   T_DEF_INT_INFT(start_lsn_locator_locate_count, OB_CLUSTER_PARAMETER, 1, 1, "start lsn locator locate count");
@@ -251,6 +264,7 @@ public:
   T_DEF_INT_INFT(svr_stream_cached_count, OB_CLUSTER_PARAMETER, 16, 1, "cached svr stream object count");
   T_DEF_INT_INFT(fetch_stream_cached_count, OB_CLUSTER_PARAMETER, 16, 1, "cached fetch stream object count");
 
+  T_DEF_BOOL(enable_compatible_charset, OB_CLUSTER_PARAMETER, 0,  "0:disabled, 1:enabled");
   // region
   DEF_STR(region, OB_CLUSTER_PARAMETER, "default_region", "OB region");
 
@@ -347,7 +361,7 @@ public:
   T_DEF_INT_INFT(blacklist_survival_time_sec, OB_CLUSTER_PARAMETER, 30, 1, "blacklist-server surival time in seconds");
 
   // The maximum time the server can be blacklisted, in minutes
-  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 4, 1, "blacklist-server survival time upper limit in minute");
+  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 1, 1, "blacklist-server survival time upper limit in minute");
 
   // The server is blacklisted in the logstream, based on the time of the current server service logstream - to decide whether to penalize the survival time
   // When the service time is less than a certain interval, a doubling-live-time policy is adopted
@@ -409,6 +423,9 @@ public:
   // enable test_mode_switch_fetch_mode to test whether cdc service can fetch log correctly when switching fetch mode
   T_DEF_BOOL(test_mode_switch_fetch_mode, OB_CLUSTER_PARAMETER, 0, "0:disabled 1:enabled");
 
+  // simulate fetch missing error when fetching missing log for the first time
+  T_DEF_BOOL(test_fetch_missing_errsim, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
+
   // Whether check tenant status for each schema request with tenant_id under test mode, default disabled
   T_DEF_BOOL(test_mode_force_check_tenant_status, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
 
@@ -419,6 +436,7 @@ public:
   T_DEF_INT_INFT(test_mode_block_sqlserver_count, OB_CLUSTER_PARAMETER, 0, 0,
       "mock times of con't get rs list under test mode");
 
+  T_DEF_INT(test_mode_ignore_log_type, OB_CLUSTER_PARAMETER, 0, 0, 5, "test_mode ignore log type");
   // Number of REDO logs ignored in test mode
   T_DEF_INT_INFT(test_mode_ignore_redo_count, OB_CLUSTER_PARAMETER, 0, 0,
       "ignore redo log count under test mode");
@@ -469,6 +487,9 @@ public:
   // The purpose is to block filter row, test PG filtering
   T_DEF_INT_INFT(test_mode_block_parser_filter_row_data_sec, OB_CLUSTER_PARAMETER, 0, 0,
       "time in seconds to block to filter row data");
+
+  // test mode, time to delay add ls
+  T_DEF_INT_INFT(test_mode_block_add_ls_sec, OB_CLUSTER_PARAMETER, 0, 0, "time in seconds to block add ls");
 
   // INNER_HEARTBEAT_INTERVAL
   T_DEF_INT_INFT(output_inner_heartbeat_interval_msec, OB_CLUSTER_PARAMETER, 100, 1, "output heartbeat interval in micro seconds");

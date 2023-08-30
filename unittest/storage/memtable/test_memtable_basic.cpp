@@ -88,6 +88,12 @@ int ObTxTableGuard::init(ObTxTable *tx_table)
   return OB_SUCCESS;
 }
 
+int ObReadInfoStruct::init_compat_version()
+{
+  compat_version_ = READ_INFO_VERSION_V1;
+  return OB_SUCCESS;
+}
+
 } // end storage
 
 namespace memtable
@@ -188,10 +194,10 @@ public:
     // iter_param_.rowkey_cnt_ = rowkey_cnt_;
     iter_param_.tablet_id_ = tablet_id_;
     iter_param_.table_id_ = tablet_id_.id();
-    read_info_.init(allocator_, 16000, rowkey_cnt_, false, columns_);
+    int ret = read_info_.init(allocator_, 16000, rowkey_cnt_, false, columns_, nullptr/*storage_cols_index*/);
     iter_param_.read_info_ = &read_info_;
 
-    return OB_SUCCESS;
+    return ret;
   }
 
   void prepare_schema(share::schema::ObTableSchema &table_schema)
@@ -286,7 +292,7 @@ public:
     store_ctx.mvcc_acc_ctx_.init_write(trans_ctx_,
                                        mem_ctx_,
                                        tx_desc_.tx_id_,
-                                       1000,
+                                       ObTxSEQ(1000, 0),
                                        tx_desc_,
                                        tx_table_guard,
                                        snapshot,
@@ -297,7 +303,22 @@ public:
     store_ctx.table_iter_ = &table_iter;
     ObStoreRow write_row;
     tm_->mock_row(key, val, row_key, write_row);
-    return mt.set_(store_ctx, tm_->tablet_id_.id(), tm_->read_info_, tm_->columns_, write_row, NULL, NULL);
+
+    ObArenaAllocator allocator;
+    ObTableAccessContext context;
+    ObVersionRange trans_version_range;
+    const bool read_latest = true;
+    ObQueryFlag query_flag;
+
+    trans_version_range.base_version_ = 0;
+    trans_version_range.multi_version_start_ = 0;
+    trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+    query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+    query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+    context.init(query_flag, store_ctx, allocator, trans_version_range);
+
+    return mt.set_(tm_->iter_param_, context, tm_->columns_, write_row, NULL, NULL);
   }
   int write(int64_t key, int64_t val, ObMemtable &mt, int64_t snapshot_version = 1000) {
     ObDatumRowkey row_key;
@@ -501,53 +522,6 @@ TEST_F(TestMemtable, multi_key)
   EXPECT_EQ(OB_SUCCESS, rg2.mem_ctx_.do_trans_end(true, val_900, val_900, 0));
   print(mvcc_row);
   print(mvcc_row2);
-}
-
-TEST_F(TestMemtable, test_unsync_cnt_for_multi_data)
-{
-  ObMemtable memtable;
-  EXPECT_EQ(OB_SUCCESS, init_memtable(memtable));
-  share::schema::ObTableSchema table_schema;
-  ObStorageSchema storage_schema;
-  bool is_callback = true;
-  bool for_replay = true;
-  share::SCN scn;
-
-  ASSERT_EQ(OB_SUCCESS, scn.convert_from_ts(100));
-  prepare_schema(table_schema);
-  ASSERT_EQ(OB_SUCCESS, storage_schema.init(allocator_, table_schema, lib::Worker::CompatMode::MYSQL));
-
-  storage_schema.set_sync_finish(false);
-  ASSERT_EQ(OB_SUCCESS, memtable.save_multi_source_data_unit(&storage_schema, scn, !for_replay, memtable::MemtableRefOp::INC_REF, !is_callback));
-  ASSERT_EQ(1, storage_schema.get_unsync_cnt_for_multi_data());
-
-  storage_schema.set_sync_finish(true);
-  ASSERT_EQ(OB_SUCCESS, memtable.save_multi_source_data_unit(&storage_schema, scn, !for_replay, memtable::MemtableRefOp::DEC_REF, is_callback));
-  ASSERT_EQ(0, storage_schema.get_unsync_cnt_for_multi_data());
-}
-
-TEST_F(TestMemtable, test_mds_commit_to_empty_memtable)
-{
-  ObMemtable memtable;
-  EXPECT_EQ(OB_SUCCESS, init_memtable(memtable));
-  ObTabletTxMultiSourceDataUnit tablet_status;
-  tablet_status.tablet_status_ = ObTabletStatus::NORMAL;
-  bool is_callback = true;
-  bool for_replay = true;
-  share::SCN scn;
-  scn.set_max();
-
-  ASSERT_EQ(OB_SUCCESS, memtable.save_multi_source_data_unit(&tablet_status, scn, !for_replay, memtable::MemtableRefOp::INC_REF, !is_callback));
-  ASSERT_EQ(1, tablet_status.get_unsync_cnt_for_multi_data());
-
-  memtable.key_.scn_range_.start_scn_.convert_for_gts(100);
-  memtable.key_.scn_range_.end_scn_.set_max();
-  memtable.max_end_scn_.set_min();
-  ASSERT_EQ(OB_SUCCESS, scn.convert_for_gts(102));
-  ASSERT_EQ(OB_SUCCESS, memtable.save_multi_source_data_unit(&tablet_status, scn, for_replay, memtable::MemtableRefOp::DEC_REF, is_callback));
-  ASSERT_EQ(0, tablet_status.get_unsync_cnt_for_multi_data());
-  ASSERT_EQ(OB_SUCCESS, scn.convert_for_gts(101));
-  ASSERT_EQ(scn, memtable.get_end_scn());
 }
 
 

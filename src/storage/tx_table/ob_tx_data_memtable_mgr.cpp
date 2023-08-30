@@ -54,6 +54,7 @@ int ObTxDataMemtableMgr::init(const common::ObTabletID &tablet_id,
     freezer_ = freezer;
     tx_data_table_ = tx_table->get_tx_data_table();
     ls_tablet_svr_ = ls_handle.get_ls()->get_tablet_svr();
+    mini_merge_recycle_commit_versions_ts_ = 0;
     ObLSTxService *ls_tx_svr = nullptr;
     if (OB_ISNULL(ls_tx_svr = freezer_->get_ls_tx_svr())) {
       ret = OB_ERR_UNEXPECTED;
@@ -84,6 +85,7 @@ void ObTxDataMemtableMgr::destroy()
   tx_data_table_ = nullptr;
   ls_tablet_svr_ = nullptr;
   freezer_ = nullptr;
+  mini_merge_recycle_commit_versions_ts_ = 0;
   is_inited_ = false;
 }
 
@@ -93,6 +95,7 @@ int ObTxDataMemtableMgr::offline()
   if (OB_FAIL(release_memtables())) {
     STORAGE_LOG(WARN, "release tx data memtables failed", KR(ret));
   } else {
+    mini_merge_recycle_commit_versions_ts_ = 0;
     memtable_head_ = 0;
     memtable_tail_ = 0;
   }
@@ -112,6 +115,9 @@ int ObTxDataMemtableMgr::release_head_memtable_(memtable::ObIMemtable *imemtable
     if (nullptr != tables_[idx] && memtable == tables_[idx]) {
       memtable->set_state(ObTxDataMemtable::State::RELEASED);
       memtable->set_release_time();
+      if (true == memtable->do_recycled()) {
+        mini_merge_recycle_commit_versions_ts_ = ObClockGenerator::getCurrentTime();
+      }
       STORAGE_LOG(INFO, "[TX DATA MERGE]tx data memtable mgr release head memtable", K(ls_id_), KP(memtable), KPC(memtable));
       release_head_memtable();
     } else {
@@ -174,15 +180,13 @@ int ObTxDataMemtableMgr::create_memtable_(const SCN clog_checkpoint_scn,
   } else if (OB_ISNULL(tx_data_memtable)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(ERROR, "dynamic cast failed", KR(ret), KPC(this));
-  } else if (OB_FAIL(tx_data_memtable->init(table_key, slice_allocator_, this, buckets_cnt))) {
+  } else if (OB_FAIL(tx_data_memtable->init(table_key, slice_allocator_, this, freezer_, buckets_cnt))) {
     STORAGE_LOG(WARN, "memtable init fail.", KR(ret), KPC(tx_data_memtable));
   } else if (OB_FAIL(add_memtable_(handle))) {
     STORAGE_LOG(WARN, "add memtable fail.", KR(ret));
-  } else if (OB_FAIL(tx_data_memtable->set_freezer(freezer_))) {
-    STORAGE_LOG(WARN, "tx_data_memtable set freezer failed", KR(ret), KPC(tx_data_memtable));
   } else {
     // create memtable success
-    STORAGE_LOG(INFO, "create tx data memtable done", KR(ret), KPC(tx_data_memtable));
+    STORAGE_LOG(INFO, "create tx data memtable done", KR(ret), KPC(tx_data_memtable), KPC(this));
   }
 
   return ret;
@@ -343,7 +347,7 @@ int ObTxDataMemtableMgr::get_active_memtable(ObTableHandleV2 &handle) const
   MemMgrRLockGuard lock_guard(lock_);
   if (0 == memtable_tail_) {
     ret = OB_EAGAIN;
-    STORAGE_LOG(INFO, "tx data memtable is not created yet. try agagin.", K(ret), K(memtable_tail_));
+    STORAGE_LOG(INFO, "tx data memtable is not created yet. try agagin.", K(ret), K(ls_id_), K(memtable_tail_));
   } else if (0 == get_memtable_count_()) {
     ret = OB_ENTRY_NOT_EXIST;
     STORAGE_LOG(WARN, "the tx data memtable manager is empty. may be offline", KR(ret), K(get_memtable_count_()));

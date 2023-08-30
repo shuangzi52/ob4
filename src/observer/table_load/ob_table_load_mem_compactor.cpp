@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -26,6 +34,7 @@ using namespace common::hash;
 using namespace storage;
 using namespace table;
 using namespace blocksstable;
+using namespace sql;
 
 class ObTableLoadMemCompactor::SampleTaskProcessor : public ObITableLoadTaskProcessor
 {
@@ -71,7 +80,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(table_compactor_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, table_compactor_time_us);
     int ret = OB_SUCCESS;
     while (OB_SUCC(ret) && !(mem_ctx_->has_error_)) {
       ObDirectLoadMemWorker *loader = nullptr;
@@ -276,6 +285,7 @@ int ObTableLoadMemCompactor::inner_init()
     mem_ctx_.column_count_ = param_->column_count_;
     mem_ctx_.dml_row_handler_ = store_ctx_->error_row_handler_;
     mem_ctx_.file_mgr_ = store_ctx_->tmp_file_mgr_;
+    mem_ctx_.dup_action_ = param_->dup_action_;
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(mem_ctx_.init())) {
@@ -292,8 +302,8 @@ int ObTableLoadMemCompactor::init_scheduler()
 {
   int ret = OB_SUCCESS;
   // 初始化task_scheduler_
-  if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (&allocator_),
-                                               1, allocator_))) {
+  if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (&allocator_), 1,
+                                          param_->table_id_, "MemCompact"))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to new ObTableLoadTaskThreadPoolScheduler", KR(ret));
   } else if (OB_FAIL(task_scheduler_->init())) {

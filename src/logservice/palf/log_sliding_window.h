@@ -67,6 +67,27 @@ enum FetchTriggerType
   ADD_MEMBER_PRE_CHECK = 8,
 };
 
+inline const char *fetch_trigger_type_2_str(const FetchTriggerType type)
+{
+#define EXTRACT_TRIGGER_TYPE(type_var) ({ case(type_var): return #type_var; })
+  switch(type)
+  {
+    EXTRACT_TRIGGER_TYPE(LOG_LOOP_TH);
+    EXTRACT_TRIGGER_TYPE(SLIDING_CB);
+    EXTRACT_TRIGGER_TYPE(LEADER_RECONFIRM);
+    EXTRACT_TRIGGER_TYPE(NOTIFY_REBUILD);
+    EXTRACT_TRIGGER_TYPE(LEARNER_REGISTER);
+    EXTRACT_TRIGGER_TYPE(CLEAN_CACHED_LOG);
+    EXTRACT_TRIGGER_TYPE(MODE_META_BARRIER);
+    EXTRACT_TRIGGER_TYPE(RECONFIRM_NOTIFY_FETCH);
+    EXTRACT_TRIGGER_TYPE(ADD_MEMBER_PRE_CHECK);
+
+    default:
+      return "Invalid Type";
+  }
+#undef EXTRACT_TRIGGER_TYPE
+}
+
 enum TruncateType
 {
   INVALID_TRUNCATE_TYPE = 0,
@@ -74,11 +95,40 @@ enum TruncateType
   TRUNCATE_LOG = 2,
 };
 
+inline const char *truncate_type_2_str(const TruncateType type)
+{
+#define EXTRACT_TRUNCATE_TYPE(type_var) ({ case(type_var): return #type_var; })
+  switch(type)
+  {
+    EXTRACT_TRUNCATE_TYPE(INVALID_TRUNCATE_TYPE);
+    EXTRACT_TRUNCATE_TYPE(TRUNCATE_CACHED_LOG_TASK);
+    EXTRACT_TRUNCATE_TYPE(TRUNCATE_LOG);
+
+    default:
+      return "Invalid Type";
+  }
+#undef EXTRACT_TRUNCATE_TYPE
+}
+
 enum FreezeMode
 {
   PERIOD_FREEZE_MODE = 0,
   FEEDBACK_FREEZE_MODE,
 };
+
+inline const char *freeze_mode_2_str(const FreezeMode mode)
+{
+#define EXTRACT_FREEZE_MODE(type_var) ({ case(type_var): return #type_var; })
+  switch(mode)
+  {
+    EXTRACT_FREEZE_MODE(PERIOD_FREEZE_MODE);
+    EXTRACT_FREEZE_MODE(FEEDBACK_FREEZE_MODE);
+
+    default:
+      return "Invalid Mode";
+  }
+#undef EXTRACT_FREEZE_MODE
+}
 
 struct TruncateLogInfo
 {
@@ -98,7 +148,7 @@ struct TruncateLogInfo
     truncate_begin_lsn_.reset();
     truncate_log_proposal_id_ = INVALID_PROPOSAL_ID;
   }
-  TO_STRING_KV(K_(truncate_type), K_(truncate_log_id), K_(truncate_begin_lsn), K_(truncate_log_proposal_id));
+  TO_STRING_KV("truncate_type", truncate_type_2_str(truncate_type_), K_(truncate_log_id), K_(truncate_begin_lsn), K_(truncate_log_proposal_id));
 };
 
 class UpdateMatchLsnFunc
@@ -142,6 +192,13 @@ private:
   LSN dst_lsn_;
   common::ObMemberList lagged_list_;
 };
+
+inline bool is_need_rebuild(const LSN &end_lsn, const LSN &last_rebuild_lsn)
+{
+  return (end_lsn.is_valid() &&
+          last_rebuild_lsn.is_valid() &&
+          end_lsn < last_rebuild_lsn);
+}
 
 class LogSlidingWindow : public ISlidingCallBack
 {
@@ -241,6 +298,8 @@ public:
   virtual int64_t get_last_submit_log_id_() const;
   virtual void get_last_submit_end_lsn_(LSN &end_lsn) const;
   virtual int get_last_submit_log_info(LSN &last_submit_lsn, int64_t &log_id, int64_t &log_proposal_id) const;
+  virtual int get_last_submit_log_info(LSN &last_submit_lsn,
+      LSN &last_submit_end_lsn, int64_t &log_id, int64_t &log_proposal_id) const;
   virtual int get_last_slide_end_lsn(LSN &out_end_lsn) const;
   virtual const share::SCN get_last_slide_scn() const;
   virtual int check_and_switch_freeze_mode();
@@ -263,13 +322,15 @@ public:
                                     char *buf,
                                     int64_t &out_read_size) const;
   int64_t get_last_slide_log_id() const;
-
   TO_STRING_KV(K_(palf_id), K_(self), K_(lsn_allocator), K_(group_buffer),                         \
   K_(last_submit_lsn), K_(last_submit_end_lsn), K_(last_submit_log_id), K_(last_submit_log_pid),   \
   K_(max_flushed_lsn), K_(max_flushed_end_lsn), K_(max_flushed_log_pid), K_(committed_end_lsn),    \
   K_(last_slide_log_id), K_(last_slide_scn), K_(last_slide_lsn), K_(last_slide_end_lsn),        \
   K_(last_slide_log_pid), K_(last_slide_log_accum_checksum), K_(last_fetch_end_lsn),               \
-  K_(last_fetch_max_log_id), K_(last_fetch_committed_end_lsn), K_(last_truncate_lsn), KP(this));
+  K_(last_fetch_max_log_id), K_(last_fetch_committed_end_lsn), K_(last_truncate_lsn),           \
+  K_(last_fetch_req_time), K_(is_truncating), K_(is_rebuilding), K_(last_rebuild_lsn),          \
+  "freeze_mode", freeze_mode_2_str(freeze_mode_), \
+  "last_fetch_trigger_type", fetch_trigger_type_2_str(last_fetch_trigger_type_), KP(this));
 private:
   int do_init_mem_(const int64_t palf_id,
                    const PalfBaseInfo &palf_base_info,
@@ -413,7 +474,6 @@ private:
 public:
   typedef common::ObLinearHashMap<common::ObAddr, LsnTsInfo> SvrMatchOffsetMap;
   static const int64_t TMP_HEADER_SER_BUF_LEN = 256; // log header序列化的临时buffer大小
-  static const int64_t INITIAL_LAST_ACK_TS = 0;      // last_ack_ts默认值为0
   static const int64_t APPEND_CNT_ARRAY_SIZE = 32;   // append次数统计数组的size
   static const uint64_t APPEND_CNT_ARRAY_MASK = APPEND_CNT_ARRAY_SIZE - 1;
   static const int64_t APPEND_CNT_LB_FOR_PERIOD_FREEZE = 140000;   // 切为PERIOD_FREEZE_MODE的append count下界
@@ -534,12 +594,14 @@ private:
   LSN last_record_end_lsn_;
   ObMiniStat::ObStatItem fs_cb_cost_stat_;
   ObMiniStat::ObStatItem log_life_time_stat_;
-  ObMiniStat::ObStatItem log_gen_to_freeze_cost_stat_;
-  ObMiniStat::ObStatItem log_gen_to_submit_cost_stat_;
-  ObMiniStat::ObStatItem log_submit_to_first_ack_cost_stat_;
-  ObMiniStat::ObStatItem log_submit_to_flush_cost_stat_;
-  ObMiniStat::ObStatItem log_submit_to_commit_cost_stat_;
-  ObMiniStat::ObStatItem log_submit_to_slide_cost_stat_;
+  int64_t accum_slide_log_cnt_;
+  int64_t accum_log_gen_to_freeze_cost_;
+  int64_t accum_log_gen_to_submit_cost_;
+  int64_t accum_log_submit_to_flush_cost_;
+  int64_t accum_log_submit_to_first_ack_cost_;
+  int64_t accum_log_submit_to_commit_cost_;
+  int64_t accum_log_submit_to_slide_cost_;
+  mutable int64_t log_slide_stat_time_;
   int64_t group_log_stat_time_us_;
   int64_t accum_log_cnt_;
   int64_t accum_group_log_size_;

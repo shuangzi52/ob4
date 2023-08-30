@@ -120,6 +120,19 @@ bool BaseLearnerList<MAX_SIZE, T>::contains(const common::ObAddr &server) const
 }
 
 template <int64_t MAX_SIZE, typename T>
+int BaseLearnerList<MAX_SIZE, T>::add_server(const common::ObAddr &server)
+{
+  int ret = OB_SUCCESS;
+  const bool is_member = std::is_same<common::ObMember, T>::value;
+  if (false == is_member) {
+    ret = OB_NOT_SUPPORTED;
+  } else {
+    ret = add_learner(common::ObMember(server, OB_INVALID_TIMESTAMP));
+  }
+  return ret;
+}
+
+template <int64_t MAX_SIZE, typename T>
 int BaseLearnerList<MAX_SIZE, T>::add_learner(const T &learner)
 {
   int ret = OB_SUCCESS;
@@ -127,7 +140,7 @@ int BaseLearnerList<MAX_SIZE, T>::add_learner(const T &learner)
     ret = OB_INVALID_ARGUMENT;
   } else if (learner_array_.count() >= MAX_SIZE) {
     ret = OB_SIZE_OVERFLOW;
-  } else if (OB_UNLIKELY(contains(learner.get_server()))) {
+  } else if (OB_UNLIKELY(contains(learner))) {
     ret = OB_ENTRY_EXIST;
   } else if (OB_FAIL(learner_array_.push_back(learner))) {
     COMMON_LOG(ERROR, "learner_array_ push back failed", K(ret), K(learner));
@@ -343,7 +356,7 @@ int BaseLearnerList<MAX_SIZE, T>::transform_to_string(
         COMMON_LOG(WARN, "convert server to string failed", K(ret), K(learner));
       } else if (need_comma && OB_FAIL(output_string.append(","))) {
         COMMON_LOG(WARN, "failed to append comma to string", K(ret));
-      } else if (OB_FAIL(output_string.append_fmt("%.*s:%ld", static_cast<int>(sizeof(ip_port)), ip_port, learner.get_timestamp()))) {
+      } else if (OB_FAIL(output_string.append_fmt("%.*s:%ld:%ld", static_cast<int>(sizeof(ip_port)), ip_port, learner.get_timestamp(), learner.get_flag()))) {
         COMMON_LOG(WARN, "failed to append ip_port to string", K(ret), K(learner));
       } else {
         need_comma = true;

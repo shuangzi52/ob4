@@ -149,13 +149,15 @@ int ObSchemaMgrCache::init(int64_t init_cached_num, Mode mode)
   } else {
     max_cached_num_ = init_cached_num;
     mode_ = mode;
-    // only alloc once in the while process, so it is suitable to use new operator
-    schema_mgr_items_ = new (std::nothrow) ObSchemaMgrItem[MAX_SCHEMA_SLOT_NUM];
-    if (NULL == schema_mgr_items_) {
+    auto attr = SET_USE_500("SchemaMgrCache", ObCtxIds::SCHEMA_SERVICE);
+    void *ptr = ob_malloc(sizeof(ObSchemaMgrItem[MAX_SCHEMA_SLOT_NUM]), attr);
+    if (NULL == ptr) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("alloc mem failed", K(ret));
     } else {
+      schema_mgr_items_ = (ObSchemaMgrItem*)ptr;
       for (int64_t i = 0; i < MAX_SCHEMA_SLOT_NUM; ++i) {
+        new (&schema_mgr_items_[i])ObSchemaMgrItem();
         ObSchemaMgrItem &schema_mgr_item = schema_mgr_items_[i];
         schema_mgr_item.schema_mgr_ = NULL;
         schema_mgr_item.ref_cnt_ = 0;
@@ -374,11 +376,11 @@ static const char* ref_info_type_strs[] = {
   "SCHEMA_RECORDER",
   "SPI_RESULT_SET",
   "PL_PREPARE_RESULT",
-  "MOD_MAX",
+  "PARTITION_BALANCE"
 };
 
 int ObSchemaMgrCache::get_ref_info_type_str_(const int64_t &index, const char *&type_str) {
-  STATIC_ASSERT(ARRAYSIZEOF(ref_info_type_strs) == (int64_t)ObSchemaMgrItem::Mod::MOD_MAX + 1,
+  STATIC_ASSERT(ARRAYSIZEOF(ref_info_type_strs) == (int64_t)ObSchemaMgrItem::Mod::MOD_MAX,
                 "type string array size mismatch with enum Mod count");
   int ret = OB_SUCCESS;
   int type_str_len = ARRAYSIZEOF(ref_info_type_strs);

@@ -42,6 +42,7 @@ ObLogRestoreService::ObLogRestoreService() :
   net_driver_(),
   fetch_log_impl_(),
   fetch_log_worker_(),
+  writer_(),
   error_reporter_(),
   allocator_(),
   scheduler_(),
@@ -67,18 +68,18 @@ int ObLogRestoreService::init(rpc::frame::ObReqTransport *transport,
     LOG_WARN("invalid argument", K(ret), K(transport), K(ls_svr), K(log_service));
   } else if (OB_FAIL(proxy_.init(transport))) {
     LOG_WARN("proxy_ init failed", K(ret));
-  } else if (OB_FAIL(restore_controller_.init(tenant_id, log_service))) {
-    LOG_WARN("restore_controller_ init failed");
   } else if (OB_FAIL(location_adaptor_.init(tenant_id, ls_svr))) {
     LOG_WARN("location_adaptor_ init failed", K(ret));
   } else if (OB_FAIL(archive_driver_.init(tenant_id, ls_svr, log_service, &fetch_log_worker_))) {
     LOG_WARN("archive_driver_ init failed");
-  } else if (OB_FAIL(net_driver_.init(tenant_id, &restore_controller_, ls_svr, log_service))) {
+  } else if (OB_FAIL(net_driver_.init(tenant_id, ls_svr, log_service))) {
     LOG_WARN("net_driver_ init failed");
   } else if (OB_FAIL(fetch_log_impl_.init(tenant_id, &archive_driver_, &net_driver_))) {
     LOG_WARN("fetch_log_impl_ init failed", K(ret));
-  } else if (OB_FAIL(fetch_log_worker_.init(tenant_id, &allocator_, &restore_controller_, this, ls_svr))) {
+  } else if (OB_FAIL(fetch_log_worker_.init(tenant_id, &allocator_, this, ls_svr))) {
     LOG_WARN("fetch_log_worker_ init failed", K(ret));
+  } else if (OB_FAIL(writer_.init(tenant_id, ls_svr, this, &fetch_log_worker_))) {
+    LOG_WARN("remote_log_writer init failed");
   } else if (OB_FAIL(error_reporter_.init(tenant_id, ls_svr))) {
     LOG_WARN("error_reporter_ init failed", K(ret));
   } else if (OB_FAIL(allocator_.init(tenant_id))) {
@@ -97,9 +98,9 @@ void ObLogRestoreService::destroy()
 {
   inited_ = false;
   fetch_log_worker_.destroy();
+  writer_.destroy();
   stop();
   wait();
-  restore_controller_.destroy();
   location_adaptor_.destroy();
   archive_driver_.destroy();
   net_driver_.destroy();
@@ -122,6 +123,8 @@ int ObLogRestoreService::start()
     LOG_WARN("restore service not init", K(ret), K(inited_));
   } else if (OB_FAIL(fetch_log_worker_.start())) {
     LOG_WARN("fetch_log_worker_ start failed", K(ret));
+  } else if (OB_FAIL(writer_.start())) {
+    LOG_WARN("remote_log_writer start failed");
   } else if (OB_FAIL(ObThreadPool::start())) {
     LOG_WARN("restore service start failed", K(ret));
   } else {
@@ -134,6 +137,7 @@ void ObLogRestoreService::stop()
 {
   net_driver_.stop();
   fetch_log_worker_.stop();
+  writer_.stop();
   ObThreadPool::stop();
   LOG_INFO("ObLogRestoreService thread stop", "tenant_id", MTL_ID());
 }
@@ -142,6 +146,7 @@ void ObLogRestoreService::wait()
 {
   net_driver_.wait();
   fetch_log_worker_.wait();
+  writer_.wait();
   ObThreadPool::wait();
   LOG_INFO("ObLogRestoreService thread wait", "tenant_id", MTL_ID());
 }
@@ -183,8 +188,6 @@ void ObLogRestoreService::do_thread_task_()
       share::ObLogRestoreSourceItem source;
       bool source_exist = false;
 
-      update_restore_quota_();
-
       if (OB_FAIL(update_upstream_(source, source_exist))) {
         LOG_WARN("update_upstream_ failed");
       } else if (source_exist) {
@@ -196,17 +199,14 @@ void ObLogRestoreService::do_thread_task_()
         clean_resource_();
       }
 
-      schedule_resource_();
+      schedule_resource_(source.type_);
       report_error_();
       last_normal_work_ts_ = common::ObTimeUtility::fast_current_time();
     }
     update_restore_upper_limit_();
+    refresh_error_context_();
+    set_compressor_type_();
   }
-}
-
-void ObLogRestoreService::update_restore_quota_()
-{
-  (void)restore_controller_.update_quota();
 }
 
 int ObLogRestoreService::update_upstream_(share::ObLogRestoreSourceItem &source, bool &source_exist)
@@ -224,9 +224,9 @@ void ObLogRestoreService::clean_resource_()
   (void)fetch_log_impl_.clean_resource();
 }
 
-void ObLogRestoreService::schedule_resource_()
+void ObLogRestoreService::schedule_resource_(const share::ObLogRestoreSourceType &source_type)
 {
-  (void)scheduler_.schedule();
+  (void)scheduler_.schedule(source_type);
 }
 
 void ObLogRestoreService::report_error_()
@@ -237,6 +237,65 @@ void ObLogRestoreService::report_error_()
 void ObLogRestoreService::update_restore_upper_limit_()
 {
   fetch_log_impl_.update_restore_upper_limit();
+}
+
+void ObLogRestoreService::set_compressor_type_()
+{
+  int ret = OB_SUCCESS;
+  logservice::ObLogService* log_service = MTL(logservice::ObLogService*);
+  palf::PalfOptions options;
+  common::ObCompressorType compressor_type = INVALID_COMPRESSOR;
+
+  if (OB_NOT_NULL(log_service)) {
+    if (OB_FAIL(log_service->get_palf_options(options))) {
+      LOG_WARN("log_service get_palf_options failed", KR(ret));
+    } else {
+      if (options.compress_options_.enable_transport_compress_) {
+        compressor_type = options.compress_options_.transport_compress_func_;
+        fetch_log_impl_.set_compressor_type(compressor_type);
+      } else {
+        // close
+        fetch_log_impl_.set_compressor_type(common::INVALID_COMPRESSOR);
+      }
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("log_service is nullptr", KR(ret));
+  }
+}
+
+void ObLogRestoreService::refresh_error_context_()
+{
+  int ret = OB_SUCCESS;
+  ObLS *ls = NULL;
+  ObLSIterator *iter = NULL;
+  common::ObSharedGuard<ObLSIterator> guard;
+  ObLogRestoreHandler *restore_handler = NULL;
+  if (OB_FAIL(ls_svr_->get_ls_iter(guard, ObLSGetMod::LOG_MOD))) {
+    LOG_WARN("get ls iter failed", K(ret));
+  } else if (OB_ISNULL(iter = guard.get_ptr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("iter is NULL", K(ret), K(iter));
+  } else {
+    while (OB_SUCC(ret)) {
+      ls = NULL;
+      if (OB_FAIL(iter->get_next(ls))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("iter ls get next failed", K(ret));
+        } else {
+          LOG_TRACE("iter to end", K(ret));
+        }
+      } else if (OB_ISNULL(ls)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("ls is NULL", K(ret), K(ls));
+      } else if (OB_ISNULL(restore_handler = ls->get_log_restore_handler())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_INFO("restore_handler is NULL", K(ret), K(ls->get_ls_id()));
+      } else if (OB_FAIL(restore_handler->refresh_error_context())) {
+        LOG_WARN("refresh error failed", K(ls->get_ls_id()));
+      }
+    }
+  }
 }
 
 bool ObLogRestoreService::need_schedule_() const

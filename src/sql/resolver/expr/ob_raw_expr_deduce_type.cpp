@@ -228,7 +228,7 @@ int ObRawExprDeduceType::calc_result_type_with_const_arg(
         break;
       }  // end switch
     }
-    if (OB_FAIL(ret) && my_session_->is_ps_prepare_stage()) {
+    if (OB_FAIL(ret) && my_session_->is_varparams_sql_prepare()) {
       // the ps prepare stage does not do type deduction, and directly gives a default type.
       result_type.set_null();
       ret = OB_SUCCESS;
@@ -447,7 +447,7 @@ int ObRawExprDeduceType::calc_result_type(ObNonTerminalRawExpr &expr,
         LOG_WARN("fail to calc result type with const arguments", K(ret));
       }
     }
-    if (OB_FAIL(ret) && my_session_->is_ps_prepare_stage()) {
+    if (OB_FAIL(ret) && my_session_->is_varparams_sql_prepare()) {
       // the ps prepare stage does not do type deduction, and directly gives a default type.
       result_type.set_null();
       ret = OB_SUCCESS;
@@ -475,11 +475,11 @@ int ObRawExprDeduceType::calc_result_type(ObNonTerminalRawExpr &expr,
 
         if (OB_FAIL(ret)) {
         } else if (from != to && !cast_supported(from, from_cs_type, to, to_cs_type)
-          && !my_session_->is_ps_prepare_stage()) {
+          && !my_session_->is_varparams_sql_prepare()) {
           ret = OB_ERR_INVALID_TYPE_FOR_OP;
           LOG_WARN("cast parameter to expected type not supported", K(ret), K(i), K(from), K(to));
         } else if (is_oracle_mode && (ob_is_lob_locator(from) || ob_is_text_tc(from))) {
-          if (!my_session_->is_ps_prepare_stage()
+          if (!my_session_->is_varparams_sql_prepare()
             && OB_FAIL(check_lob_param_allowed(from, from_cs_type, to,
                                               to_cs_type, expr.get_expr_type()))) {
             LOG_WARN("lob parameter not allowed", K(ret));
@@ -865,8 +865,15 @@ int ObRawExprDeduceType::check_expr_param(ObOpRawExpr &expr)
     }
   } else if (lib::is_oracle_mode()
              && (T_OP_EQ == expr.get_expr_type() || T_OP_NE == expr.get_expr_type())
-             && (T_OP_ROW == expr.get_param_expr(0)->get_expr_type())) {
-    if (1 > expr.get_param_expr(0)->get_param_count()
+             && (T_OP_ROW == expr.get_param_expr(0)->get_expr_type() ||
+                 T_OP_ROW == expr.get_param_expr(1)->get_expr_type())) {
+    if (expr.get_param_expr(0)->get_expr_type() != T_OP_ROW
+        && expr.get_param_expr(1)->get_expr_type() == T_OP_ROW) {
+      // scalar = vector is not allowed
+      ret = OB_ERR_INVALID_COLUMN_NUM;
+      LOG_WARN("invalid relational operator", K(ret));
+      LOG_USER_ERROR(OB_ERR_INVALID_COLUMN_NUM, static_cast<long>(1));
+    } else if (1 > expr.get_param_expr(0)->get_param_count()
         || T_OP_ROW == expr.get_param_expr(0)->get_param_expr(0)->get_expr_type()
         || T_OP_ROW != expr.get_param_expr(1)->get_expr_type()) {
       ret = OB_ERR_INVALID_COLUMN_NUM;
@@ -1247,6 +1254,7 @@ int ObRawExprDeduceType::set_json_agg_result_type(ObAggFunRawExpr &expr, ObExprR
           parse_node.value_ = static_cast<ObConstRawExpr *>(return_type_expr)->get_value().get_int();
           ObScale scale = static_cast<ObConstRawExpr *>(return_type_expr)->get_accuracy().get_scale();
           bool is_json_type = (scale == 1) && (col_type.get_type_class() == ObJsonTC);
+          is_json_type = (is_json_type || parse_node.value_ == 0);
           ObObjType obj_type = static_cast<ObObjType>(parse_node.int16_values_[OB_NODE_CAST_TYPE_IDX]);
           result_type.set_collation_type(static_cast<ObCollationType>(parse_node.int16_values_[OB_NODE_CAST_COLL_IDX]));
           if (ob_is_string_type(obj_type) && !is_json_type) {
@@ -1413,7 +1421,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
                                       : ObNumberType);
           if (from_type != to_type && !cast_supported(from_type, from_cs_type,
                                                       to_type, CS_TYPE_BINARY)
-              && !my_session_->is_ps_prepare_stage()) {
+              && !my_session_->is_varparams_sql_prepare()) {
             ret = OB_ERR_INVALID_TYPE_FOR_OP;
             LOG_WARN("cast to expected type not supported", K(ret), K(from_type), K(to_type));
           } else {
@@ -1563,7 +1571,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
                                           ? from_cs_type : CS_TYPE_BINARY);
             if (from_type != to_type && !cast_supported(from_type, from_cs_type,
                                                         to_type, to_cs_type)
-                && !my_session_->is_ps_prepare_stage()) {
+                && !my_session_->is_varparams_sql_prepare()) {
               ret = OB_ERR_INVALID_TYPE_FOR_OP;
               LOG_WARN("cast to expected type not supported", K(ret), K(from_type), K(to_type));
             } else {
@@ -1637,12 +1645,12 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
           }
           if (from_type1 != to_type && !cast_supported(from_type1, from_cs_type1,
                                                       to_type, to_cs_type)
-              && !my_session_->is_ps_prepare_stage()) {
+              && !my_session_->is_varparams_sql_prepare()) {
             ret = OB_ERR_INVALID_TYPE_FOR_OP;
             LOG_WARN("cast to expected type not supported", K(ret), K(from_type1), K(to_type));
           } else if (from_type2 != to_type && !cast_supported(from_type2, from_cs_type2,
                                                               to_type, to_cs_type)
-            && !my_session_->is_ps_prepare_stage()) {
+            && !my_session_->is_varparams_sql_prepare()) {
             ret = OB_ERR_INVALID_TYPE_FOR_OP;
             LOG_WARN("cast to expected type not supported", K(ret), K(from_type2), K(to_type));
           } else {
@@ -1920,7 +1928,10 @@ int ObRawExprDeduceType::check_median_percentile_param(ObAggFunRawExpr &expr)
     LOG_WARN("get unexpected null", K(ret), K(expr));
   } else if (T_FUN_GROUP_PERCENTILE_CONT == expr_type ||
              T_FUN_GROUP_PERCENTILE_DISC == expr_type) {
-    if (!expr.get_param_expr(0)->is_const_expr()) {
+    if (expr.get_param_expr(0)->get_result_type().is_user_defined_sql_type()) {
+      ret = OB_ERR_INVALID_XML_DATATYPE;
+      LOG_USER_ERROR(OB_ERR_INVALID_XML_DATATYPE, "NUMBER", "ANYDATA");
+    } else if (!expr.get_param_expr(0)->is_const_expr()) {
       ret = OB_ERR_ARGUMENT_SHOULD_CONSTANT;
       LOG_WARN("Argument should be a constant.", K(ret));
     } else if (!ob_is_numeric_type(expr.get_param_expr(0)->get_result_type().get_type())) {
@@ -1960,7 +1971,14 @@ int ObRawExprDeduceType::check_group_aggr_param(ObAggFunRawExpr &expr)
                         || ob_is_user_defined_sql_type(param_expr->get_data_type()))
                     && (T_FUN_ORA_JSON_OBJECTAGG != expr.get_expr_type()
                         && T_FUN_ORA_JSON_ARRAYAGG != expr.get_expr_type()
-                        && T_FUN_ORA_XMLAGG != expr.get_expr_type()))
+                        && T_FUN_ORA_XMLAGG != expr.get_expr_type()
+                        && T_FUN_GROUP_CUME_DIST != expr.get_expr_type()
+                        && T_FUN_GROUP_DENSE_RANK != expr.get_expr_type()
+                        && T_FUN_GROUP_CONCAT != expr.get_expr_type()
+                        && T_FUN_GROUP_PERCENT_RANK != expr.get_expr_type()
+                        && T_FUN_GROUP_RANK != expr.get_expr_type()))
+                && !(ob_is_user_defined_sql_type(param_expr->get_data_type())
+                      && (T_FUN_APPROX_COUNT_DISTINCT == expr.get_expr_type() || T_FUN_APPROX_COUNT_DISTINCT_SYNOPSIS == expr.get_expr_type()))
                 && !(T_FUN_COUNT == expr.get_expr_type() && ob_is_json(param_expr->get_data_type()))
                 && !(T_FUN_COUNT == expr.get_expr_type() && (ob_is_user_defined_sql_type(param_expr->get_data_type()) ||
                                                              ob_is_user_defined_pl_type(param_expr->get_data_type())))
@@ -1978,7 +1996,8 @@ int ObRawExprDeduceType::check_group_aggr_param(ObAggFunRawExpr &expr)
       } else if ((ob_is_user_defined_sql_type(param_expr->get_data_type())
                     || ob_is_user_defined_pl_type(param_expr->get_data_type()))
                  && (expr.get_expr_type() == T_FUN_MAX
-                     || expr.get_expr_type() == T_FUN_MIN)) {
+                     || expr.get_expr_type() == T_FUN_MIN
+                     || expr.get_expr_type() == T_FUN_GROUPING)) {
         // other udt types not run here, xmltype does not have order or map member function for compare
         ret = OB_ERR_NO_ORDER_MAP_SQL;
         LOG_WARN("does not have order or map member function for compare",
@@ -2171,8 +2190,17 @@ int ObRawExprDeduceType::visit(ObSysFunRawExpr &expr)
   } else {
     ObExprResTypes types;
     ObCastMode expr_cast_mode = CM_NONE;
+    bool is_default_col = false;
+    if (T_FUN_SYS_DEFAULT == expr.get_expr_type()) {
+      if (OB_ISNULL(expr.get_param_expr(0))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null", K(ret), K(expr));
+      } else {
+        is_default_col = expr.get_param_expr(0)->is_column_ref_expr();
+      }
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < expr.get_param_count(); i++) {
-      const ObRawExpr *param_expr = expr.get_param_expr(i);
+      ObRawExpr *param_expr = expr.get_param_expr(i);
       if (OB_ISNULL(param_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid argument", K(param_expr));
@@ -2183,11 +2211,20 @@ int ObRawExprDeduceType::visit(ObSysFunRawExpr &expr)
         ret = OB_ERR_INVALID_COLUMN_NUM;
         LOG_USER_ERROR(OB_ERR_INVALID_COLUMN_NUM, (int64_t)1);
       } else if (T_FUN_COLUMN_CONV == expr.get_expr_type()
-                 || T_FUN_SYS_DEFAULT == expr.get_expr_type()) {
+                || (T_FUN_SYS_DEFAULT == expr.get_expr_type() && !is_default_col)) {
         //column_conv(type, collation_type, accuracy_expr, nullable, value)
         //前面四个参数都要特殊处理
         if (OB_FAIL(deduce_type_visit_for_special_func(i, *param_expr, types))) {
           LOG_WARN("fail to visit for column_conv", K(ret), K(i));
+        }
+      } else if (lib::is_oracle_mode() && !expr.is_pl_expr() && expr.is_called_in_sql()
+        && T_FUN_SYS_CAST != expr.get_expr_type() && param_expr->get_expr_type() != T_FUN_SYS_CAST
+        && param_expr->get_result_type().get_type() == ObExtendType
+        && param_expr->get_result_type().get_udt_id() == T_OBJ_XML) {
+        if (OB_FAIL(ObRawExprUtils::implict_cast_pl_udt_to_sql_udt(expr_factory_, my_session_, param_expr))) {
+          LOG_WARN("add implict cast to pl udt expr failed", K(ret));
+        } else if (OB_FAIL(types.push_back(param_expr->get_result_type()))) {
+          LOG_WARN("push back param type failed", K(ret));
         }
       } else {
         if (OB_FAIL(types.push_back(param_expr->get_result_type()))) {
@@ -2399,6 +2436,20 @@ int ObRawExprDeduceType::visit(ObWinFunRawExpr &expr)
       } else {
         func_params.at(0) = cast_expr;
       }
+    } else if (OB_UNLIKELY(lib::is_mysql_mode() &&
+                           (!func_params.at(0)->is_const_expr() ||
+                            !func_params.at(0)->get_result_type().is_integer_type()))) {
+      if (func_params.at(0)->get_expr_type() == T_FUN_SYS_FLOOR &&
+          func_params.at(0)->get_param_count() >= 1 &&
+          func_params.at(0)->get_param_expr(0) != NULL &&
+          func_params.at(0)->get_param_expr(0)->get_expr_type() == T_REF_QUERY &&
+          func_params.at(0)->get_param_expr(0)->get_result_type().is_integer_type()) {
+        //do nothing
+      } else {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("Incorrect arguments to ntile", K(ret), KPC(func_params.at(0)));
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ntile");
+      }
     }
   } else if (T_WIN_FUN_NTH_VALUE == expr.get_func_type()) {
     // nth_value函数的返回类型可以为null. lead和lag也是
@@ -2456,6 +2507,8 @@ int ObRawExprDeduceType::visit(ObWinFunRawExpr &expr)
           } else {
             // json or max, do nothing
           }
+        } else if (ob_is_real_type(res_type.get_type())) {
+          res_type.set_double();
         } else {}
         ObCastMode def_cast_mode = CM_NONE;
         ObRawExpr *cast_expr = NULL;
@@ -2566,6 +2619,31 @@ int ObRawExprDeduceType::visit(ObWinFunRawExpr &expr)
       } else {
         ret = OB_INVALID_NUMERIC;
         LOG_WARN("interval is not numberic", K(ret), KPC(expr.lower_.interval_expr_));
+      }
+    }
+    if (OB_SUCC(ret) &&
+        lib::is_mysql_mode() &&
+        expr.get_window_type() == WINDOW_RANGE &&
+        (expr.upper_.interval_expr_ != NULL || expr.lower_.interval_expr_ != NULL)) {
+      if (expr.get_order_items().empty()) {
+        //do nothing
+      } else if (OB_UNLIKELY(expr.get_order_items().count() != 1)) {
+        ret = OB_ERR_INVALID_WINDOW_FUNC_USE;
+        LOG_WARN("invalid window specification", K(ret), K(expr.get_order_items()));
+      } else if (OB_UNLIKELY(((expr.upper_.interval_expr_ != NULL && !expr.upper_.is_nmb_literal_) ||
+                              (expr.lower_.interval_expr_ != NULL && !expr.lower_.is_nmb_literal_)) &&
+                              expr.get_order_items().at(0).expr_->get_result_type().is_numeric_type())) {
+        ret = OB_ERR_WINDOW_RANGE_FRAME_NUMERIC_TYPE;
+        LOG_WARN("Window with RANGE frame has ORDER BY expression of numeric type. INTERVAL bound value not allowed.", K(ret));
+        ObString tmp_name = expr.get_win_name().empty() ? ObString("<unnamed window>") : expr.get_win_name();
+        LOG_USER_ERROR(OB_ERR_WINDOW_RANGE_FRAME_NUMERIC_TYPE, tmp_name.length(), tmp_name.ptr());
+      } else if (OB_UNLIKELY(((expr.upper_.interval_expr_ != NULL && expr.upper_.is_nmb_literal_) ||
+                              (expr.lower_.interval_expr_ != NULL && expr.lower_.is_nmb_literal_)) &&
+                              expr.get_order_items().at(0).expr_->get_result_type().is_temporal_type())) {
+        ret = OB_ERR_WINDOW_RANGE_FRAME_TEMPORAL_TYPE;
+        LOG_WARN("Window with RANGE frame has ORDER BY expression of datetime type. Only INTERVAL bound value allowed.", K(ret));
+        ObString tmp_name = expr.get_win_name().empty() ? ObString("<unnamed window>") : expr.get_win_name();
+        LOG_USER_ERROR(OB_ERR_WINDOW_RANGE_FRAME_TEMPORAL_TYPE, tmp_name.length(), tmp_name.ptr());
       }
     }
     LOG_DEBUG("finish add cast for window function", K(result_number_type), K(expr.lower_), K(expr.upper_));
@@ -2955,7 +3033,7 @@ int ObRawExprDeduceType::set_agg_json_array_result_type(ObAggFunRawExpr &expr,
         result_type.set_calc_collation_type(my_session_->get_nls_collation());
       }
       result_type.set_collation_level(CS_LEVEL_IMPLICIT);
-    } else if (ob_is_json(obj_type)) {
+    } else if (ob_is_json(obj_type) || parse_node.value_ == 0) {
       result_type.set_json();
       result_type.set_length((ObAccuracy::DDL_DEFAULT_ACCURACY[ObJsonType]).get_length());
     } else if (ob_is_raw(obj_type)) {
@@ -3001,10 +3079,16 @@ int ObRawExprDeduceType::set_xmlagg_result_type(ObAggFunRawExpr &expr,
           ret = OB_ERR_NO_ORDER_MAP_SQL;
           LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
         }
-      } else if (order_expr->get_result_type().get_type() == ObUserDefinedSQLType
-                  || order_expr->get_result_type().get_type() == ObExtendType) {
-        ret = OB_ERR_NO_ORDER_MAP_SQL;
-        LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
+      } else {
+        ObObjType result_type = order_expr->get_result_type().get_type();
+        if (result_type == ObUserDefinedSQLType || result_type == ObExtendType) {
+          ret = OB_ERR_NO_ORDER_MAP_SQL;
+          LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
+        } else if (ob_is_text_tc(result_type) ||
+                    ob_is_lob_tc(result_type)) {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_WARN("Column of LOB type cannot be used for sorting", K(ret));
+        }
       }
     }
 
@@ -3217,7 +3301,18 @@ int ObRawExprDeduceType::add_implicit_cast(ObAggFunRawExpr &parent,
                (parent.get_expr_type() == T_FUN_REGR_SXY && i == 1) ||
                (parent.get_expr_type() == T_FUN_JSON_OBJECTAGG && i == 1) ||
                (parent.get_expr_type() == T_FUN_ORA_JSON_OBJECTAGG && i > 0) ||
-               (parent.get_expr_type() == T_FUN_ORA_XMLAGG && i > 0)) {
+               (parent.get_expr_type() == T_FUN_ORA_XMLAGG && i > 0) ||
+               ((parent.get_expr_type() == T_FUN_SUM ||
+                 parent.get_expr_type() == T_FUN_AVG ||
+                 parent.get_expr_type() == T_FUN_COUNT) &&
+                 child_ptr->get_expr_type() == T_FUN_SYS_OP_OPNSIZE) ||
+                (lib::is_mysql_mode() &&
+                 (T_FUN_VARIANCE == parent.get_expr_type() ||
+                  T_FUN_STDDEV == parent.get_expr_type() ||
+                  T_FUN_STDDEV_POP == parent.get_expr_type() ||
+                  T_FUN_STDDEV_SAMP == parent.get_expr_type() ||
+                  T_FUN_VAR_POP == parent.get_expr_type() ||
+                  T_FUN_VAR_SAMP == parent.get_expr_type()))) {
       //do nothing
     } else if (parent.get_expr_type() == T_FUN_WM_CONCAT ||
                parent.get_expr_type() == T_FUN_KEEP_WM_CONCAT ||
@@ -3281,7 +3376,7 @@ int ObRawExprDeduceType::try_add_cast_expr(RawExprType &parent,
         LOG_WARN("cast to lob type not allowed", K(ret));
       }
       OZ(parent.replace_param_expr(child_idx, new_expr));
-      if (OB_FAIL(ret) && my_session_->is_ps_prepare_stage()) {
+      if (OB_FAIL(ret) && my_session_->is_varparams_sql_prepare()) {
         ret = OB_SUCCESS;
         LOG_DEBUG("ps prepare phase ignores type deduce error");
       }

@@ -211,7 +211,7 @@ int ObTenantConfigMgr::refresh_tenants(const ObIArray<uint64_t> &tenants)
         }
         bool need_del = true;
         for (int i = 0; i < tenants.count(); ++i) {
-          if (tenant_id == tenants.at(i)) {
+          if (tenant_id == tenants.at(i) || GCTX.omt_->has_tenant(tenant_id)) {
             need_del = false;
             break;
           }
@@ -283,12 +283,12 @@ int ObTenantConfigMgr::add_tenant_config(uint64_t tenant_id)
     }
   } else {
     ObTenantConfig *new_config = nullptr;
-    new_config = OB_NEW(ObTenantConfig, ObModIds::OMT, tenant_id);
+    new_config = OB_NEW(ObTenantConfig, SET_USE_UNEXPECTED_500("TenantConfig"), tenant_id);
     if (OB_NOT_NULL(new_config)) {
       if(OB_FAIL(new_config->init(this))) {
         LOG_WARN("new tenant config init failed", K(ret));
       } else if (OB_FAIL(config_map_.set_refactored(ObTenantID(tenant_id),
-                                                               new_config, 1))) {
+                                                               new_config, 0))) {
         LOG_WARN("add new tenant config failed", K(ret));
       }
       if (OB_FAIL(ret)) {
@@ -317,27 +317,18 @@ int ObTenantConfigMgr::del_tenant_config(uint64_t tenant_id)
     LOG_WARN("failed to check tenant has been dropped", K(tenant_id));
   } else if (!has_dropped && ObTimeUtility::current_time() - config->get_create_timestamp() < RECYCLE_LATENCY) {
     LOG_WARN("tenant still exist, try to delete tenant config later...", K(tenant_id));
-  } else {
-    static const int DEL_TRY_TIMES = 30;
-    static const int64_t TIME_SLICE_PERIOD = 10000;
+  } else if (!config->is_ref_clear()) {
     ret = OB_EAGAIN;
-    for (int i = 0; i < DEL_TRY_TIMES; ++i) {
-      if (config->is_ref_clear()) {
-        ret = OB_SUCCESS;
-        break;
-      }
-      ob_usleep(TIME_SLICE_PERIOD);
-    } // for
-    if (OB_SUCC(ret)) {
-      config->set_deleting();
-      if (OB_FAIL(wait(config->get_update_task()))) {
-        LOG_WARN("wait tenant config update task failed", K(ret), K(tenant_id));
-      } else if (OB_FAIL(config_map_.erase_refactored(ObTenantID(tenant_id)))) {
-        LOG_WARN("delete tenant config failed", K(ret), K(tenant_id));
-      } else {
-        ob_delete(config);
-        LOG_INFO("tenant config deleted", K(tenant_id), K(ret));
-      }
+    LOG_INFO("something hold config ref, try delete later...");
+  } else {
+    config->set_deleting();
+    if (OB_FAIL(wait(config->get_update_task()))) {
+      LOG_WARN("wait tenant config update task failed", K(ret), K(tenant_id));
+    } else if (OB_FAIL(config_map_.erase_refactored(ObTenantID(tenant_id)))) {
+      LOG_WARN("delete tenant config failed", K(ret), K(tenant_id));
+    } else {
+      ob_delete(config);
+      LOG_INFO("tenant config deleted", K(tenant_id), K(ret));
     }
   }
   return ret;
@@ -614,6 +605,25 @@ int ObTenantConfigMgr::update_local(uint64_t tenant_id, int64_t expected_version
 void ObTenantConfigMgr::notify_tenant_config_changed(uint64_t tenant_id)
 {
   update_tenant_config_cb_(tenant_id);
+}
+
+int ObTenantConfigMgr::add_config_to_existing_tenant(const char *config_str)
+{
+  int ret = OB_SUCCESS;
+  DRWLock::WRLockGuard guard(rwlock_);
+  if (!config_map_.empty() && nullptr != config_str) {
+    TenantConfigMap::const_iterator it = config_map_.begin();
+    for (; it != config_map_.end() && OB_SUCC(ret); ++it) {
+      if (OB_NOT_NULL(it->second)) {
+        int64_t version = ObTimeUtility::current_time();
+        if (OB_FAIL(it->second->add_extra_config(config_str, version))) {
+          LOG_WARN("add tenant extra config failed", "tenant_id", it->second->get_tenant_id(),
+                   "config_str", config_str, KR(ret));
+        }
+      }
+    }
+  }
+  return ret;
 }
 
 int ObTenantConfigMgr::add_extra_config(const obrpc::ObTenantConfigArg &arg)

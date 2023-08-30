@@ -14,6 +14,7 @@
 #include "observer/virtual_table/ob_show_create_database.h"
 #include "share/schema/ob_schema_getter_guard.h"
 #include "share/schema/ob_schema_printer.h"
+#include "sql/session/ob_sql_session_info.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share::schema;
@@ -49,8 +50,8 @@ int ObShowCreateDatabase::inner_get_next_row(common::ObNewRow *&row)
       if (OB_FAIL(calc_show_database_id(show_database_id))) {
         LOG_WARN("fail to calc show database id", K(ret));
       } else if (OB_UNLIKELY(OB_INVALID_ID == show_database_id)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_USER_ERROR(OB_ERR_UNEXPECTED, "this table is used for show clause, can't be selected");
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "select a table which is used for show clause");
       } else if (OB_FAIL(schema_guard_->get_database_schema(effective_tenant_id_,
                  show_database_id, db_schema))) {
         LOG_WARN("failed to get database_schema", K(ret), K_(effective_tenant_id), K(show_database_id));
@@ -108,11 +109,15 @@ int ObShowCreateDatabase::fill_row_cells(uint64_t show_database_id,
                                          const ObString &database_name)
 {
   int ret = OB_SUCCESS;
+  bool strict_mode = false;
+  bool sql_quote_show_create = true;
+  bool ansi_quotes = false;
   if (OB_ISNULL(cur_row_.cells_)
       || OB_ISNULL(schema_guard_)
-      || OB_ISNULL(allocator_)) {
+      || OB_ISNULL(allocator_)
+      || OB_ISNULL(session_)) {
     ret = OB_NOT_INIT;
-    LOG_WARN("class isn't inited", K(cur_row_.cells_), K(schema_guard_), K(allocator_));
+    LOG_WARN("class isn't inited", K(cur_row_.cells_), K(schema_guard_), K(allocator_), K(session_));
   } else if (OB_UNLIKELY(cur_row_.count_ < output_column_ids_.count())) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(WARN,
@@ -120,6 +125,12 @@ int ObShowCreateDatabase::fill_row_cells(uint64_t show_database_id,
                K(ret),
                K(cur_row_.count_),
                K(output_column_ids_.count()));
+  } else if (OB_FAIL(session_->get_show_ddl_in_compat_mode(strict_mode))) {
+    SERVER_LOG(WARN, "failed to get _show_ddl_in_compat_mode", K(ret));
+  } else if (OB_FAIL(session_->get_sql_quote_show_create(sql_quote_show_create))) {
+    SERVER_LOG(WARN, "failed to get sql_quote_show_create", K(ret));
+  } else if (OB_FALSE_IT(IS_ANSI_QUOTES(session_->get_sql_mode(), ansi_quotes))) {
+    // do nothing
   } else {
     uint64_t cell_idx = 0;
     char *db_def_buf = NULL;
@@ -145,7 +156,7 @@ int ObShowCreateDatabase::fill_row_cells(uint64_t show_database_id,
         }
         case OB_APP_MIN_COLUMN_ID + 2: {
           // create_database
-          ObSchemaPrinter schema_printer(*schema_guard_);
+          ObSchemaPrinter schema_printer(*schema_guard_, strict_mode, sql_quote_show_create, ansi_quotes);
           int64_t pos = 0;
           if (OB_FAIL(schema_printer.print_database_definiton(effective_tenant_id_,
                                                               show_database_id,
@@ -166,7 +177,7 @@ int ObShowCreateDatabase::fill_row_cells(uint64_t show_database_id,
         }
         case OB_APP_MIN_COLUMN_ID + 3: {
           // create_database_with_if_not_exists
-          ObSchemaPrinter schema_printer(*schema_guard_);
+          ObSchemaPrinter schema_printer(*schema_guard_, strict_mode, sql_quote_show_create, ansi_quotes);
           int64_t pos = 0;
           if (OB_FAIL(schema_printer.print_database_definiton(effective_tenant_id_,
                                                               show_database_id,

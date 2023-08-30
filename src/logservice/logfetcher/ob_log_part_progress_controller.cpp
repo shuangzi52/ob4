@@ -205,7 +205,7 @@ int PartProgressController::update_progress(const int64_t progress_id, const int
     Item &item = *(progress_list_ + progress_id);
     item.update(progress);
 
-    _LOG_DEBUG("[STAT] [PROGRESS_CONTROLLER] [UPDATE] progress_id=%ld progress=%ld(%s) "
+    _LOG_TRACE("[STAT] [PROGRESS_CONTROLLER] [UPDATE] progress_id=%ld progress=%ld(%s) "
         "delay=%s  progress_cnt=(total=%ld,valid=%ld,recycled=%ld,max=%ld)",
         progress_id, progress, NTS_TO_STR(progress), NTS_TO_DELAY(progress),
         progress_cnt_, valid_progress_cnt_, recycled_indices_.count(), max_progress_cnt_);
@@ -242,7 +242,7 @@ int PartProgressController::get_min_progress(int64_t &progress)
       }
     }
 
-    LOG_DEBUG("[FETCHER] [GET_MIN_PROGRESS] ", K(progress), K_(progress_cnt), K(min_progress_id));
+    LOG_TRACE("[FETCHER] [GET_MIN_PROGRESS] ", K(progress), K_(progress_cnt), K(min_progress_id));
     execution_time = get_timestamp() - execution_time ;
     // Update execution time, print execution time periodically
     update_execution_time_(execution_time);
@@ -258,8 +258,7 @@ int PartProgressController::set_global_upper_limit(const int64_t global_upper_li
   if (OB_UNLIKELY(! inited_)) {
     LOG_ERROR("not init");
     ret = OB_NOT_INIT;
-  } else if (OB_UNLIKELY(OB_INVALID_TIMESTAMP == global_upper_limit
-        || global_upper_limit < ATOMIC_LOAD(&global_fetch_log_upper_limit_))) {
+  } else if (OB_UNLIKELY(OB_INVALID_TIMESTAMP == global_upper_limit)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(global_upper_limit), K(global_fetch_log_upper_limit_));
   } else {
@@ -311,15 +310,18 @@ void PartProgressController::update_execution_time_(int64_t execution_time)
       types::uint128_t global_count_and_timeval;
       LOAD128(global_count_and_timeval, &global_count_and_timeval_);
       // Calculate the number of times the array was scanned during this interval and the average time to scan an array
-      uint64_t scan_cnt = global_count_and_timeval.lo - last_global_count_and_timeval_.lo;
-      uint64_t time = (global_count_and_timeval.hi - last_global_count_and_timeval_.hi) /scan_cnt;
+      const uint64_t scan_cnt = global_count_and_timeval.lo - last_global_count_and_timeval_.lo;
+      uint64_t time = 0;
+      if (0 != scan_cnt) {
+        time = (global_count_and_timeval.hi - last_global_count_and_timeval_.hi) / scan_cnt;
+      }
       // part count
-      int64_t part_cnt = ATOMIC_LOAD(&progress_cnt_);
+      const int64_t part_cnt = ATOMIC_LOAD(&progress_cnt_);
       // Record current statistics
       last_global_count_and_timeval_.lo = global_count_and_timeval.lo;
       last_global_count_and_timeval_.hi = global_count_and_timeval.hi;
 
-       _LOG_INFO("[STAT] [GET_MIN_PROGRESS] AVG_TIME=%ld PART_COUNT=%ld SCAN_COUNT=%ld",
+       _LOG_INFO("[STAT] [GET_MIN_PROGRESS] AVG_TIME=%lu LS_COUNT=%ld SCAN_COUNT=%lu",
                  time, part_cnt, scan_cnt);
     }
   }

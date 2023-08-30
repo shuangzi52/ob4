@@ -62,6 +62,9 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
       LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "-",
                   ob_obj_type_str(types_stack[0].get_type()));
       LOG_WARN("invalid type of parameter", K(ret), K(types_stack[0]));
+    } else if (lib::is_oracle_mode() && types_stack[CALC_TYPE_INDEX].get_type() == ObUserDefinedSQLType) {
+      ret = OB_ERR_NO_ORDER_MAP_SQL;
+      LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
     }
     for (int64_t i = 1; OB_SUCC(ret) && i < param_num; i += 2) {
       if (has_default && i == param_num - 1) {
@@ -90,7 +93,7 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
         // 兼容Oracle行为, 如果结果是Char类型, 需要转为Varchar
         type.set_varchar();
         type.set_length_semantics(types_stack[RESULT_TYPE_INDEX].is_varchar_or_char() ?  types_stack[RESULT_TYPE_INDEX].get_length_semantics() : default_length_semantics);
-      } else if (lib::is_oracle_mode() && ob_is_nchar(types_stack[RESULT_TYPE_INDEX].get_type())) {
+      } else if (lib::is_oracle_mode() && ob_is_nstring(types_stack[RESULT_TYPE_INDEX].get_type())) {
         type.set_nvarchar2();
         type.set_length_semantics(LS_CHAR);
       } else {
@@ -286,6 +289,9 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
         }
       }
     }
+    if (OB_SUCC(ret) && lib::is_oracle_mode() &&type.get_type() == ObUserDefinedSQLType) {
+      type.set_subschema_id(ObXMLSqlType);
+    }
   }
   if (OB_SUCC(ret)) {
     if (ob_is_otimestamp_type(types_stack[RESULT_TYPE_INDEX].get_type())) {
@@ -294,13 +300,37 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
     //deduce string length
     if (ob_is_string_type(type.get_type()) || ob_is_raw(type.get_type())) {
       ObLength len = -1;
-      for (int64_t i = 2; i < param_num; i += 2 /*skip conditions */) {
-        if (types_stack[i].get_length() > len) {
-          len = types_stack[i].get_length();
+      if (is_oracle_mode() && (ob_is_string_tc(type.get_type()) || ob_is_raw(type.get_type()))) {
+        ObLength deduced_len = -1;
+        if (OB_ISNULL(type_ctx.get_session())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("session is NULL", K(ret));
         }
-      }
-      if (has_default) {
-        len = static_cast<ObLength>(MAX(types_stack[param_num - 1].get_length(), len));
+        for (int64_t i = 2; OB_SUCC(ret) && i < param_num; i += 2 /*skip conditions */) {
+          if (OB_FAIL(ObExprResultTypeUtil::deduce_max_string_length_oracle(type_ctx.get_session()->get_dtc_params(),
+                                  types_stack[i], type, deduced_len, type.get_length_semantics()))) {
+            LOG_WARN("fail to deduce max string length", K(ret));
+          } else if (deduced_len > len) {
+            len = deduced_len;
+          }
+        }
+        if (OB_SUCC(ret) && has_default) {
+          if (OB_FAIL(ObExprResultTypeUtil::deduce_max_string_length_oracle(type_ctx.get_session()->get_dtc_params(),
+                                  types_stack[param_num - 1], type, deduced_len, type.get_length_semantics()))) {
+            LOG_WARN("fail to deduce max string length", K(ret));
+          } else if (deduced_len > len) {
+            len = deduced_len;
+          }
+        }
+      } else {
+        for (int64_t i = 2; i < param_num; i += 2 /*skip conditions */) {
+          if (types_stack[i].get_length() > len) {
+            len = types_stack[i].get_length();
+          }
+        }
+        if (has_default) {
+          len = static_cast<ObLength>(MAX(types_stack[param_num - 1].get_length(), len));
+        }
       }
       if (all_literal && lib::is_oracle_mode()) {
         if (OB_FAIL(calc_result_type_for_literal(type, types_stack, param_num, type_ctx))) {
@@ -356,6 +386,7 @@ int ObExprOracleDecode::calc_result_type_for_literal(ObExprResType &type,
   } else if (OB_FAIL(ObSQLUtils::get_default_cast_mode(session, expr_ctx.cast_mode_))) {
     LOG_WARN("failed to get default cast mode", K(ret));
   } else if (OB_ISNULL(obj_stack = static_cast<ObObj*>(allocator.alloc(sizeof(ObObj) * param_num)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to alloc obj stack", K(ret));
   } else {
     expr_ctx.my_session_ = const_cast<ObSQLSessionInfo *>(session);
@@ -373,7 +404,7 @@ int ObExprOracleDecode::calc_result_type_for_literal(ObExprResType &type,
       // 兼容ORACLE: 忽略掉calc_type阶段的计算错误, 在实际计算时再报
       ret = OB_SUCCESS;
     } else if (result.is_null()) {
-      // do nothing ...
+      type.set_length(0);
     } else if (!result.is_string_type()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("decode calc literal result is not string", K(ret));

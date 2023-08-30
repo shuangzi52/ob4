@@ -30,17 +30,21 @@ class ObUnixDomainListener
 public:
   explicit ObUnixDomainListener()
     : is_inited_(false),
-      stop_(true),
+      stop_(false),
+      running_(false),
       listen_fd_(-1) {}
   ~ObUnixDomainListener();
   int init();
   int run();
+  void stop();
   void wait();
+  void destroy();
 private:
   DISALLOW_COPY_AND_ASSIGN(ObUnixDomainListener);
 private:
   bool is_inited_;
   bool stop_;
+  bool running_;
   int listen_fd_;
   std::thread worker_;
 };

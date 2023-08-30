@@ -189,7 +189,7 @@ void TestSqlUtils::init()
   //common::ObDITenantCache::get_instance().init(100000, 4);
   schema_service_ = new MockSchemaService();
   ASSERT_TRUE(schema_service_);
-  ObVirtualTenantManager::get_instance().init(10);
+  ObVirtualTenantManager::get_instance().init();
   ObVirtualTenantManager::get_instance().add_tenant(sys_tenant_id_);
   ObVirtualTenantManager::get_instance().set_tenant_mem_limit(sys_tenant_id_, 1024L * 1024L * 1024L, 1024L * 1024L * 1024L);
   if (OB_SUCCESS != (ret = ObPreProcessSysVars::init_sys_var())) {
@@ -223,7 +223,7 @@ void TestSqlUtils::init()
     } else if (OB_FAIL(exec_ctx_.create_physical_plan_ctx())) {
       OB_LOG(WARN, "Create plan ctx error", K(ret));
       ASSERT_TRUE(0);
-    } else if (OB_SUCCESS != (ret = next_user_table_id_map_.create(16, ObModIds::OB_HASH_BUCKET_ALTER_TABLE_MAP ))) {
+    } else if (OB_SUCCESS != (ret = next_user_table_id_map_.create(16, "HashBucAltTabMa"))) {
       _OB_LOG(WARN, "create user table id map failed, ret=%ld", ret);
       ASSERT_TRUE(0);
     } else {

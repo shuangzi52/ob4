@@ -117,6 +117,7 @@ public:
   int enqueue_callback(ObIORequest &req);
   ObTenantIOClock *get_io_clock() { return io_clock_; }
   ObIOUsage &get_io_usage() { return io_usage_; }
+  ObSysIOUsage &get_backup_io_usage() { return io_backup_usage_; }
   int update_basic_io_config(const ObTenantIOConfig &io_config);
   int alloc_io_request(ObIAllocator &allocator,const int64_t callback_size,  ObIORequest *&req);
   int alloc_io_clock(ObIAllocator &allocator, ObTenantIOClock *&io_clock);
@@ -150,7 +151,9 @@ public:
   const ObTenantIOConfig &get_io_config();
   int trace_request_if_need(const ObIORequest *req, const char* msg, ObIOTracer::TraceType trace_type);
   int64_t get_group_num();
+  int64_t get_ref_cnt() { return ATOMIC_LOAD(&ref_cnt_); }
   uint64_t get_usage_index(const int64_t group_id);
+  ObIOAllocator *get_tenant_io_allocator() { return &io_allocator_; }
   void print_io_status();
   void inc_ref();
   void dec_ref();
@@ -168,6 +171,7 @@ private:
   ObIOScheduler *io_scheduler_;
   ObIOCallbackManager callback_mgr_;
   ObIOUsage io_usage_;
+  ObSysIOUsage io_backup_usage_; //for backup mock group
   ObIOTracer io_tracer_;
   DRWLock io_config_lock_; //for map and config
   hash::ObHashMap<uint64_t, uint64_t> group_id_index_map_; //key:group_id, value:index

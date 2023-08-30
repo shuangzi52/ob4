@@ -64,8 +64,10 @@ public:
 
   typedef ObArray<ConfigItem> ConfigItemArray;
 public:
-  ObBaseConfig() : config_file_buf1_(NULL), config_file_buf2_(NULL)
-  {}
+  ObBaseConfig()
+    : inited_(false)
+  {
+  }
   int init();
   void destroy();
   int check_all();
@@ -74,11 +76,6 @@ public:
     const int64_t version = 0, const bool check_name = false);
   int load_from_file(const char *config_file, const int64_t version = 0, const bool check_name = false);
   int dump2file(const char *config_file) const;
-protected:
-  // for load_from_file
-  char *config_file_buf1_;
-  // for load_from_buffer
-  char *config_file_buf2_;
 private:
   bool inited_;
   static const int64_t OB_MAX_CONFIG_LENGTH = 5 * 1024 * 1024;  // 5M
@@ -98,8 +95,7 @@ public:
   virtual ObServerRole get_server_type() const = 0;
   virtual int add_extra_config(const char *config_str,
                                const int64_t version = 0,
-                               const bool check_name = false,
-                               const bool check_unit = true);
+                               const bool check_config = true);
   virtual bool is_debug_sync_enabled() const { return false; }
 
   OB_UNIS_VERSION_V(1);

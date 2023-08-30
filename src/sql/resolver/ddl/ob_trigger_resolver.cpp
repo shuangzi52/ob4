@@ -473,7 +473,7 @@ int ObTriggerResolver::resolve_timing_point(int16_t before_or_after, int16_t stm
                                             ObCreateTriggerArg &trigger_arg)
 {
   int ret = OB_SUCCESS;
-  pl::ObPLParser pl_parser(*allocator_, session_info_->get_local_collation_connection());
+  pl::ObPLParser pl_parser(*allocator_, session_info_->get_local_collation_connection(), session_info_->get_sql_mode());
   ParseResult parse_result;
   const ObStmtNodeTree *parse_tree = NULL;
   bool is_include_old_new_in_trigger = false;
@@ -759,7 +759,7 @@ int ObTriggerResolver::resolve_trigger_body(const ParseNode &parse_node,
                                       session_info_->get_dtc_params()));
   if (OB_SUCC(ret) && lib::is_mysql_mode()) {
     ObString procedure_source;
-    pl::ObPLParser parser(*allocator_, session_info_->get_local_collation_connection());
+    pl::ObPLParser parser(*allocator_, session_info_->get_local_collation_connection(), session_info_->get_sql_mode());
     ObStmtNodeTree *parse_tree = NULL;
     CHECK_COMPATIBILITY_MODE(session_info_);
     OZ (trigger_info.gen_procedure_source(trigger_arg.base_object_database_,
@@ -790,6 +790,18 @@ int ObTriggerResolver::resolve_compound_trigger_body(const ParseNode &parse_node
   int ret = OB_SUCCESS;
   ObTriggerInfo &trigger_info = trigger_arg.trigger_info_;
   CK (OB_NOT_NULL(session_info_));
+  CK (T_TG_COMPOUND_BODY == parse_node.type_);
+  CK (3 == parse_node.num_child_);
+  if (OB_SUCC(ret) && OB_NOT_NULL(parse_node.children_[2])) {
+    ObString tail_name(parse_node.children_[2]->str_len_, parse_node.children_[2]->str_value_);
+    if (0 != tail_name.case_compare(trigger_arg.trigger_info_.get_trigger_name())) {
+      ret = OB_ERR_END_LABEL_NOT_MATCH;
+      LOG_WARN("END identifier must match START identifier", K(ret), K(tail_name));
+      LOG_USER_ERROR(OB_ERR_END_LABEL_NOT_MATCH, tail_name.length(), tail_name.ptr(),
+                     trigger_arg.trigger_info_.get_trigger_name().length(),
+                     trigger_arg.trigger_info_.get_trigger_name().ptr());
+    }
+  }
   OZ (trigger_info.gen_package_source(trigger_arg.base_object_database_,
                                       trigger_arg.base_object_name_,
                                       parse_node,
@@ -830,6 +842,41 @@ int ObTriggerResolver::resolve_alter_clause(const ParseNode &alter_clause,
     } else {
       tg_info.set_disable();
     }
+#ifdef OB_BUILD_ORACLE_PL
+  } else if (TRIGGER_ALTER_COMPILE == alter_clause.int16_values_[0]) {
+    is_set_status = false;
+    is_alter_compile = true;
+    if (1 == alter_clause.int16_values_[2]) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("alter trigger with reuse_setting not supported yet!", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "alter trigger with reuse setting");
+    } else {
+      share::schema::ObErrorInfo error_info;
+      ObSEArray<ObDependencyInfo, 1> dep_infos;
+      if (OB_FAIL(analyze_trigger(*schema_checker_->get_schema_guard(),
+                                  session_info_,
+                                  params_.sql_proxy_,
+                                  *allocator_,
+                                  tg_info,
+                                  db_name,
+                                  dep_infos,
+                                  true))) {
+        LOG_USER_WARN(OB_ERR_TRIGGER_COMPILE_ERROR, "TRIGGER",
+                        db_name.length(), db_name.ptr(),
+                        tg_info.get_trigger_name().length(), tg_info.get_trigger_name().ptr());
+        ret = OB_SUCCESS;
+        error_info.handle_error_info(&tg_info);
+      } else {
+        OZ (error_info.delete_error(&tg_info));
+      }
+    }
+  } else if (TRIGGER_ALTER_RENAME == alter_clause.int16_values_[0]) {
+    is_set_status = false;
+    is_alter_compile = false;
+    CK (1 == alter_clause.num_child_);
+    CK (OB_NOT_NULL(alter_clause.children_[0]))
+    OZ (resolve_rename_trigger(*alter_clause.children_[0], *schema_checker_->get_schema_guard(), tg_info, *allocator_));
+#endif
   }
   return ret;
 }
@@ -1056,7 +1103,7 @@ int ObTriggerResolver::analyze_trigger(ObSchemaGetterGuard &schema_guard,
       ObPLCompiler compiler(allocator, *session_info, schema_guard, package_guard, *sql_proxy);
       const ObPackageInfo &package_spec_info = trigger_info.get_package_spec_info();
       if (!trigger_info.get_update_columns().empty()) {
-        ObPLParser parser(allocator, session_info->get_local_collation_connection());
+        ObPLParser parser(allocator, session_info->get_local_collation_connection(), session_info->get_sql_mode());
         ObStmtNodeTree *column_list = NULL;
         ParseResult parse_result;
         OZ (parser.parse(trigger_info.get_update_columns(), trigger_info.get_update_columns(), parse_result, true));
@@ -1121,11 +1168,11 @@ int ObTriggerResolver::analyze_trigger(ObSchemaGetterGuard &schema_guard,
       }
       if (OB_SUCC(ret) && lib::is_oracle_mode()) {
         if (is_alter_compile) {
-          OZ (ObPLCompiler::update_schema_object_dep_info(package_body_ast,
+          OZ (ObPLCompiler::update_schema_object_dep_info(package_body_ast.get_dependency_table(),
                                                           trigger_info.get_tenant_id(),
+                                                          trigger_info.get_owner_id(),
                                                           trigger_info.get_trigger_id(),
                                                           trigger_info.get_schema_version(),
-                                                          trigger_info.get_owner_id(),
                                                           trigger_info.get_object_type()));
         } else {
           ObString dep_attr;
@@ -1140,6 +1187,47 @@ int ObTriggerResolver::analyze_trigger(ObSchemaGetterGuard &schema_guard,
   return ret;
 }
 
+#ifdef OB_BUILD_ORACLE_PL
+int ObTriggerResolver::resolve_rename_trigger(const ParseNode &rename_clause,
+                                              ObSchemaGetterGuard &schema_guard,
+                                              ObTriggerInfo &trigger_info,
+                                              common::ObIAllocator &alloc)
+{
+  int ret = OB_SUCCESS;
+  if (2 != rename_clause.num_child_) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("num child error", K(rename_clause.num_child_));
+  } else if (OB_NOT_NULL(rename_clause.children_[0])) {
+    ret = OB_ERR_CMD_NOT_PROPERLY_ENDED;
+    LOG_WARN("database name must null", K(ret));
+  } else {
+    ObString mock_db_name;
+    ObString new_trg_name;
+    if (OB_FAIL(resolve_schema_name(rename_clause, mock_db_name, new_trg_name))) {
+      LOG_WARN("resolve schema name failed", K(new_trg_name), K(ret));
+    } else if (0 == trigger_info.get_trigger_name().case_compare(new_trg_name)) {
+      ret = OB_OBJ_ALREADY_EXIST;
+      LOG_WARN("name is already exist", K(trigger_info.get_trigger_name()), K(new_trg_name), K(ret));
+    } else {
+      const ObTriggerInfo *other_trg_info = NULL;
+      if (OB_FAIL(schema_guard.get_trigger_info(trigger_info.get_tenant_id(),
+                                                trigger_info.get_database_id(),
+                                                new_trg_name,
+                                                other_trg_info))) {
+        LOG_WARN("get trigger info failed", K(trigger_info.get_database_id()), K(new_trg_name), K(ret));
+      } else if (OB_NOT_NULL(other_trg_info)) {
+        ret = OB_OBJ_ALREADY_EXIST;
+        LOG_WARN("name is already exist", KPC(other_trg_info), K(new_trg_name), K(ret));
+      } else if (OB_FAIL(trigger_info.set_trigger_name(new_trg_name))) {
+        LOG_WARN("set trigger name failed", K(trigger_info), K(new_trg_name), K(ret));
+      } else if (OB_FAIL(ObTriggerInfo::replace_trigger_name_in_body(trigger_info, alloc, schema_guard))) {
+        LOG_WARN("rebuild trigger body failed", K(trigger_info), K(ret));
+      }
+    }
+  }
+  return ret;
+}
+#endif
 
 const ObString ObTriggerResolver::REF_OLD = "OLD";
 const ObString ObTriggerResolver::REF_NEW = "NEW";

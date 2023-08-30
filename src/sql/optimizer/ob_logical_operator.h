@@ -651,6 +651,8 @@ struct ObAllocExprContext
   //  {key => flattern expr, value => reference count }
   hash::ObHashMap<uint64_t, int64_t> flattern_expr_map_;
   common::ObSEArray<ExprProducer, 16, common::ModulePageAllocator, true> expr_producers_;
+  // Exprs that cannot be used to extract shared child exprs
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> inseparable_exprs_;
 };
 
 struct ObPxPipeBlockingCtx
@@ -1185,6 +1187,8 @@ public:
     return common::OB_SUCCESS;
   }
 
+  int collecte_inseparable_exprs(ObAllocExprContext &ctx);
+
   virtual int allocate_expr_pre(ObAllocExprContext &ctx);
 
   virtual int get_op_exprs(ObIArray<ObRawExpr*> &all_exprs);
@@ -1526,8 +1530,7 @@ public:
   /*
    * replace exprs which will be returned by get_op_exprs during allocating expr
    */
-  int replace_op_exprs(
-      const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>  >&to_replace_exprs);
+  int replace_op_exprs(ObRawExprReplacer &replacer);
 
   // check if this operator is some kind of table scan.
   // the default return value is false
@@ -1662,6 +1665,8 @@ public:
                                ObIArray<ObExecParamRawExpr *> &right_above_params);
   // 生成 partition id 表达式
   int generate_pseudo_partition_id_expr(ObOpPseudoColumnRawExpr *&expr);
+
+  int adjust_dup_table_replica_pos(int64_t dup_table_pos);
 public:
   ObSEArray<ObLogicalOperator *, 16, common::ModulePageAllocator, true> child_;
   ObSEArray<ObPCParamEqualInfo, 4, common::ModulePageAllocator, true> equal_param_constraints_;
@@ -1689,12 +1694,9 @@ protected:
   void do_project_pruning(common::ObIArray<ObRawExpr *> &exprs,
                           PPDeps &deps);
   int try_add_remove_const_exprs();
-  virtual int inner_replace_op_exprs(
-      const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*> >&to_replace_exprs);
-  int replace_exprs_action(const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*> >&to_replace_exprs,
-                           common::ObIArray<ObRawExpr*> &dest_exprs);
-  int replace_expr_action(const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*> >&to_replace_exprs,
-                          ObRawExpr *&dest_expr);
+  virtual int inner_replace_op_exprs(ObRawExprReplacer &replacer);
+  int replace_exprs_action(ObRawExprReplacer &replacer, common::ObIArray<ObRawExpr*> &dest_exprs);
+  int replace_expr_action(ObRawExprReplacer &replacer, ObRawExpr *&dest_expr);
 
   int explain_print_partitions(ObTablePartitionInfo &table_partition_info,
                                char *buf, int64_t &buf_len, int64_t &pos);
@@ -1773,7 +1775,8 @@ private:
   int find_table_scan(ObLogicalOperator* root_op,
                       uint64_t table_id,
                       ObLogicalOperator* &scan_op,
-                      bool& table_scan_has_exchange);
+                      bool& table_scan_has_exchange,
+                      bool &has_px_coord);
   //private function, just used for allocating join filter node.
   int allocate_partition_join_filter(const ObIArray<JoinFilterInfo> &infos,
                                      int64_t &filter_id);
@@ -1798,6 +1801,10 @@ private:
       ObLogicalOperator *join_filter_use_op,
       double join_filter_rate,
       RuntimeFilterType type);
+  int cal_runtime_filter_compare_func(
+      ObLogJoinFilter *join_filter_use,
+      ObRawExpr *join_use_expr,
+      ObRawExpr *join_create_expr);
 
 
   /* manual set dop for each dfo */

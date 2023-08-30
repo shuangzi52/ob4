@@ -47,7 +47,9 @@
 #include "share/ob_lob_access_utils.h"
 #include "sql/monitor/flt/ob_flt_utils.h"
 #include "sql/session/ob_sess_info_verify.h"
-
+#ifdef OB_BUILD_ORACLE_XML
+#include "sql/engine/expr/ob_expr_xml_func_helper.h"
+#endif
 namespace oceanbase
 {
 using namespace share;
@@ -145,8 +147,6 @@ int ObMPBase::after_process(int error_code)
         // slow query will flush cache
         FLUSH_TRACE();
       }
-    } else if (common::OB_SUCCESS != error_code) {
-      FLUSH_TRACE();
     } else if (can_force_print(error_code)) {
       // 需要打印TRACE日志的错误码添加在这里
       int process_ret = error_code;
@@ -159,7 +159,12 @@ int ObMPBase::after_process(int error_code)
     } else {
       PRINT_TRACE(THE_TRACE);
     }
+
+    if (common::OB_SUCCESS != error_code) {
+      FLUSH_TRACE();
+    }
   }
+  ObFLTUtils::clean_flt_env();
   return ret;
 }
 
@@ -281,6 +286,9 @@ int ObMPBase::create_session(ObSMConnection *conn, ObSQLSessionInfo *&sess_info)
       } else {
         sess_info->set_ssl_cipher("");
       }
+
+      sess_info->gen_gtt_session_scope_unique_id();
+      sess_info->gen_gtt_trans_scope_unique_id();
     }
   }
   return ret;
@@ -297,6 +305,7 @@ int ObMPBase::free_session()
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("session manager is null", K(ret));
   } else {
+    bool is_need_clear = false;
     ObFreeSessionCtx ctx;
     ctx.tenant_id_ = conn->tenant_id_;
     ctx.sessid_ = conn->sessid_;
@@ -307,6 +316,15 @@ int ObMPBase::free_session()
     } else {
       LOG_INFO("free session successfully", K(ctx));
       conn->is_sess_free_ = true;
+      if (OB_UNLIKELY(OB_FAIL(sql::ObSQLSessionMgr::is_need_clear_sessid(conn, is_need_clear)))) {
+        LOG_ERROR("fail to jugde need clear", K(ret), "sessid", conn->sessid_, "server_id", GCTX.server_id_);
+      } else if (is_need_clear) {
+        if (OB_FAIL(GCTX.session_mgr_->mark_sessid_unused(conn->sessid_))) {
+          LOG_WARN("mark session id unused failed", K(ret), "sessid", conn->sessid_);
+        } else {
+          LOG_INFO("mark session id unused", "sessid", conn->sessid_);
+        }
+      }
     }
   }
   return ret;
@@ -327,6 +345,7 @@ int ObMPBase::init_process_var(sql::ObSqlCtx &ctx,
                                sql::ObSQLSessionInfo &session) const
 {
   int ret = OB_SUCCESS;
+  bool enable_udr = false;
   if (!packet_sender_.is_conn_valid()) {
     ret = OB_CONNECT_ERROR;
     LOG_WARN("connection already disconnected", K(ret));
@@ -350,9 +369,14 @@ int ObMPBase::init_process_var(sql::ObSqlCtx &ctx,
       ctx.can_reroute_sql_ = (pkt.can_reroute_pkt() && get_conn()->is_support_proxy_reroute());
     }
     ctx.is_protocol_weak_read_ = pkt.is_weak_read();
-    ctx.is_strict_defensive_check_ = GCONF.enable_strict_defensive_check();
+    ctx.set_enable_strict_defensive_check(GCONF.enable_strict_defensive_check());
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(session.get_effective_tenant_id()));
+    if (tenant_config.is_valid()) {
+      enable_udr = tenant_config->enable_user_defined_rewrite_rules;
+    }
+    ctx.set_enable_user_defined_rewrite(enable_udr);
     LOG_TRACE("protocol flag info", K(ctx.can_reroute_sql_), K(ctx.is_protocol_weak_read_),
-        K(ctx.is_strict_defensive_check_));
+        K(ctx.get_enable_strict_defensive_check()), K(enable_udr));
   }
   return ret;
 }
@@ -364,13 +388,13 @@ int ObMPBase::do_after_process(sql::ObSQLSessionInfo &session,
                                bool async_resp_used) const
 {
   int ret = OB_SUCCESS;
-  session.set_session_sleep();
 
   // reset warning buffers
   // 注意，此处req_has_wokenup_可能为true，不能再访问req对象
   // @todo 重构wb逻辑
   if (!async_resp_used) { // 异步回包不重置warning buffer，重置操作在callback中做
     session.reset_warnings_buf();
+    session.set_session_sleep();
   }
   // clear tsi warning buffer
   ob_setup_tsi_warning_buffer(NULL);
@@ -399,7 +423,6 @@ int ObMPBase::record_flt_trace(sql::ObSQLSessionInfo &session) const
       }
     }
   }
-  ObFLTUtils::clean_flt_env(session);
   return ret;
 }
 
@@ -533,11 +556,13 @@ int ObMPBase::response_row(ObSQLSessionInfo &session,
                                     &allocator,
                                     &session))) {
           LOG_WARN("convert lob locator to longtext failed", K(ret));
+#ifdef OB_BUILD_ORACLE_XML
         } else if (value.is_user_defined_sql_type()
-                   && OB_FAIL(ObQueryDriver::process_sql_udt_results(value,
+                   && OB_FAIL(ObXMLExprHelper::process_sql_udt_results(value,
                                     &allocator,
                                     &session))) {
           LOG_WARN("convert udt to client format failed", K(ret), K(value.get_udt_subschema_id()));
+#endif
         }
       }
     }

@@ -174,12 +174,13 @@ int ObTenantCompactionProgressMgr::loop_major_sstable_(
       } else if (ls->is_deleted()) {
         // do nothing
       } else {
-        ObLSTabletIterator tablet_iter(ObTabletCommon::NO_CHECK_GET_TABLET_TIMEOUT_US);
+        ObLSTabletIterator tablet_iter(ObMDSGetTabletMode::READ_WITHOUT_CHECK);
         const ObLSID &ls_id = ls->get_ls_id();
         if (OB_FAIL(ls->get_tablet_svr()->build_tablet_iter(tablet_iter))) {
           LOG_WARN("failed to build ls tablet iter", K(ret), K(ls));
         } else {
           ObTabletHandle tablet_handle;
+          ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
           int tmp_ret = OB_SUCCESS;
           while (OB_SUCC(ret)) { // loop all tablets in ls
             if (OB_FAIL(tablet_iter.get_next_tablet(tablet_handle))) {
@@ -193,14 +194,21 @@ int ObTenantCompactionProgressMgr::loop_major_sstable_(
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("invalid tablet handle", K(ret), K(ls_id), K(tablet_handle));
             } else if (!tablet_handle.get_obj()->get_tablet_meta().tablet_id_.is_special_merge_tablet()) {
-              ObSSTable *sstable = static_cast<ObSSTable*>(
-                  tablet_handle.get_obj()->get_table_store().get_major_sstables().get_boundary_table(true/*last*/));
-              if (nullptr == sstable) {
+              ObSSTable *sstable = nullptr;
+              if (OB_FAIL(tablet_handle.get_obj()->fetch_table_store(table_store_wrapper))) {
+                LOG_WARN("faile to fetch table store", K(ret));
+              } else if (OB_ISNULL(sstable = static_cast<ObSSTable *>(
+                  table_store_wrapper.get_member()->get_major_sstables().get_boundary_table(true/*last*/)))) {
                 // do nothing
               } else if ((equal_flag && sstable->get_snapshot_version() == merge_snapshot_version)
                   || (!equal_flag && sstable->get_snapshot_version() < merge_snapshot_version)) {
-                size += sstable->get_meta().get_basic_meta().get_total_macro_block_count() * DEFAULT_MACRO_BLOCK_SIZE;
                 ++cnt;
+                ObSSTableMetaHandle sst_meta_hdl;
+                if (OB_FAIL(sstable->get_meta(sst_meta_hdl))) {
+                  LOG_WARN("fail to get sstable meta handle", K(ret));
+                } else {
+                  size += sst_meta_hdl.get_sstable_meta().get_total_macro_block_count() * DEFAULT_MACRO_BLOCK_SIZE;
+                }
               }
             }
           } // end of while
@@ -310,10 +318,14 @@ int ObTenantCompactionProgressMgr::get_pos_(const int64_t major_snapshot_version
 {
   int ret = OB_SUCCESS;
   pos = ObInfoRingArray::get_last_pos();
-  while (OB_SUCC(ret)) {
+  int64_t loop_cnt = max_cnt_;
+  while (OB_SUCC(ret) && 0 < loop_cnt) {
     if (array_[pos].merge_version_ == major_snapshot_version) {
       break;
     } else if (array_[pos].merge_version_ > major_snapshot_version) {
+      LOG_DEBUG("merge_version is larger than major_snapshot_version", K(pos),
+        "merge_version", array_[pos].merge_version_,
+        K(major_snapshot_version));
       pos = pos == 0 ? max_cnt_ - 1 : pos - 1;
     } else {
       pos = -1;
@@ -321,6 +333,7 @@ int ObTenantCompactionProgressMgr::get_pos_(const int64_t major_snapshot_version
       LOG_DEBUG("entry not exits", K(ret), K(pos), K(major_snapshot_version));
       break;
     }
+    --loop_cnt;
   }
   if (OB_SUCC(ret) && pos >= 0 && pos < SERVER_PROGRESS_MAX_CNT
       && array_[pos].merge_version_ != major_snapshot_version) {

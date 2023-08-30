@@ -106,6 +106,8 @@ public:
   RPC_AP(PR3 post_msg, OB_TX_FREE_ROUTE_CHECK_ALIVE, (transaction::ObTxFreeRouteCheckAliveMsg), ObTransRpcResult);
   RPC_AP(PR3 post_msg, OB_TX_FREE_ROUTE_CHECK_ALIVE_RESP, (transaction::ObTxFreeRouteCheckAliveRespMsg), ObTransRpcResult);
   RPC_S(@PR3 sync_access, OB_TX_FREE_ROUTE_PUSH_STATE, (transaction::ObTxFreeRoutePushState), transaction::ObTxFreeRoutePushStateResp);
+  // state check for 4377
+  RPC_S(@PR3 ask_tx_state_for_4377, OB_ASK_TX_STATE_FOR_4377, (transaction::ObAskTxStateFor4377Msg), transaction::ObAskTxStateFor4377RespMsg);
 };
 
 #define TX_P_(name, pcode)                                              \
@@ -210,6 +212,7 @@ int ObTxRPCCB<PC>::init()
 }
 
 // publich method
+bool need_refresh_location_cache_(const int status);
 int refresh_location_cache(const share::ObLSID ls);
 int handle_trans_msg_callback(const share::ObLSID &sender_ls_id,
                               const share::ObLSID &receiver_ls_id,
@@ -227,7 +230,6 @@ int handle_sp_rollback_resp(const share::ObLSID &receiver_ls_id,
                             const ObAddr &addr,
                             const int64_t request_id,
                             const ObTxRpcRollbackSPResult &result);
-
 template<ObRpcPacketCode PC>
 int ObTxRPCCB<PC>::process()
 {
@@ -255,10 +257,7 @@ int ObTxRPCCB<PC>::process()
       } else {
         status = result.get_status();
       }
-      if (common::OB_TENANT_NOT_IN_SERVER == status ||
-          common::OB_NOT_MASTER == status ||
-          common::OB_PARTITION_NOT_EXIST == status ||
-          common::OB_LS_NOT_EXIST == status) {
+      if (need_refresh_location_cache_(status)) {
         if (OB_FAIL(refresh_location_cache(receiver_ls_id_))) {
           TRANS_LOG(WARN, "refresh location cache error", KR(ret),
                     K_(trans_id), "ls", receiver_ls_id_, K(result), K(dst), K(status), K_(msg_type));
@@ -376,6 +375,9 @@ public:
   virtual int post_msg(const share::ObLSID &p, ObTxMsg &msg) = 0;
   virtual int post_msg(const ObAddr &server, const ObTxFreeRouteMsg &m) = 0;
   virtual int sync_access(const ObAddr &server, const ObTxFreeRoutePushState &m, ObTxFreeRoutePushStateResp &result) = 0;
+  virtual int ask_tx_state_for_4377(const ObAskTxStateFor4377Msg &msg,
+                                    ObAskTxStateFor4377RespMsg &resp) = 0;
+
 };
 
 /*
@@ -396,7 +398,7 @@ public:
                  rpc_proxy_(),
                  batch_rpc_(NULL),
                  total_trans_msg_count_(0),
-                 total_trans_resp_msg_count_(0),
+                 total_batch_msg_count_(0),
                  last_stat_ts_(0) {}
   ~ObTransRpc() { destroy(); }
   int init(ObTransService *trans_service,
@@ -412,7 +414,9 @@ public:
   int post_msg(const share::ObLSID &p, ObTxMsg &msg);
   int post_msg(const ObAddr &server, const ObTxFreeRouteMsg &m);
   int sync_access(const ObAddr &server, const ObTxFreeRoutePushState &m, ObTxFreeRoutePushStateResp &result);
-private:
+  int ask_tx_state_for_4377(const ObAskTxStateFor4377Msg &msg,
+                            ObAskTxStateFor4377RespMsg &resp);
+  private:
   int post_(const ObAddr &server, ObTxMsg &msg);
   int post_commit_msg_(const ObAddr &server, ObTxMsg &msg);
   int post_sub_request_msg_(const ObAddr &server, ObTxMsg &msg);
@@ -448,12 +452,16 @@ private:
   obrpc::ObTxFreeRouteRPCCB<obrpc::OB_TX_FREE_ROUTE_CHECK_ALIVE> tx_free_route_ck_alive_cb_;
   obrpc::ObTxFreeRouteRPCCB<obrpc::OB_TX_FREE_ROUTE_CHECK_ALIVE_RESP> tx_free_route_ck_alive_resp_cb_;
   // statistic info
-  int64_t total_trans_msg_count_;
-  int64_t total_trans_resp_msg_count_;
-  int64_t last_stat_ts_;
+  int64_t total_trans_msg_count_ CACHE_ALIGNED;
+  int64_t total_batch_msg_count_ CACHE_ALIGNED;
+  int64_t last_stat_ts_ CACHE_ALIGNED;
 };
 
-
+class ObAskTxStateFor4377P : public obrpc::ObRpcProcessor< obrpc::ObTransRpcProxy::ObRpc<obrpc::OB_ASK_TX_STATE_FOR_4377> >
+{
+protected:
+  int process();
+};
 
 } // transaction
 

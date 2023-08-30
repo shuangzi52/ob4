@@ -79,8 +79,7 @@ OB_DEF_SERIALIZE(ObRFRangeFilterMsg)
               upper_bounds_,
               need_null_cmp_flags_,
               cells_size_,
-              null_first_cmp_funcs_,
-              null_last_cmp_funcs_);
+              cmp_funcs_);
   return ret;
 }
 
@@ -93,8 +92,7 @@ OB_DEF_DESERIALIZE(ObRFRangeFilterMsg)
               upper_bounds_,
               need_null_cmp_flags_,
               cells_size_,
-              null_first_cmp_funcs_,
-              null_last_cmp_funcs_);
+              cmp_funcs_);
   if (OB_FAIL(adjust_cell_size())) {
     LOG_WARN("fail do adjust cell size", K(ret));
   }
@@ -110,8 +108,7 @@ OB_DEF_SERIALIZE_SIZE(ObRFRangeFilterMsg)
               upper_bounds_,
               need_null_cmp_flags_,
               cells_size_,
-              null_first_cmp_funcs_,
-              null_last_cmp_funcs_);
+              cmp_funcs_);
   return len;
 }
 
@@ -122,7 +119,7 @@ OB_DEF_SERIALIZE(ObRFInFilterMsg)
   int cnt = is_active_? serial_rows_.count() : 0;
   OB_UNIS_ENCODE(cnt);
   OB_UNIS_ENCODE(cmp_funcs_);
-  OB_UNIS_ENCODE(hash_funcs_);
+  OB_UNIS_ENCODE(hash_funcs_for_insert_);
   OB_UNIS_ENCODE(col_cnt_);
   OB_UNIS_ENCODE(max_in_num_);
   OB_UNIS_ENCODE(need_null_cmp_flags_);
@@ -143,7 +140,7 @@ OB_DEF_DESERIALIZE(ObRFInFilterMsg)
   BASE_DESER((ObRFInFilterMsg, ObP2PDatahubMsgBase));
   OB_UNIS_DECODE(row_cnt);
   OB_UNIS_DECODE(cmp_funcs_);
-  OB_UNIS_DECODE(hash_funcs_);
+  OB_UNIS_DECODE(hash_funcs_for_insert_);
   OB_UNIS_DECODE(col_cnt_);
   OB_UNIS_DECODE(max_in_num_);
   OB_UNIS_DECODE(need_null_cmp_flags_);
@@ -173,7 +170,7 @@ OB_DEF_DESERIALIZE(ObRFInFilterMsg)
         } else if (OB_FAIL(serial_rows_.push_back(new_row))) {
           LOG_WARN("fail to push back new row", K(ret));
         } else {
-          ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_, new_row);
+          ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_for_insert_, new_row);
           if (OB_FAIL(rows_set_.set_refactored(node))) {
             LOG_WARN("fail to insert in filter node", K(ret));
           }
@@ -191,7 +188,7 @@ OB_DEF_SERIALIZE_SIZE(ObRFInFilterMsg)
   int cnt = is_active_? serial_rows_.count() : 0;
   OB_UNIS_ADD_LEN(cnt);
   OB_UNIS_ADD_LEN(cmp_funcs_);
-  OB_UNIS_ADD_LEN(hash_funcs_);
+  OB_UNIS_ADD_LEN(hash_funcs_for_insert_);
   OB_UNIS_ADD_LEN(col_cnt_);
   OB_UNIS_ADD_LEN(max_in_num_);
   OB_UNIS_ADD_LEN(need_null_cmp_flags_);
@@ -209,18 +206,18 @@ int ObRFBloomFilterMsg::process_msg_internal(bool &need_free)
 {
   int ret = OB_SUCCESS;
   ObP2PDhKey dh_key(p2p_datahub_id_, px_sequence_id_, task_id_);
-  ObP2PDatahubManager::P2PMsgMergeCall call(*this);
-  ObP2PDatahubManager::P2PRegenerateCall regen_call(*this);
+  ObP2PDatahubManager::P2PMsgSetCall set_call(dh_key, *this);
   ObP2PDatahubManager::MsgMap &map = PX_P2P_DH.get_map();
   start_time_ = ObTimeUtility::current_time();
 
   bool need_merge = true;
   if (OB_FAIL(generate_receive_count_array(piece_size_, bloom_filter_.get_begin_idx()))) {
+    need_free = true;
     LOG_WARN("fail to generate receive count array", K(ret));
   } else {
     //set msg
     ObP2PDatahubMsgGuard guard(this);
-    if (OB_FAIL(map.set_refactored(dh_key, this))) {
+    if (OB_FAIL(map.set_refactored(dh_key, this, 0/*flag*/, 0/*broadcast*/, 0/*overwrite_key*/, &set_call))) {
       if (OB_HASH_EXIST == ret) {
         ret = OB_SUCCESS;
       } else {
@@ -228,28 +225,24 @@ int ObRFBloomFilterMsg::process_msg_internal(bool &need_free)
       }
       need_free = true;
     } else {
-      need_merge = false;
-      // set_refactored success, means this msg is in map, so register check item into dm
-      int reg_ret = ObDetectManagerUtils::p2p_datahub_register_check_item_into_dm(register_dm_info_,
-        dh_key, dm_cb_node_seq_id_);
-      if (OB_SUCCESS != reg_ret) {
-        LOG_WARN("[DM] failed to register check item to dm", K(reg_ret));
-      }
-      LOG_TRACE("[DM] rf register check item to dm", K(reg_ret), K(register_dm_info_),
-          K(dh_key), K(dm_cb_node_seq_id_), K(this));
+      need_merge = false; // set success, not need to merge
     }
-    // create whole bloom filter, no need wait
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(map.atomic_refactored(dh_key, regen_call))) {
-        LOG_WARN("fail to update bloom filter msg", K(ret));
-      }
-    }
+
     // merge piece bloom filter
     if (OB_SUCC(ret) && need_merge) {
-      if (OB_FAIL(map.read_atomic(dh_key, call))) {
-        if (OB_HASH_NOT_EXIST != ret) {
-          LOG_WARN("fail to merge p2p dh msg", K(ret));
-        }
+      // for bloom filter msg, we can merge several msgs concurrently in an atomic manner without holding the map lock.
+      // thus, we need handle the reference count carefully here to make sure the msg not been destroyed during the merge process.
+      ObP2PDatahubMsgBase *rf_msg_in_map = nullptr;
+      ObRFBloomFilterMsg *bf_msg = nullptr;
+      if (OB_FAIL(PX_P2P_DH.atomic_get_msg(dh_key, rf_msg_in_map))) { // inc ref_count is integrated
+        LOG_WARN("fail to get msg", K(ret));
+      } else if (FALSE_IT(bf_msg = static_cast<ObRFBloomFilterMsg *>(rf_msg_in_map))) {
+      } else if (OB_FAIL(bf_msg->atomic_merge(*this))) {
+        LOG_WARN("fail to merge p2p dh msg", K(ret));
+      }
+      if (OB_NOT_NULL(rf_msg_in_map)) {
+        // after merge, dec ref_count
+        rf_msg_in_map->dec_ref_count();
       }
     }
     if (OB_SUCC(ret) && !need_merge) {
@@ -269,6 +262,9 @@ int ObRFBloomFilterMsg::generate_receive_count_array(int64_t piece_size, int64_t
   int64_t bits_array_length = ceil((double)bloom_filter_.get_bits_count() / 64);
   int64_t count = ceil(bits_array_length / (double)piece_size);
   int64_t begin_idx = 0;
+  if (OB_FAIL(receive_count_array_.init(count))) {
+    LOG_WARN("fail to init receive_count_array_", K(ret));
+  }
   for (int i = 0; OB_SUCC(ret) && i < count; ++i) {
     begin_idx = i * piece_size;
     if (begin_idx >= bits_array_length) {
@@ -289,6 +285,7 @@ int ObRFBloomFilterMsg::reuse()
   int ret = OB_SUCCESS;
   is_empty_ = true;
   bloom_filter_.reset_filter();
+  need_send_msg_ = true;
   return ret;
 }
 
@@ -298,10 +295,11 @@ int ObRFBloomFilterMsg::process_first_phase_recieve_count(
   int ret = OB_SUCCESS;
   CK(msg.get_msg_receive_expect_cnt() > 0 && msg_receive_expect_cnt_ > 0);
   int64_t begin_idx = msg.bloom_filter_.get_begin_idx();
-  ATOMIC_INC(&msg_receive_cur_cnt_);
-  if (msg_receive_cur_cnt_ > msg_receive_expect_cnt_) {
+  // msg_receive_cur_cnt_ is msg total cnt, msg_receive_expect_cnt_ equals to sqc_count * peice_count
+  int64_t received_cnt = ATOMIC_AAF(&msg_receive_cur_cnt_, 1);
+  if (received_cnt > msg_receive_expect_cnt_) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("fail to process recieve count", K(ret), K(msg_receive_cur_cnt_),
+    LOG_WARN("fail to process receive count", K(ret), K(received_cnt),
         K(msg_receive_expect_cnt_));
   } else if (receive_count_array_.empty()) {
     ret = OB_ERR_UNEXPECTED;
@@ -310,6 +308,7 @@ int ObRFBloomFilterMsg::process_first_phase_recieve_count(
     bool find = false;
     for (int i = 0; OB_SUCC(ret) && i < receive_count_array_.count(); ++i) {
       if (begin_idx == receive_count_array_.at(i).begin_idx_) {
+        // receive count of a specific peice msg, expect_first_phase_count_ equals to sqc count
         int64_t cur_count = ATOMIC_AAF(&receive_count_array_.at(i).reciv_count_, 1);
         first_phase_end = (cur_count == expect_first_phase_count_);
         find = true;
@@ -406,10 +405,20 @@ int ObRFBloomFilterMsg::assign(const ObP2PDatahubMsgBase &msg)
     LOG_WARN("failed to assign base data", K(ret));
   } else if (OB_FAIL(next_peer_addrs_.assign(other_msg.next_peer_addrs_))) {
     LOG_WARN("fail to assign bf msg", K(ret));
-  } else if (OB_FAIL(bloom_filter_.assign(other_msg.bloom_filter_))) {
+  } else if (OB_FAIL(bloom_filter_.assign(other_msg.bloom_filter_, msg.get_tenant_id()))) {
     LOG_WARN("fail to assign bf msg", K(ret));
-  } else if (OB_FAIL(filter_indexes_.assign(other_msg.filter_indexes_))) {
-    LOG_WARN("failed to assign filter indexes", K(ret));
+  } else if (OB_FAIL(filter_indexes_.prepare_allocate(other_msg.filter_indexes_.count()))) {
+    LOG_WARN("failed to prepare_allocate filter indexes", K(ret));
+  } else {
+    // The reason we don't use filter_indexes_.assign(other_msg.filter_indexes_) here is that:
+    // channel_ids_ is an ObFixedArray in BloomFilterIndex, we need to set allocator before assign channel_ids_
+    for (int64_t i = 0; i < other_msg.filter_indexes_.count() && OB_SUCC(ret); ++i) {
+      filter_indexes_.at(i).channel_ids_.set_allocator(&allocator_);
+      const BloomFilterIndex &other_filter_index = other_msg.filter_indexes_.at(i);
+      if (OB_FAIL(filter_indexes_.at(i).assign(other_filter_index))) {
+        LOG_WARN("fail to assign BloomFilterIndex", K(ret));
+      }
+    }
   }
   return ret;
 }
@@ -446,6 +455,20 @@ int ObRFBloomFilterMsg::regenerate()
   return ret;
 }
 
+int ObRFBloomFilterMsg::atomic_merge(ObP2PDatahubMsgBase &other_msg)
+{
+  int ret = OB_SUCCESS;
+  if (!other_msg.is_empty() && (OB_FAIL(merge(other_msg)))) {
+    LOG_WARN("fail to merge dh msg", K(ret));
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(process_receive_count(other_msg))) {
+    LOG_WARN("fail to process receive count", K(ret));
+  }
+  return ret;
+}
+
+// the merge process of bloom_filter_ is atomic by using CAS
 int ObRFBloomFilterMsg::merge(ObP2PDatahubMsgBase &msg)
 {
   int ret = OB_SUCCESS;
@@ -488,15 +511,9 @@ int ObRFBloomFilterMsg::might_contain(const ObExpr &expr,
       if (OB_FAIL(expr.args_[i]->eval(ctx, datum))) {
         LOG_WARN("failed to eval datum", K(ret));
       } else {
-        if (OB_ISNULL(expr.inner_functions_)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("expr.inner_functions_ is null", K(ret));
-        } else {
-          hash_func.hash_func_ = reinterpret_cast<ObDatumHashFuncType>(
-              expr.inner_functions_[GET_FUNC(i, ObExprJoinFilter::HASH_ROW)]);
-          if (OB_FAIL(hash_func.hash_func_(*datum, hash_val, hash_val))) {
-            LOG_WARN("fail to calc hash val", K(ret));
-          }
+        hash_func.hash_func_ = filter_ctx.hash_funcs_.at(i).hash_func_;
+        if (OB_FAIL(hash_func.hash_func_(*datum, hash_val, hash_val))) {
+          LOG_WARN("fail to calc hash val", K(ret));
         }
       }
     }
@@ -531,18 +548,23 @@ int ObRFBloomFilterMsg::might_contain_batch(
   ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
   uint64_t *hash_values = reinterpret_cast<uint64_t *>(
                                 ctx.frames_[expr.frame_idx_] + expr.res_buf_off_);
+  int64_t total_count = 0;
+  int64_t filter_count = 0;
   if (OB_UNLIKELY(is_empty_)) {
     if (OB_FAIL(ObBitVector::flip_foreach(skip, batch_size,
         [&](int64_t idx) __attribute__((always_inline)) {
-      int ret = OB_SUCCESS;
-      eval_flags.set(idx);
       results[idx].set_int(0);
-      ++filter_ctx.filter_count_;
-      ++filter_ctx.check_count_;
-      ++filter_ctx.total_count_;
-      return ret;
+      ++filter_count;
+      ++total_count;
+      return OB_SUCCESS;
     }))) {
       LOG_WARN("fail to do for each operation", K(ret));
+    }
+    if (OB_SUCC(ret)) {
+      eval_flags.set_all(true);
+      filter_ctx.filter_count_ += filter_count;
+      filter_ctx.check_count_ += total_count;
+      filter_ctx.total_count_ += total_count;
     }
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < expr.arg_cnt_; ++i) {
@@ -551,39 +573,36 @@ int ObRFBloomFilterMsg::might_contain_batch(
         LOG_WARN("evaluate batch failed", K(ret), K(*e));
       } else {
         const bool is_batch_seed = (i > 0);
-        if (OB_ISNULL(expr.inner_functions_)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("the inner_functions_ of expr is null", K(ret));
-        } else {
-          ObBatchDatumHashFunc hash_func_batch =
-              reinterpret_cast<ObBatchDatumHashFunc>(
-              expr.inner_functions_[GET_FUNC(i, ObExprJoinFilter::HASH_BATCH)]);
-          hash_func_batch(hash_values,
-                          e->locate_batch_datums(ctx), e->is_batch_result(),
-                          skip, batch_size,
-                          is_batch_seed ? hash_values : &seed,
-                          is_batch_seed);
-        }
+        ObBatchDatumHashFunc hash_func_batch = filter_ctx.hash_funcs_.at(i).batch_hash_func_;
+        hash_func_batch(hash_values,
+                        e->locate_batch_datums(ctx), e->is_batch_result(),
+                        skip, batch_size,
+                        is_batch_seed ? hash_values : &seed,
+                        is_batch_seed);
       }
     }
-    if (OB_FAIL(ObBitVector::flip_foreach(skip, batch_size,
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(ObBitVector::flip_foreach(skip, batch_size,
           [&](int64_t idx) __attribute__((always_inline)) {
             bloom_filter_.prefetch_bits_block(hash_values[idx]); return OB_SUCCESS;
           }))) {
     } else if (OB_FAIL(ObBitVector::flip_foreach(skip, batch_size,
         [&](int64_t idx) __attribute__((always_inline)) {
-          ret = bloom_filter_.might_contain(hash_values[idx], is_match);
-          if (OB_SUCC(ret)) {
-            filter_ctx.filter_count_ += !is_match;
-            eval_flags.set(idx);
+          int tmp_ret = bloom_filter_.might_contain(hash_values[idx], is_match);
+          if (OB_SUCCESS == tmp_ret) {
+            filter_count += !is_match;
+            ++total_count;
             results[idx].set_int(is_match);
-            ObExprJoinFilter::collect_sample_info(&filter_ctx, is_match);
-            ++filter_ctx.check_count_;
-            ++filter_ctx.total_count_;
           }
-          return ret;
+          return tmp_ret;
         }))) {
       LOG_WARN("failed to process prefetch block", K(ret));
+    } else {
+      eval_flags.set_all(true);
+      filter_ctx.filter_count_ += filter_count;
+      filter_ctx.check_count_ += total_count;
+      filter_ctx.total_count_ += total_count;
+      ObExprJoinFilter::collect_sample_info_batch(filter_ctx, filter_count, total_count);
     }
   }
   return ret;
@@ -726,42 +745,48 @@ int ObRFBloomFilterMsg::broadcast(ObIArray<ObAddr> &target_addrs,
   ObPxP2PDatahubArg arg;
 
   arg.msg_ = &msg;
-  while (!*create_finish_ && OB_SUCC(ret)) {
+  while (!*create_finish_ && need_send_msg_ && OB_SUCC(ret)) {
     if (OB_FAIL(THIS_WORKER.check_status())) {
       LOG_WARN("fail to check status", K(ret));
     }
     ob_usleep(10);
   }
   if (OB_FAIL(ret)) {
+  } else if (!need_send_msg_) {
+    // when drain_exch, not need to send msg
   } else if (OB_FAIL(msg.shadow_copy(*this))) {
     LOG_WARN("fail to shadow copy second phase msg", K(ret));
   } else if (OB_ISNULL(create_finish_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected create finish ptr", K(ret));
-  }
-  while (*filter_idx_ <  filter_indexes_.count() && OB_SUCC(ret)) {
-    cur_idx = ATOMIC_FAA(filter_idx_, 1);
-    if (cur_idx < filter_indexes_.count()) {
-      msg.next_peer_addrs_.reuse();
-      auto addr_filter_idx = filter_indexes_.at(cur_idx);
-      msg.bloom_filter_.set_begin_idx(addr_filter_idx.begin_idx_);
-      msg.bloom_filter_.set_end_idx(addr_filter_idx.end_idx_);
-      for (int i = 0; OB_SUCC(ret) && i < addr_filter_idx.channel_ids_.count(); ++i) {
-        if (OB_FAIL(msg.next_peer_addrs_.push_back(
-            target_addrs.at(addr_filter_idx.channel_ids_.at(i))))) {
-          LOG_WARN("failed push back peer addr", K(i), K(ret));
+  } else {
+    while (*filter_idx_ <  filter_indexes_.count() && OB_SUCC(ret)) {
+      cur_idx = ATOMIC_FAA(filter_idx_, 1);
+      if (cur_idx < filter_indexes_.count()) {
+        msg.next_peer_addrs_.reuse();
+        const BloomFilterIndex &addr_filter_idx = filter_indexes_.at(cur_idx);
+        msg.bloom_filter_.set_begin_idx(addr_filter_idx.begin_idx_);
+        msg.bloom_filter_.set_end_idx(addr_filter_idx.end_idx_);
+        if (OB_FAIL(msg.next_peer_addrs_.init(addr_filter_idx.channel_ids_.count()))) {
+          LOG_WARN("fail to init next_peer_addrs_", K(ret));
         }
-      }
-      if (OB_FAIL(ret)) {
-      } else if (addr_filter_idx.channel_id_ >= target_addrs.count()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected channel id", K(addr_filter_idx.channel_id_), K(target_addrs.count()));
-      } else if (OB_FAIL(p2p_dh_proxy.to(target_addrs.at(addr_filter_idx.channel_id_))
-                 .by(tenant_id_)
-                 .timeout(timeout_ts_)
-                 .compressed(ObCompressorType::LZ4_COMPRESSOR)
-                 .send_p2p_dh_message(arg, &msg_cb))) {
-        LOG_WARN("fail to send bloom filter", K(ret));
+        for (int i = 0; OB_SUCC(ret) && i < addr_filter_idx.channel_ids_.count(); ++i) {
+          if (OB_FAIL(msg.next_peer_addrs_.push_back(
+              target_addrs.at(addr_filter_idx.channel_ids_.at(i))))) {
+            LOG_WARN("failed push back peer addr", K(i), K(ret));
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (addr_filter_idx.channel_id_ >= target_addrs.count()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected channel id", K(addr_filter_idx.channel_id_), K(target_addrs.count()));
+        } else if (OB_FAIL(p2p_dh_proxy.to(target_addrs.at(addr_filter_idx.channel_id_))
+                  .by(tenant_id_)
+                  .timeout(timeout_ts_)
+                  .compressed(ObCompressorType::LZ4_COMPRESSOR)
+                  .send_p2p_dh_message(arg, &msg_cb))) {
+          LOG_WARN("fail to send bloom filter", K(ret));
+        }
       }
     }
   }
@@ -779,7 +804,12 @@ int ObRFBloomFilterMsg::generate_filter_indexes(
   int64_t start_idx = 0, end_idx = 0;
   int64_t group_addr_cnt = each_group_size > addr_cnt ?
         addr_cnt : each_group_size;
+  lib::ObMemAttr attr(tenant_id_, "TmpBFIdxAlloc");
+  common::ObArenaAllocator tmp_allocator(attr);
   BloomFilterIndex filter_index;
+  ObSEArray<BloomFilterIndex *, 64> tmp_filter_indexes;
+  filter_index.channel_ids_.set_allocator(&tmp_allocator);
+  BloomFilterIndex *filter_index_ptr = nullptr;
   for (int i = 0; OB_SUCC(ret) && i < count; ++i) {
     start_idx = i * piece_size;
     end_idx = (i + 1) * piece_size;
@@ -806,12 +836,36 @@ int ObRFBloomFilterMsg::generate_filter_indexes(
       } else {
         filter_index.channel_id_ = (i % group_addr_cnt) + pos;
       }
+      if (OB_FAIL(filter_index.channel_ids_.init(min(addr_cnt, pos + group_addr_cnt) - pos + 1))) {
+        LOG_WARN("failed to init channel_ids_");
+      }
       for (int k = pos; OB_SUCC(ret) && k < addr_cnt && k < pos + group_addr_cnt; ++k) {
         OZ(filter_index.channel_ids_.push_back(k));
       }
-      OZ(filter_indexes_.push_back(filter_index));
+      if (OB_FAIL(ret)) {
+      } else if (OB_ISNULL(filter_index_ptr = OB_NEWx(BloomFilterIndex, &tmp_allocator))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to alloc BloomFilterIndex");
+      } else if (FALSE_IT(filter_index_ptr->channel_ids_.set_allocator(&tmp_allocator))) {
+      } else if (OB_FAIL(filter_index_ptr->assign(filter_index))) {
+        LOG_WARN("failed to assign");
+      } else if (OB_FAIL(tmp_filter_indexes.push_back(filter_index_ptr))) {
+        LOG_WARN("failed to push_back");
+      }
     }
   }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(filter_indexes_.prepare_allocate(tmp_filter_indexes.count()))) {
+    LOG_WARN("failed to prepare_allocate filter_indexes_");
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < tmp_filter_indexes.count(); ++i) {
+      filter_indexes_.at(i).channel_ids_.set_allocator(&allocator_);
+      if (OB_FAIL(filter_indexes_.at(i).assign(*tmp_filter_indexes.at(i)))) {
+        LOG_WARN("failed to assign filter_indexes", K(i));
+      }
+    }
+  }
+  filter_index.channel_ids_.destroy();
   return ret;
 }
 //end ObRFBloomFilterMsg
@@ -820,7 +874,7 @@ int ObRFBloomFilterMsg::generate_filter_indexes(
 ObRFRangeFilterMsg::ObRFRangeFilterMsg()
 : ObP2PDatahubMsgBase(), lower_bounds_(allocator_), upper_bounds_(allocator_),
   need_null_cmp_flags_(allocator_), cells_size_(allocator_),
-  null_first_cmp_funcs_(allocator_), null_last_cmp_funcs_(allocator_)
+  cmp_funcs_(allocator_)
 {
 }
 
@@ -831,11 +885,11 @@ int ObRFRangeFilterMsg::reuse()
   lower_bounds_.reset();
   upper_bounds_.reset();
   cells_size_.reset();
-  if (OB_FAIL(lower_bounds_.prepare_allocate(null_first_cmp_funcs_.count()))) {
+  if (OB_FAIL(lower_bounds_.prepare_allocate(cmp_funcs_.count()))) {
     LOG_WARN("fail to prepare allocate col cnt", K(ret));
-  } else if (OB_FAIL(upper_bounds_.prepare_allocate(null_first_cmp_funcs_.count()))) {
+  } else if (OB_FAIL(upper_bounds_.prepare_allocate(cmp_funcs_.count()))) {
     LOG_WARN("fail to prepare allocate col cnt", K(ret));
-  } else if (OB_FAIL(cells_size_.prepare_allocate(null_first_cmp_funcs_.count()))) {
+  } else if (OB_FAIL(cells_size_.prepare_allocate(cmp_funcs_.count()))) {
     LOG_WARN("fail to prepare allocate col cnt", K(ret));
   }
   return ret;
@@ -851,9 +905,7 @@ int ObRFRangeFilterMsg::assign(const ObP2PDatahubMsgBase &msg)
     LOG_WARN("fail to assign lower bounds", K(ret));
   } else if (OB_FAIL(upper_bounds_.assign(other_msg.upper_bounds_))) {
     LOG_WARN("fail to assign upper bounds", K(ret));
-  } else if (OB_FAIL(null_first_cmp_funcs_.assign(other_msg.null_first_cmp_funcs_))) {
-    LOG_WARN("failed to assign cmp funcs", K(ret));
-  } else if (OB_FAIL(null_last_cmp_funcs_.assign(other_msg.null_last_cmp_funcs_))) {
+  } else if (OB_FAIL(cmp_funcs_.assign(other_msg.cmp_funcs_))) {
     LOG_WARN("failed to assign cmp funcs", K(ret));
   } else if (OB_FAIL(need_null_cmp_flags_.assign(other_msg.need_null_cmp_flags_))) {
     LOG_WARN("failed to assign cmp flags", K(ret));
@@ -918,7 +970,7 @@ int ObRFRangeFilterMsg::get_min(ObIArray<ObDatum> &vals)
   int ret = OB_SUCCESS;
   for (int i = 0; i < vals.count() && OB_SUCC(ret); ++i) {
     // null value is also suitable
-    if (OB_FAIL(get_min(null_first_cmp_funcs_.at(i), lower_bounds_.at(i),
+    if (OB_FAIL(get_min(cmp_funcs_.at(i), lower_bounds_.at(i),
         vals.at(i), cells_size_.at(i).min_datum_buf_size_))) {
       LOG_WARN("fail to compare value", K(ret));
     }
@@ -930,8 +982,8 @@ int ObRFRangeFilterMsg::get_max(ObIArray<ObDatum> &vals)
 {
   int ret = OB_SUCCESS;
   for (int i = 0; i < vals.count() && OB_SUCC(ret); ++i) {
-     // null value is also suitable
-    if (OB_FAIL(get_max(null_last_cmp_funcs_.at(i), upper_bounds_.at(i),
+    // null value is also suitable
+    if (OB_FAIL(get_max(cmp_funcs_.at(i), upper_bounds_.at(i),
         vals.at(i), cells_size_.at(i).max_datum_buf_size_))) {
       LOG_WARN("fail to compare value", K(ret));
     }
@@ -943,7 +995,12 @@ int ObRFRangeFilterMsg::get_min(ObCmpFunc &func, ObDatum &l, ObDatum &r, int64_t
 {
   int ret = OB_SUCCESS;
   int cmp = 0;
-  if (is_empty_ || (OB_ISNULL(l.ptr_))) {
+  // when [null, null] merge [a, b], the expect result in mysql mode is [null, b]
+  // the lower bound l, with ptr==NULL and null_==true, should not be covered by a.
+  //
+  // the reason we remove the OB_ISNULL(l.ptr_) condition is that when l is a empty char with l.ptr=0x0 and
+  // l.len=0 and null_=false, it should not be corver by r directly
+  if (is_empty_) {
     if (OB_FAIL(dynamic_copy_cell(r, l, cell_size))) {
       LOG_WARN("fail to deep copy datum");
     }
@@ -1016,30 +1073,6 @@ int ObRFRangeFilterMsg::get_max(ObCmpFunc &func, ObDatum &l, ObDatum &r, int64_t
   return ret;
 }
 
-int ObRFRangeFilterMsg::might_contain(ObIArray<ObDatum> &vals, bool &is_match)
-{
-  int ret = OB_SUCCESS;
-  is_match = true;
-  int cmp_min = 0;
-  int cmp_max = 0;
-  for (int i = 0; i < vals.count() && OB_SUCC(ret); ++i) {
-    cmp_min = 0;
-    cmp_max = 0;
-    if (OB_FAIL(null_first_cmp_funcs_.at(i).cmp_func_(lower_bounds_.at(i), vals.at(i), cmp_min))) {
-      LOG_WARN("fail to compare value", K(ret));
-    } else if (cmp_min > 0) {
-      is_match = false;
-      break;
-    } else if (OB_FAIL(null_last_cmp_funcs_.at(i).cmp_func_(upper_bounds_.at(i), vals.at(i), cmp_max))) {
-      LOG_WARN("fail to compare value", K(ret));
-    } else if (cmp_max < 0) {
-      is_match = false;
-      break;
-    }
-  }
-  return ret;
-}
-
 int ObRFRangeFilterMsg::insert_by_row(
     const common::ObIArray<ObExpr *> &expr_array,
     const common::ObHashFuncs &hash_funcs,
@@ -1075,9 +1108,9 @@ int ObRFRangeFilterMsg::insert_by_row(
       } else if (datum->is_null() && !need_null_cmp_flags_.at(i)) {
         /*do nothing*/
         break;
-      } else if (OB_FAIL(get_min(null_last_cmp_funcs_.at(i), lower_bounds_.at(i), *datum, cells_size_.at(i).min_datum_buf_size_))) {
+      } else if (OB_FAIL(get_min(cmp_funcs_.at(i), lower_bounds_.at(i), *datum, cells_size_.at(i).min_datum_buf_size_))) {
         LOG_WARN("failed to compare value", K(ret));
-      } else if (OB_FAIL(get_max(null_first_cmp_funcs_.at(i), upper_bounds_.at(i), *datum, cells_size_.at(i).max_datum_buf_size_))) {
+      } else if (OB_FAIL(get_max(cmp_funcs_.at(i), upper_bounds_.at(i), *datum, cells_size_.at(i).max_datum_buf_size_))) {
         LOG_WARN("failed to compare value", K(ret));
       }
     }
@@ -1121,8 +1154,7 @@ int ObRFRangeFilterMsg::might_contain(const ObExpr &expr,
 {
   int ret = OB_SUCCESS;
   ObDatum *datum = nullptr;
-  ObCmpFunc cmp_func_null_last;
-  ObCmpFunc cmp_func_null_first;
+  ObCmpFunc cmp_func;
   int cmp_min = 0;
   int cmp_max = 0;
   bool is_match = true;
@@ -1135,27 +1167,19 @@ int ObRFRangeFilterMsg::might_contain(const ObExpr &expr,
       if (OB_FAIL(expr.args_[i]->eval(ctx, datum))) {
         LOG_WARN("failed to eval datum", K(ret));
       } else {
-        if (OB_ISNULL(expr.inner_functions_)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("expr.inner_functions_ is null", K(ret));
-        } else {
-          cmp_min = 0;
-          cmp_max = 0;
-          cmp_func_null_first.cmp_func_ = reinterpret_cast<ObDatumCmpFuncType>(
-              expr.inner_functions_[GET_FUNC(i, ObExprJoinFilter::NULL_FIRST_COMPARE)]);
-          cmp_func_null_last.cmp_func_ = reinterpret_cast<ObDatumCmpFuncType>(
-              expr.inner_functions_[GET_FUNC(i, ObExprJoinFilter::NULL_LAST_COMPARE)]);
-          if (OB_FAIL(cmp_func_null_first.cmp_func_(*datum, lower_bounds_.at(i), cmp_min))) {
-            LOG_WARN("fail to compare value", K(ret));
-          } else if (cmp_min < 0) {
-            is_match = false;
-            break;
-          } else if (OB_FAIL(cmp_func_null_last.cmp_func_(*datum, upper_bounds_.at(i), cmp_max))) {
-            LOG_WARN("fail to compare value", K(ret));
-          } else if (cmp_max > 0) {
-            is_match = false;
-            break;
-          }
+        cmp_min = 0;
+        cmp_max = 0;
+        cmp_func.cmp_func_ = filter_ctx.cmp_funcs_.at(i).cmp_func_;
+        if (OB_FAIL(cmp_func.cmp_func_(*datum, lower_bounds_.at(i), cmp_min))) {
+          LOG_WARN("fail to compare value", K(ret));
+        } else if (cmp_min < 0) {
+          is_match = false;
+          break;
+        } else if (OB_FAIL(cmp_func.cmp_func_(*datum, upper_bounds_.at(i), cmp_max))) {
+          LOG_WARN("fail to compare value", K(ret));
+        } else if (cmp_max > 0) {
+          is_match = false;
+          break;
         }
       }
     }
@@ -1167,6 +1191,61 @@ int ObRFRangeFilterMsg::might_contain(const ObExpr &expr,
       res.set_int(is_match ? 1 : 0);
       ObExprJoinFilter::collect_sample_info(&filter_ctx, is_match);
     }
+  }
+  return ret;
+}
+
+int ObRFRangeFilterMsg::do_might_contain_batch(const ObExpr &expr,
+    ObEvalCtx &ctx,
+    const ObBitVector &skip,
+    const int64_t batch_size,
+    ObExprJoinFilter::ObExprJoinFilterContext &filter_ctx) {
+  int ret = OB_SUCCESS;
+  int64_t filter_count = 0;
+  int64_t total_count = 0;
+  ObDatum *results = expr.locate_batch_datums(ctx);
+  for (int idx = 0; OB_SUCC(ret) && idx < expr.arg_cnt_; ++idx) {
+    if (OB_FAIL(expr.args_[idx]->eval_batch(ctx, skip, batch_size))) {
+      LOG_WARN("eval failed", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    int cmp_min = 0;
+    int cmp_max = 0;
+    ObDatum *datum = nullptr;
+    bool is_match = true;
+    for (int64_t batch_i = 0; OB_SUCC(ret) && batch_i < batch_size; ++batch_i) {
+      if (skip.at(batch_i)) {
+        continue;
+      }
+      cmp_min = 0;
+      cmp_max = 0;
+      is_match = true;
+      total_count++;
+      for (int arg_i = 0; OB_SUCC(ret) && arg_i < expr.arg_cnt_; ++arg_i) {
+        datum = &expr.args_[arg_i]->locate_expr_datum(ctx, batch_i);
+        if (OB_FAIL(filter_ctx.cmp_funcs_.at(arg_i).cmp_func_(*datum, lower_bounds_.at(arg_i), cmp_min))) {
+          LOG_WARN("fail to compare value", K(ret));
+        } else if (cmp_min < 0) {
+          filter_count++;
+          is_match = false;
+          break;
+        } else if (OB_FAIL(filter_ctx.cmp_funcs_.at(arg_i).cmp_func_(*datum, upper_bounds_.at(arg_i), cmp_max))) {
+          LOG_WARN("fail to compare value", K(ret));
+        } else if (cmp_max > 0) {
+          filter_count++;
+          is_match = false;
+          break;
+        }
+      }
+      results[batch_i].set_int(is_match ? 1 : 0);
+    }
+  }
+  if (OB_SUCC(ret)) {
+    filter_ctx.filter_count_ += filter_count;
+    filter_ctx.total_count_ += total_count;
+    filter_ctx.check_count_ += total_count;
+    ObExprJoinFilter::collect_sample_info_batch(filter_ctx, filter_count, total_count);
   }
   return ret;
 }
@@ -1183,25 +1262,15 @@ int ObRFRangeFilterMsg::might_contain_batch(
   ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
   ObEvalCtx::BatchInfoScopeGuard batch_info_guard(ctx);
   batch_info_guard.set_batch_size(batch_size);
-  for (int64_t i = 0; OB_SUCC(ret) && i < batch_size; ++i) {
-    if (skip.at(i)) {
-      continue;
-    } else if (OB_UNLIKELY(is_empty_)) {
+  if (OB_UNLIKELY(is_empty_)) {
+    for (int64_t i = 0; i < batch_size; i++) {
       results[i].set_int(0);
-      eval_flags.set(i);
-      ++filter_ctx.filter_count_;
-      ++filter_ctx.check_count_;
-      ++filter_ctx.total_count_;
-    } else {
-      batch_info_guard.set_batch_idx(i);
-      ObDatum &result = results[i];
-      if (OB_FAIL(might_contain(expr, ctx, filter_ctx, result))) {
-        LOG_WARN("fail to check expr value", K(ret));
-      } else {
-        ++filter_ctx.total_count_;
-        eval_flags.set(i);
-      }
     }
+  } else if (OB_FAIL(do_might_contain_batch(expr, ctx, skip, batch_size, filter_ctx))) {
+    LOG_WARN("failed to do_might_contain_batch");
+  }
+  if (OB_SUCC(ret)) {
+    eval_flags.set_all(batch_size);
   }
   return ret;
 }
@@ -1217,7 +1286,7 @@ int ObRFInFilterMsg::assign(const ObP2PDatahubMsgBase &msg)
     LOG_WARN("failed to assign base data", K(ret));
   } else if (OB_FAIL(cmp_funcs_.assign(other_msg.cmp_funcs_))) {
     LOG_WARN("fail to assign bf msg", K(ret));
-  } else if (OB_FAIL(hash_funcs_.assign(other_msg.hash_funcs_))) {
+  } else if (OB_FAIL(hash_funcs_for_insert_.assign(other_msg.hash_funcs_for_insert_))) {
     LOG_WARN("fail to assign bf msg", K(ret));
   } else if (OB_FAIL(cur_row_.assign(other_msg.cur_row_))) {
     LOG_WARN("failed to assign filter indexes", K(ret));
@@ -1311,7 +1380,7 @@ int ObRFInFilterMsg::insert_by_row_batch(
 int ObRFInFilterMsg::insert_node()
 {
   int ret = OB_SUCCESS;
-  ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_, &cur_row_);
+  ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_for_insert_, &cur_row_);
   if (OB_FAIL(rows_set_.exist_refactored(node))) {
     if (OB_HASH_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
@@ -1387,7 +1456,7 @@ int ObRFInFilterMsg::append_row()
         if (OB_FAIL(serial_rows_.push_back(new_row))) {
           LOG_WARN("fail to push back serial rows", K(ret));
         } else {
-          ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_, new_row);
+          ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_for_insert_, new_row);
           if (OB_FAIL(rows_set_.set_refactored(node))) {
             LOG_WARN("fail to insert in filter node", K(ret));
           }
@@ -1401,12 +1470,17 @@ int ObRFInFilterMsg::append_row()
 int ObRFInFilterMsg::ObRFInFilterNode::hash(uint64_t &hash_ret) const
 {
   int ret = OB_SUCCESS;
-  hash_ret = 0;
-  for (int i = 0; i < row_->count() && OB_SUCC(ret); ++i) {
-    if (OB_FAIL(hash_funcs_->at(i).hash_func_(row_->at(i), hash_ret, hash_ret))) {
-      LOG_WARN("fail to calc hash value", K(ret), K(hash_ret));
+  if (OB_ISNULL(hash_funcs_)) {
+    hash_ret = hash_val_;
+  } else {
+    hash_ret = ObExprJoinFilter::JOIN_FILTER_SEED;
+    for (int i = 0; i < row_->count() && OB_SUCC(ret); ++i) {
+      if (OB_FAIL(hash_funcs_->at(i).hash_func_(row_->at(i), hash_ret, hash_ret))) {
+        LOG_WARN("fail to calc hash value", K(ret), K(hash_ret));
+      }
     }
   }
+
   return ret;
 }
 
@@ -1456,7 +1530,9 @@ int ObRFInFilterMsg::might_contain(const ObExpr &expr,
   int ret = OB_SUCCESS;
   ObDatum *datum = nullptr;
   bool is_match = true;
-  ObSEArray<ObDatum, 4> cur_row;
+  uint64_t hash_val = ObExprJoinFilter::JOIN_FILTER_SEED;
+  ObIArray<ObDatum> &cur_row = filter_ctx.cur_row_;
+  cur_row.reuse();
   if (OB_UNLIKELY(!is_active_)) {
     res.set_int(1);
   } else if (OB_UNLIKELY(is_empty_)) {
@@ -1468,16 +1544,19 @@ int ObRFInFilterMsg::might_contain(const ObExpr &expr,
       if (OB_FAIL(expr.args_[i]->eval(ctx, datum))) {
         LOG_WARN("failed to eval datum", K(ret));
       } else {
-        if (OB_ISNULL(expr.inner_functions_)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("expr.inner_functions_ is null", K(ret));
-        } else if (OB_FAIL(cur_row.push_back(*datum))) {
+        if (OB_FAIL(cur_row.push_back(*datum))) {
           LOG_WARN("failed to push back datum", K(ret));
+        } else {
+          ObHashFunc hash_func;
+          hash_func.hash_func_ = filter_ctx.hash_funcs_.at(i).hash_func_;
+          if (OB_FAIL(hash_func.hash_func_(*datum, hash_val, hash_val))) {
+            LOG_WARN("fail to calc hash val", K(ret));
+          }
         }
       }
     }
     if (OB_SUCC(ret)) {
-      ObRFInFilterNode node(&cmp_funcs_, &hash_funcs_, &cur_row);
+      ObRFInFilterNode node(&filter_ctx.cmp_funcs_, nullptr, &cur_row, hash_val);
       if (OB_FAIL(rows_set_.exist_refactored(node))) {
         if (OB_HASH_NOT_EXIST == ret) {
           is_match = false;
@@ -1511,6 +1590,77 @@ int ObRFInFilterMsg::reuse()
   return ret;
 }
 
+void ObRFInFilterMsg::check_finish_receive()
+{
+  if (ATOMIC_LOAD(&is_active_)) {
+    if (msg_receive_expect_cnt_ == ATOMIC_LOAD(&msg_receive_cur_cnt_)) {
+      is_ready_ = true;
+    }
+  }
+}
+
+int ObRFInFilterMsg::do_might_contain_batch(const ObExpr &expr,
+    ObEvalCtx &ctx,
+    const ObBitVector &skip,
+    const int64_t batch_size,
+    ObExprJoinFilter::ObExprJoinFilterContext &filter_ctx) {
+  int ret = OB_SUCCESS;
+  int64_t filter_count = 0;
+  int64_t total_count = 0;
+  uint64_t *right_hash_vals = reinterpret_cast<uint64_t *>(
+                                ctx.frames_[expr.frame_idx_] + expr.res_buf_off_);
+  uint64_t seed = ObExprJoinFilter::JOIN_FILTER_SEED;
+  for (int idx = 0; OB_SUCC(ret) && idx < expr.arg_cnt_; ++idx) {
+    if (OB_FAIL(expr.args_[idx]->eval_batch(ctx, skip, batch_size))) {
+      LOG_WARN("eval failed", K(ret));
+    } else {
+      const bool is_batch_seed = (idx > 0);
+      ObBatchDatumHashFunc hash_func = filter_ctx.hash_funcs_.at(idx).batch_hash_func_;
+      hash_func(right_hash_vals,
+                expr.args_[idx]->locate_batch_datums(ctx), expr.args_[idx]->is_batch_result(),
+                skip, batch_size,
+                is_batch_seed ? right_hash_vals : &seed,
+                is_batch_seed);
+    }
+  }
+  ObIArray<ObDatum> &cur_row = filter_ctx.cur_row_;
+  ObRFInFilterNode node(&filter_ctx.cmp_funcs_, nullptr, &cur_row, 0);
+  ObDatum *res_datums = expr.locate_batch_datums(ctx);
+  for (int64_t batch_i = 0; OB_SUCC(ret) && batch_i < batch_size; ++batch_i) {
+    if (skip.at(batch_i)) {
+      continue;
+    }
+    cur_row.reuse();
+    total_count++;
+    node.hash_val_ = right_hash_vals[batch_i];
+    for (int64_t arg_i = 0; OB_SUCC(ret) && arg_i < expr.arg_cnt_; ++arg_i) {
+      if (OB_FAIL(cur_row.push_back(expr.args_[arg_i]->locate_expr_datum(ctx, batch_i)))) {
+        LOG_WARN("failed to push back datum", K(ret));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(rows_set_.exist_refactored(node))) {
+      if (OB_HASH_NOT_EXIST == ret) {
+        res_datums[batch_i].set_int(0);
+        filter_count++;
+        ret = OB_SUCCESS;
+      } else if (OB_HASH_EXIST == ret) {
+        res_datums[batch_i].set_int(1);
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("fail to check node", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    filter_ctx.filter_count_ += filter_count;
+    filter_ctx.total_count_ += total_count;
+    filter_ctx.check_count_ += total_count;
+    ObExprJoinFilter::collect_sample_info_batch(filter_ctx, filter_count, total_count);
+  }
+  return ret;
+}
+
 int ObRFInFilterMsg::might_contain_batch(
     const ObExpr &expr,
     ObEvalCtx &ctx,
@@ -1523,28 +1673,19 @@ int ObRFInFilterMsg::might_contain_batch(
   ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
   ObEvalCtx::BatchInfoScopeGuard batch_info_guard(ctx);
   batch_info_guard.set_batch_size(batch_size);
-  for (int64_t i = 0; OB_SUCC(ret) && i < batch_size; ++i) {
-    if (skip.at(i)) {
-      continue;
-    } else if (OB_UNLIKELY(!is_active_)) {
-      eval_flags.set(i);
+  if (!is_active_) {
+    for (int64_t i = 0; i < batch_size; i++) {
       results[i].set_int(1);
-    } else if (OB_UNLIKELY(is_empty_)) {
-      eval_flags.set(i);
-      results[i].set_int(0);
-      ++filter_ctx.filter_count_;
-      ++filter_ctx.check_count_;
-      ++filter_ctx.total_count_;
-    } else {
-      batch_info_guard.set_batch_idx(i);
-      ObDatum *result = &results[i];
-      if (OB_FAIL(might_contain(expr, ctx, filter_ctx, *result))) {
-        LOG_WARN("fail to check expr value", K(ret));
-      } else {
-        ++filter_ctx.total_count_;
-        eval_flags.set(i);
-      }
     }
+  } else if (OB_UNLIKELY(is_empty_)) {
+    for (int64_t i = 0; i < batch_size; i++) {
+      results[i].set_int(0);
+    }
+  } else if (OB_FAIL(do_might_contain_batch(expr, ctx, skip, batch_size, filter_ctx))) {
+    LOG_WARN("failed to do_might_contain_batch");
+  }
+  if (OB_SUCC(ret)) {
+    eval_flags.set_all(batch_size);
   }
   return ret;
 }
@@ -1553,7 +1694,7 @@ int ObRFInFilterMsg::destroy()
 {
   int ret = OB_SUCCESS;
   rows_set_.destroy();
-  hash_funcs_.reset();
+  hash_funcs_for_insert_.reset();
   cmp_funcs_.reset();
   need_null_cmp_flags_.reset();
   cur_row_.reset();

@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -16,6 +24,9 @@
 #include "observer/table_load/ob_table_load_trans_store.h"
 #include "observer/table_load/ob_table_load_utils.h"
 #include "storage/direct_load/ob_direct_load_insert_table_ctx.h"
+#include "share/stat/ob_opt_stat_monitor_manager.h"
+#include "share/stat/ob_dbms_stats_utils.h"
+#include "storage/blocksstable/ob_sstable.h"
 
 namespace oceanbase
 {
@@ -275,7 +286,7 @@ int ObTableLoadStore::start_merge()
   return ret;
 }
 
-int ObTableLoadStore::commit(ObTableLoadResultInfo &result_info, ObTableLoadSqlStatistics &sql_statistics)
+int ObTableLoadStore::commit(ObTableLoadResultInfo &result_info)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -283,8 +294,10 @@ int ObTableLoadStore::commit(ObTableLoadResultInfo &result_info, ObTableLoadSqlS
     LOG_WARN("ObTableLoadStore not init", KR(ret), KP(this));
   } else {
     LOG_INFO("store commit");
-    obsys::ObWLockGuard guard(store_ctx_->get_status_lock());
-    if (OB_FAIL(store_ctx_->check_status_unlock(ObTableLoadStatusType::MERGED))) {
+    ObMutexGuard guard(store_ctx_->get_op_lock());
+    ObTableLoadDmlStat dml_stats;
+    ObTableLoadSqlStatistics sql_statistics;
+    if (OB_FAIL(store_ctx_->check_status(ObTableLoadStatusType::MERGED))) {
       LOG_WARN("fail to check store status", KR(ret));
     } else if (OB_FAIL(store_ctx_->insert_table_ctx_->commit())) {
       LOG_WARN("fail to commit insert table", KR(ret));
@@ -293,11 +306,46 @@ int ObTableLoadStore::commit(ObTableLoadResultInfo &result_info, ObTableLoadSqlS
     } else if (param_.online_opt_stat_gather_ &&
                OB_FAIL(store_ctx_->merger_->collect_sql_statistics(sql_statistics))) {
       LOG_WARN("fail to collect sql stats", KR(ret));
-    } else if (OB_FAIL(store_ctx_->set_status_commit_unlock())) {
+    } else if (param_.online_opt_stat_gather_ &&
+               OB_FAIL(commit_sql_statistics(sql_statistics))) {
+      LOG_WARN("fail to commit sql stats", KR(ret));
+    } else if (OB_FAIL(store_ctx_->merger_->collect_dml_stat(dml_stats))) {
+      LOG_WARN("fail to build dml stat", KR(ret));
+    } else if (OB_FAIL(ObOptStatMonitorManager::update_dml_stat_info_from_direct_load(dml_stats.dml_stat_array_))) {
+      LOG_WARN("fail to update dml stat info", KR(ret));
+    } else if (OB_FAIL(store_ctx_->set_status_commit())) {
       LOG_WARN("fail to set store status commit", KR(ret));
     } else {
       result_info = store_ctx_->result_info_;
     }
+  }
+  return ret;
+}
+
+int ObTableLoadStore::commit_sql_statistics(const ObTableLoadSqlStatistics &sql_statistics)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = MTL_ID();
+  const uint64_t table_id = param_.table_id_;
+  ObSchemaGetterGuard schema_guard;
+  const ObTableSchema *table_schema = nullptr;
+  ObSEArray<ObOptColumnStat *, 64> part_column_stats;
+  ObSEArray<ObOptTableStat *, 64> part_table_stats;
+  if (sql_statistics.is_empty()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sql statistics is empty", K(ret));
+  } else if (OB_FAIL(ObTableLoadSchema::get_table_schema(tenant_id, table_id, schema_guard,
+                                                         table_schema))) {
+    LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(table_id));
+  } else if (OB_FAIL(sql_statistics.get_col_stat_array(part_column_stats))) {
+    LOG_WARN("failed to get column stat array");
+  } else if (OB_FAIL(sql_statistics.get_table_stat_array(part_table_stats))) {
+    LOG_WARN("failed to get table stat array");
+  } else if (OB_FAIL(ObDbmsStatsUtils::split_batch_write(
+               &schema_guard, store_ctx_->ctx_->session_info_, GCTX.sql_proxy_, part_table_stats,
+               part_column_stats))) {
+    LOG_WARN("failed to batch write stats", K(ret), K(sql_statistics.table_stat_array_),
+             K(sql_statistics.col_stat_array_));
   }
   return ret;
 }
@@ -310,8 +358,7 @@ int ObTableLoadStore::get_status(ObTableLoadStatusType &status, int &error_code)
     LOG_WARN("ObTableLoadStore not init", KR(ret), KP(this));
   } else {
     LOG_INFO("store get status");
-    status = store_ctx_->get_status();
-    error_code = store_ctx_->get_error_code();
+    store_ctx_->get_status(status, error_code);
   }
   return ret;
 }
@@ -550,8 +597,7 @@ int ObTableLoadStore::get_trans_status(const ObTableLoadTransId &trans_id,
     if (OB_FAIL(store_ctx_->get_trans_ctx(trans_id, trans_ctx))) {
       LOG_WARN("fail to get trans ctx", KR(ret), K(trans_id));
     } else {
-      trans_status = trans_ctx->get_trans_status();
-      error_code = trans_ctx->get_error_code();
+      trans_ctx->get_trans_status(trans_status, error_code);
     }
   }
   return ret;
@@ -592,7 +638,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(store_write_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, store_write_time_us);
     int ret = OB_SUCCESS;
     if (OB_SUCC(trans_->check_trans_status(ObTableLoadTransStatusType::RUNNING)) ||
         OB_SUCC(trans_->check_trans_status(ObTableLoadTransStatusType::FROZEN))) {
@@ -739,7 +785,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(store_flush_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, store_flush_time_us);
     int ret = OB_SUCCESS;
     if (OB_SUCC(trans_->check_trans_status(ObTableLoadTransStatusType::FROZEN))) {
       if (OB_FAIL(store_writer_->flush(session_id_))) {

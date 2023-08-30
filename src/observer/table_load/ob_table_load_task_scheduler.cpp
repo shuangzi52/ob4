@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -48,9 +56,10 @@ void ObTableLoadTaskThreadPoolScheduler::MyThreadPool::run1()
 }
 
 ObTableLoadTaskThreadPoolScheduler::ObTableLoadTaskThreadPoolScheduler(int64_t thread_count,
-                                                                       ObIAllocator &allocator,
+                                                                       uint64_t table_id,
+                                                                       const char *label,
                                                                        int64_t session_queue_size)
-  : allocator_(allocator),
+  : allocator_("TLD_ThreadPool"),
     thread_count_(thread_count),
     session_queue_size_(session_queue_size),
     timeout_ts_(INT64_MAX),
@@ -59,6 +68,7 @@ ObTableLoadTaskThreadPoolScheduler::ObTableLoadTaskThreadPoolScheduler(int64_t t
     state_(STATE_ZERO),
     is_inited_(false)
 {
+  snprintf(name_, OB_THREAD_NAME_BUF_LEN, "TLD_%03ld_%s", table_id % 1000, label);
 }
 
 ObTableLoadTaskThreadPoolScheduler::~ObTableLoadTaskThreadPoolScheduler()
@@ -101,9 +111,8 @@ int ObTableLoadTaskThreadPoolScheduler::init()
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObTableLoadTaskThreadPoolScheduler init twice", KR(ret), KP(this));
-  } else if (OB_FAIL(init_worker_ctx_array())) {
-    LOG_WARN("fail to init worker ctx array", KR(ret));
   } else {
+    allocator_.set_tenant_id(MTL_ID());
     thread_pool_.set_thread_count(thread_count_);
     thread_pool_.set_run_wrapper(MTL_CTX());
     ObCurTraceId::TraceId *cur_trace_id = ObCurTraceId::get_trace_id();
@@ -115,7 +124,11 @@ int ObTableLoadTaskThreadPoolScheduler::init()
       trace_id_.init(zero_addr);
     }
     timeout_ts_ = THIS_WORKER.get_timeout_ts();
-    is_inited_ = true;
+    if (OB_FAIL(init_worker_ctx_array())) {
+      LOG_WARN("fail to init worker ctx array", KR(ret));
+    } else {
+      is_inited_ = true;
+    }
   }
   return ret;
 }
@@ -203,7 +216,8 @@ void ObTableLoadTaskThreadPoolScheduler::after_running()
 void ObTableLoadTaskThreadPoolScheduler::run(uint64_t thread_idx)
 {
   int ret = OB_SUCCESS;
-
+  // set thread name
+  lib::set_thread_name(name_);
   // set trace id
   ObCurTraceId::set(trace_id_);
   // set worker timeout
@@ -263,7 +277,7 @@ int ObTableLoadTaskThreadPoolScheduler::add_task(int64_t thread_idx, ObTableLoad
     if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, DEFAULT_TIMEOUT_US))) {
       LOG_WARN("fail to set default timeout ctx", KR(ret));
     } else {
-      OB_TABLE_LOAD_STATISTICS_TIME_COST(add_task_time_us);
+      OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, add_task_time_us);
       WorkerContext &worker_ctx = worker_ctx_array_[thread_idx];
       // LOG_WARN("table load add task begin", KP(this), K(thread_idx), "size", worker_ctx.task_queue_.size());
       if (OB_FAIL(worker_ctx.task_queue_.push(task, ctx.get_timeout()))) {

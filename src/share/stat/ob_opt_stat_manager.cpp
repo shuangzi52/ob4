@@ -91,6 +91,21 @@ int ObOptStatManager::init(ObMySQLProxy *proxy,
   return ret;
 }
 
+void ObOptStatManager::stop()
+{
+  refresh_stat_task_queue_.stop();
+}
+
+void ObOptStatManager::wait()
+{
+  refresh_stat_task_queue_.wait();
+}
+
+void ObOptStatManager::destroy()
+{
+  refresh_stat_task_queue_.destroy();
+}
+
 int ObOptStatManager::add_refresh_stat_task(const obrpc::ObUpdateStatCacheArg &analyze_arg)
 {
   int ret = OB_SUCCESS;
@@ -224,6 +239,7 @@ int ObOptStatManager::get_table_stat(const uint64_t tenant_id,
 
 int ObOptStatManager::update_column_stat(share::schema::ObSchemaGetterGuard *schema_guard,
                                          const uint64_t tenant_id,
+                                         ObMySQLTransaction &trans,
                                          const ObIArray<ObOptColumnStat *> &column_stats,
                                          bool only_update_col_stat /*default false*/,
                                          const ObObjPrintParams &print_params)
@@ -235,6 +251,7 @@ int ObOptStatManager::update_column_stat(share::schema::ObSchemaGetterGuard *sch
     LOG_WARN("optimizer statistics manager has not been initialized.", K(ret));
   } else if (OB_FAIL(stat_service_.get_sql_service().update_column_stat(schema_guard,
                                                                         tenant_id,
+                                                                        trans,
                                                                         column_stats,
                                                                         current_time,
                                                                         only_update_col_stat,
@@ -262,6 +279,7 @@ int ObOptStatManager::update_table_stat(const uint64_t tenant_id,
 }
 
 int ObOptStatManager::update_table_stat(const uint64_t tenant_id,
+                                        ObMySQLTransaction &trans,
                                         const ObIArray<ObOptTableStat*> &table_stats,
                                         const bool is_index_stat)
 {
@@ -271,6 +289,7 @@ int ObOptStatManager::update_table_stat(const uint64_t tenant_id,
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
   } else if (OB_FAIL(stat_service_.get_sql_service().update_table_stat(tenant_id,
+                                                                       trans,
                                                                        table_stats,
                                                                        current_time,
                                                                        is_index_stat))) {
@@ -356,6 +375,7 @@ int ObOptStatManager::erase_table_stat(const ObOptTableStat::Key &key)
 
 int ObOptStatManager::batch_write(share::schema::ObSchemaGetterGuard *schema_guard,
                                   const uint64_t tenant_id,
+                                  ObMySQLTransaction &trans,
                                   ObIArray<ObOptTableStat *> &table_stats,
                                   ObIArray<ObOptColumnStat *> &column_stats,
                                   const int64_t current_time,
@@ -370,6 +390,7 @@ int ObOptStatManager::batch_write(share::schema::ObSchemaGetterGuard *schema_gua
   } else if (!table_stats.empty() &&
              OB_FAIL(stat_service_.get_sql_service().update_table_stat(
                                                     tenant_id,
+                                                    trans,
                                                     table_stats,
                                                     current_time,
                                                     is_index_stat,
@@ -378,6 +399,7 @@ int ObOptStatManager::batch_write(share::schema::ObSchemaGetterGuard *schema_gua
   } else if (!column_stats.empty() &&
              OB_FAIL(stat_service_.get_sql_service().update_column_stat(schema_guard,
                                                                         tenant_id,
+                                                                        trans,
                                                                         column_stats,
                                                                         current_time,
                                                                         false,

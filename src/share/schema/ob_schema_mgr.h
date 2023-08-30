@@ -256,9 +256,10 @@ public:
                K_(schema_version),
                K_(tablegroup_name),
                K_(partition_status),
-               K_(partition_schema_version));
+               K_(partition_schema_version),
+               K_(sharding));
   virtual void reset();
-  inline bool is_valid() const;
+  bool is_valid() const;
   inline int64_t get_convert_size() const;
   inline void set_tenant_id(const uint64_t tenant_id) { tenant_id_ = tenant_id; }
   inline uint64_t get_tenant_id() const { return tenant_id_; }
@@ -270,6 +271,9 @@ public:
   { return deep_copy_str(tablegroup_name, tablegroup_name_); }
   inline const char *get_tablegroup_name_str() const { return extract_str(tablegroup_name_); }
   inline const common::ObString &get_tablegroup_name() const { return tablegroup_name_; }
+  inline int set_sharding(const common::ObString &sharding)
+  { return deep_copy_str(sharding, sharding_); }
+  inline const common::ObString &get_sharding() const { return sharding_; }
   inline ObTenantTablegroupId get_tenant_tablegroup_id() const
   { return ObTenantTablegroupId(tenant_id_, tablegroup_id_); }
 
@@ -286,6 +290,10 @@ public:
   bool is_in_splitting() const { return  partition_status_ == PARTITION_STATUS_LOGICAL_SPLITTING
                                          || partition_status_ == PARTITION_STATUS_PHYSICAL_SPLITTING; }
   bool has_self_partition() const { return false; }
+
+  bool is_sharding_none() const { return sharding_ == OB_PARTITION_SHARDING_NONE; }
+  bool is_sharding_partition() const { return sharding_ == OB_PARTITION_SHARDING_PARTITION; }
+  bool is_sharding_adaptive() const { return sharding_ == OB_PARTITION_SHARDING_ADAPTIVE; }
 private:
   uint64_t tenant_id_;
   uint64_t tablegroup_id_;
@@ -293,6 +301,7 @@ private:
   common::ObString tablegroup_name_;
   ObPartitionStatus partition_status_;
   int64_t partition_schema_version_;
+  common::ObString sharding_;
 };
 
 template<class K, class V>
@@ -489,16 +498,16 @@ typedef TableInfos::iterator TableIterator;
 typedef TableInfos::const_iterator ConstTableIterator;
 typedef DropTenantInfos::iterator DropTenantInfoIterator;
 typedef DropTenantInfos::const_iterator ConstDropTenantInfoIterator;
-typedef common::hash::ObPointerHashMap<ObDatabaseSchemaHashWrapper, ObSimpleDatabaseSchema *, GetTableKeyV2> DatabaseNameMap;
-typedef common::hash::ObPointerHashMap<uint64_t, ObSimpleTableSchemaV2 *, GetTableKeyV2> TableIdMap;
-typedef common::hash::ObPointerHashMap<uint64_t, ObSimpleDatabaseSchema *, GetTableKeyV2> DatabaseIdMap;
-typedef common::hash::ObPointerHashMap<ObTableSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2> TableNameMap;
-typedef common::hash::ObPointerHashMap<ObIndexSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2> IndexNameMap;
-typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2> AuxVPNameMap;
-typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2> LobMetaNameMap;
-typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2> LobPieceNameMap;
-typedef common::hash::ObPointerHashMap<ObForeignKeyInfoHashWrapper, ObSimpleForeignKeyInfo *, GetTableKeyV2> ForeignKeyNameMap;
-typedef common::hash::ObPointerHashMap<ObConstraintInfoHashWrapper, ObSimpleConstraintInfo *, GetTableKeyV2> ConstraintNameMap;
+typedef common::hash::ObPointerHashMap<ObDatabaseSchemaHashWrapper, ObSimpleDatabaseSchema *, GetTableKeyV2, 128> DatabaseNameMap;
+typedef common::hash::ObPointerHashMap<uint64_t, ObSimpleTableSchemaV2 *, GetTableKeyV2, 1024> TableIdMap;
+typedef common::hash::ObPointerHashMap<uint64_t, ObSimpleDatabaseSchema *, GetTableKeyV2, 128> DatabaseIdMap;
+typedef common::hash::ObPointerHashMap<ObTableSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2, 1024> TableNameMap;
+typedef common::hash::ObPointerHashMap<ObIndexSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2, 1024> IndexNameMap;
+typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2, 128> AuxVPNameMap;
+typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2, 128> LobMetaNameMap;
+typedef common::hash::ObPointerHashMap<ObAuxVPSchemaHashWrapper, ObSimpleTableSchemaV2 *, GetTableKeyV2, 128> LobPieceNameMap;
+typedef common::hash::ObPointerHashMap<ObForeignKeyInfoHashWrapper, ObSimpleForeignKeyInfo *, GetTableKeyV2, 128> ForeignKeyNameMap;
+typedef common::hash::ObPointerHashMap<ObConstraintInfoHashWrapper, ObSimpleConstraintInfo *, GetTableKeyV2, 128> ConstraintNameMap;
 public:
   ObSchemaMgr();
   explicit ObSchemaMgr(common::ObIAllocator &allocator);
@@ -566,9 +575,11 @@ public:
   int get_tablegroup_ids_in_tenant(const uint64_t tenant_id,
                                    common::ObIArray<uint64_t> &tablegroup_id_array);
   // table
-  int add_tables(const common::ObIArray<ObSimpleTableSchemaV2> &table_schemas);
+  int add_tables(const common::ObIArray<ObSimpleTableSchemaV2 *> &table_schemas,
+                 const bool refresh_full_schema = false);
   int del_tables(const common::ObIArray<ObTenantTableId> &tables);
-  int add_table(const ObSimpleTableSchemaV2 &table_schema);
+  int add_table(const ObSimpleTableSchemaV2 &table_schema,
+                common::ObArrayWrap<int64_t> *cost_array = NULL);
   int del_table(const ObTenantTableId table);
   int remove_aux_table(const ObSimpleTableSchemaV2 &schema_to_del);
   int get_table_schema(const uint64_t tenant_id,
@@ -761,6 +772,10 @@ public:
       const uint64_t tenant_id,
       common::ObIArray<const ObSimpleTableSchemaV2 *> &schema_array) const;
   #undef GET_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DECLARE
+  int get_primary_table_schema_in_tablegroup(
+      const uint64_t tenant_id,
+      const uint64_t tablegroup_id,
+      const ObSimpleTableSchemaV2 *&primary_table_schema) const;
   int check_database_exists_in_tablegroup(
       const uint64_t tenant_id,
       const uint64_t tablegroup_id,
@@ -880,6 +895,9 @@ private:
   int get_database_statistics(ObSchemaStatisticsInfo &schema_info) const;
   int get_tablegroup_statistics(ObSchemaStatisticsInfo &schema_info) const;
   int get_table_statistics(ObSchemaStatisticsInfo &schema_info) const;
+
+  int reserved_mem_for_tables_(
+      const common::ObIArray<share::schema::ObSimpleTableSchemaV2*> &table_schemas);
 private:
   common::ObArenaAllocator local_allocator_;
   common::ObIAllocator &allocator_;

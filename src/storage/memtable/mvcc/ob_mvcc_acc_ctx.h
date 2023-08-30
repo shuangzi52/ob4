@@ -17,6 +17,7 @@
 #include "storage/tx/ob_trans_define.h"
 #include "lib/oblog/ob_log.h"
 #include "lib/oblog/ob_log_module.h"
+#include "storage/tx_table/ob_tx_table_guards.h"
 #include "storage/memtable/ob_concurrent_control.h"
 #include "storage/tx_table/ob_tx_table_interface.h"
 
@@ -28,6 +29,8 @@ class ObPartTransCtx;
 
 namespace storage {
 class ObTxTable;
+class ObTxTableGuard;
+class ObTxTableGuards;
 }
 
 namespace memtable
@@ -43,14 +46,15 @@ public:
       abs_lock_timeout_(-1),
       tx_lock_timeout_(-1),
       snapshot_(),
-      tx_table_guard_(),
+      tx_table_guards_(),
       tx_id_(),
       tx_desc_(NULL),
       tx_ctx_(NULL),
       mem_ctx_(NULL),
-      tx_scn_(-1),
+      tx_scn_(),
       write_flag_(),
       handle_start_time_(OB_INVALID_TIMESTAMP),
+      is_standby_read_(false),
       lock_wait_start_ts_(0)
   {}
   ~ObMvccAccessCtx() {
@@ -61,9 +65,10 @@ public:
     tx_desc_ = NULL;
     tx_ctx_ = NULL;
     mem_ctx_ = NULL;
-    tx_scn_ = -1;
+    tx_scn_.reset();
     write_flag_.reset();
     handle_start_time_ = OB_INVALID_TIMESTAMP;
+    is_standby_read_ = false;
   }
   void reset() {
     if (is_write() && OB_UNLIKELY(tx_ctx_)) {
@@ -73,14 +78,15 @@ public:
     abs_lock_timeout_ = -1;
     tx_lock_timeout_ = -1;
     snapshot_.reset();
-    tx_table_guard_.reset();
+    tx_table_guards_.reset();
     tx_id_.reset();
     tx_desc_ = NULL;
     tx_ctx_ = NULL;
     mem_ctx_ = NULL;
-    tx_scn_ = -1;
+    tx_scn_.reset();
     write_flag_.reset();
     handle_start_time_ = OB_INVALID_TIMESTAMP;
+    is_standby_read_ = false;
   }
   bool is_valid() const {
     switch(type_) {
@@ -96,9 +102,9 @@ public:
       && snapshot_.is_valid()
       && tx_ctx_
       && mem_ctx_
-      && tx_scn_ > 0
+      && tx_scn_.is_valid()
       && tx_id_.is_valid()
-      && tx_table_guard_.is_valid();
+      && tx_table_guards_.is_valid();
   }
   bool is_replay_valid__() const {
     return tx_ctx_
@@ -108,7 +114,7 @@ public:
   bool is_read_valid__() const {
     return abs_lock_timeout_ >= 0
       && snapshot_.is_valid()
-      && tx_table_guard_.is_valid()
+      && tx_table_guards_.is_valid()
       && (!tx_ctx_ || mem_ctx_);
   }
   void init_read(transaction::ObPartTransCtx *tx_ctx, /* nullable */
@@ -123,7 +129,7 @@ public:
     type_ = is_weak_read ? T::WEAK_READ : T::STRONG_READ;
     tx_ctx_ = tx_ctx;
     mem_ctx_ = mem_ctx;
-    tx_table_guard_ = tx_table_guard;
+    tx_table_guards_.tx_table_guard_ = tx_table_guard;
     snapshot_ = snapshot;
     abs_lock_timeout_ = abs_lock_timeout;
     tx_lock_timeout_ = tx_lock_timeout;
@@ -141,7 +147,7 @@ public:
   void init_write(transaction::ObPartTransCtx &tx_ctx,
                   ObMemtableCtx &mem_ctx,
                   const transaction::ObTransID &tx_id,
-                  const int64_t tx_scn,
+                  const transaction::ObTxSEQ tx_scn,
                   transaction::ObTxDesc &tx_desc,
                   const storage::ObTxTableGuard &tx_table_guard,
                   const transaction::ObTxSnapshot &snapshot,
@@ -156,11 +162,20 @@ public:
     tx_id_ = tx_id;
     tx_scn_ = tx_scn;
     tx_desc_ = &tx_desc;
-    tx_table_guard_ = tx_table_guard;
+    tx_table_guards_.tx_table_guard_ = tx_table_guard;
     snapshot_ = snapshot;
     abs_lock_timeout_ = abs_lock_timeout;
     tx_lock_timeout_ = tx_lock_timeout;
     write_flag_ = write_flag;
+  }
+
+  void set_src_tx_table_guard(const storage::ObTxTableGuard &tx_table_guard)
+  {
+    tx_table_guards_.src_tx_table_guard_ = tx_table_guard;
+  }
+  void set_transfer_scn(const share::SCN transfer_scn)
+  {
+    tx_table_guards_.transfer_start_scn_ = transfer_scn;
   }
   void init_replay(transaction::ObPartTransCtx &tx_ctx,
                    ObMemtableCtx &mem_ctx,
@@ -178,8 +193,9 @@ public:
   share::SCN get_snapshot_version() const {
     return snapshot_.version_;
   }
-  storage::ObTxTableGuard &get_tx_table_guard() {
-    return tx_table_guard_;
+
+  storage::ObTxTableGuards &get_tx_table_guards() {
+    return tx_table_guards_;
   }
   ObMemtableCtx *get_mem_ctx() const {
     return mem_ctx_;
@@ -217,7 +233,7 @@ public:
                K_(abs_lock_timeout),
                K_(tx_lock_timeout),
                K_(snapshot),
-               K_(tx_table_guard),
+               K_(tx_table_guards),
                K_(tx_id),
                KPC_(tx_desc),
                KP_(tx_ctx),
@@ -245,17 +261,19 @@ public: // NOTE: those field should only be accessed by txn relative routine
   // - When ob_trx_lock_timeout is equal to 0, it means never wait
   int64_t tx_lock_timeout_;
   transaction::ObTxSnapshot snapshot_;
-  storage::ObTxTableGuard tx_table_guard_;
+  storage::ObTxTableGuards tx_table_guards_;  // for transfer query
   // specials for MvccWrite
   transaction::ObTransID tx_id_;
   transaction::ObTxDesc *tx_desc_;             // the txn descriptor
   transaction::ObPartTransCtx *tx_ctx_;        // the txn context
   ObMemtableCtx *mem_ctx_;                     // memtable-ctx
-  int64_t tx_scn_;                             // the change's number of this modify
+  transaction::ObTxSEQ tx_scn_;                             // the change's number of this modify
   concurrent_control::ObWriteFlag write_flag_; // the write flag of the write process
 
   // this was used for runtime mertic
   int64_t handle_start_time_;
+
+  bool is_standby_read_;
 protected:
   int64_t lock_wait_start_ts_;
 };

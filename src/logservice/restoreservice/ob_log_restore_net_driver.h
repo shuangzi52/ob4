@@ -16,10 +16,12 @@
 #include "lib/container/ob_iarray.h"     // Array
 #include "lib/ob_errno.h"
 #include "lib/utility/ob_macro_utils.h"
+#include "lib/compress/ob_compress_util.h" // ObCompressorType
+#include "common/ob_region.h"  // ObRegion
 #include "logservice/logfetcher/ob_log_fetcher_ls_ctx_additional_info_factory.h"
 #include "logservice/logfetcher/ob_log_fetcher_err_handler.h"
 #include "logservice/logfetcher/ob_log_fetcher_ls_ctx_default_factory.h"
-#include "share/backup/ob_backup_struct.h"   // ObRestoreSourceServiceAttr
+#include "share/backup/ob_log_restore_struct.h"   // ObRestoreSourceServiceAttr
 #include "share/ob_log_restore_proxy.h"   // ObLogRestoreProxyUtil
 #include "ob_log_restore_driver_base.h"
 #include "ob_restore_log_function.h"  // ObRestoreLogFunction
@@ -44,7 +46,6 @@ class ObLogFetcher;
 
 namespace logservice
 {
-class ObLogRestoreController;
 class ObLogService;
 // The driver for standby based on net service, and its functions includes:
 // 1. fetcher and proxy management;
@@ -58,7 +59,6 @@ public:
   ~ObLogRestoreNetDriver();
 public:
   int init(const uint64_t tenant_id,
-      ObLogRestoreController *controller,
       storage::ObLSService *ls_svr,
       ObLogService *log_service);
   void destroy();
@@ -81,6 +81,8 @@ public:
   // set the max scn can be restored
   int set_restore_log_upper_limit();
 
+  int set_compressor_type(const common::ObCompressorType &compressor_type);
+
 private:
   // TODO LogFetcher如何区分LogRestoreSource变化了, 比如从cluster 1的tenant A, 变为了cluster 2的tenant B
   // LogFetcher需要提供接口, 区分不同cluster_id, tenant_id
@@ -89,6 +91,11 @@ private:
   int refresh_fetcher_if_needed_(const share::ObRestoreSourceServiceAttr &source);
   int init_fetcher_if_needed_(const int64_t cluster_id, const uint64_t tenant_id);
   void delete_fetcher_if_needed_with_lock_();
+  void update_config_();
+  int64_t get_rpc_timeout_sec_();
+  // update standby_fetch_log_specified_region
+  void update_standby_preferred_upstream_log_region_();
+
   int refresh_proxy_(const share::ObRestoreSourceServiceAttr &source);
 
 
@@ -120,6 +127,7 @@ private:
       virtual void handle_error(const share::ObLSID &ls_id,
           const ErrType &err_type,
           share::ObTaskId &trace_id,
+          const palf::LSN &lsn,
           const int err_no,
           const char *fmt, ...) override;
     private:

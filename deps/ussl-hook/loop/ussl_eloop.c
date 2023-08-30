@@ -1,5 +1,21 @@
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 int64_t ob_update_loop_ts();
 
+int ussl_is_stop()
+{
+  return ATOMIC_LOAD(&ussl_is_stopped);
+}
 struct epoll_event *ussl_make_epoll_event(struct epoll_event *event, uint32_t event_flag, void *val)
 {
   event->events = event_flag;
@@ -80,11 +96,12 @@ static void ussl_eloop_handle_sock_event(ussl_sock_t *s)
 
 int ussl_eloop_run(ussl_eloop_t *ep)
 {
-  while (1) {
+  while (!ussl_is_stop()) {
     ob_update_loop_ts();
     ussl_eloop_refire(ep);
     ussl_dlink_for(&ep->ready_link, p) { ussl_eloop_handle_sock_event(ussl_structof(p, ussl_sock_t, ready_link)); }
     check_and_handle_timeout_event();
   }
+  close(ep->fd);
   return 0;
 }

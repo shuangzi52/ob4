@@ -84,13 +84,26 @@ DEFINE_GET_SERIALIZE_SIZE(ObLockID)
   return size;
 }
 
+int ObLockID::convert_to(common::ObTabletID &tablet_id) const
+{
+  int ret = OB_SUCCESS;
+  common::ObTabletID tmp_id(obj_id_);
+  if (!is_tablet_lock() || !tmp_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("can not convert to", K(ret), K_(obj_type), K_(obj_id));
+  } else {
+    tablet_id = tmp_id;
+  }
+  return ret;
+}
+
 int ObLockID::set(const ObLockOBJType &type, const uint64_t obj_id)
 {
   int ret = OB_SUCCESS;
 
   if (!is_lock_obj_type_valid(type) || !is_valid_id(obj_id)) {
     ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "init fail", K(ret), K(type), K(obj_id));
+    LOG_WARN("init fail", K(ret), K(type), K(obj_id));
   } else {
     obj_type_ = type;
     obj_id_ = obj_id;
@@ -148,7 +161,7 @@ void ObTableLockOp::set(
     const ObTransID &trans_id,
     const ObTableLockOpType type,
     const ObTableLockOpStatus lock_op_status,
-    const int64_t seq_no,
+    const ObTxSEQ seq_no,
     const int64_t create_timestamp,
     const int64_t create_schema_version)
 {
@@ -172,16 +185,14 @@ bool ObTableLockOp::is_valid() const
          lock_op_status_ != UNKNOWN_STATUS;
 }
 
-bool ObTableLockOp::operator ==(const ObTableLockOp &other) const
+bool ObTableLockOp::need_replay_or_recover(const ObTableLockOp &other) const
 {
-  return (lock_seq_no_ == other.lock_seq_no_ &&
-          lock_id_ == other.lock_id_ &&
-          create_trans_id_ == other.create_trans_id_ &&
-          owner_id_ == other.owner_id_ &&
-          lock_mode_ == other.lock_mode_ &&
-          op_type_ == other.op_type_ &&
-          create_timestamp_ == other.create_timestamp_ &&
-          create_schema_version_ == other.create_schema_version_);
+  return !(lock_seq_no_ == other.lock_seq_no_ &&
+           lock_id_ == other.lock_id_ &&
+           create_trans_id_ == other.create_trans_id_ &&
+           owner_id_ == other.owner_id_ &&
+           lock_mode_ == other.lock_mode_ &&
+           op_type_ == other.op_type_);
 }
 
 void ObTableLockInfo::reset()

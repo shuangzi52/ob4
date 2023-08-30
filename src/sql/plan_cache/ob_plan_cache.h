@@ -52,6 +52,9 @@ class ObLibCacheAtomicOp;
 class ObEvolutionPlan;
 
 typedef common::hash::ObHashMap<uint64_t, ObPlanCache *> PlanCacheMap;
+#ifdef OB_BUILD_SPM
+typedef common::ObSEArray<ObEvolutionPlan*, 16> EvolutionPlanList;
+#endif
 
 struct ObKVEntryTraverseOp
 {
@@ -234,10 +237,26 @@ public:
   int init(int64_t hash_bucket, uint64_t tenant_id);
   bool is_inited() { return inited_; }
 
+  static int check_can_do_insert_opt(common::ObIAllocator &allocator,
+                                     ObPlanCacheCtx &pc_ctx,
+                                     ObFastParserResult &fp_result,
+                                     bool &can_do_batch,
+                                     int64_t &batch_count,
+                                     ObString &first_truncated_sql);
+  static int rebuild_raw_params(common::ObIAllocator &allocator,
+                                ObPlanCacheCtx &pc_ctx,
+                                ObFastParserResult &fp_result,
+                                int64_t row_count);
+
+  static int restore_param_to_truncated_sql(ObPlanCacheCtx &pc_ctx);
+
+  static bool can_do_insert_batch_opt(ObPlanCacheCtx &pc_ctx);
+
   /**
    * Add new plan to PlanCache
    */
   int add_plan(ObPhysicalPlan *plan, ObPlanCacheCtx &pc_ctx);
+
   /**
    * Add new ps plan to PlanCache
    */
@@ -333,6 +352,13 @@ public:
   int cache_evict_by_ns(ObLibCacheNameSpace ns);
   template<typename CallBack = ObKVEntryTraverseOp>
   int foreach_cache_evict(CallBack &cb);
+#ifdef OB_BUILD_SPM
+  int cache_evict_baseline_by_sql_id(uint64_t db_id, common::ObString sql_id);
+  // load plan baseline from plan cache
+  // int load_plan_baseline();
+  int load_plan_baseline(const obrpc::ObLoadPlanBaselineArg &arg, uint64_t &load_count);
+  int check_baseline_finish();
+#endif
   void destroy();
   common::ObAddr &get_host() { return host_; }
   void set_host(common::ObAddr &addr) { host_ = addr; }
@@ -412,7 +438,8 @@ private:
   int construct_plan_cache_key(ObPlanCacheCtx &plan_ctx, ObLibCacheNameSpace ns);
   static int construct_plan_cache_key(ObSQLSessionInfo &session,
                                       ObLibCacheNameSpace ns,
-                                      ObPlanCacheKey &pc_key);
+                                      ObPlanCacheKey &pc_key,
+                                      bool is_weak);
   /**
    * @brief wether jit compilation is needed in this sql
    *
@@ -441,6 +468,7 @@ private:
   int64_t mem_low_pct_;                      // low water mark percentage
   int64_t mem_used_;                         // mem used now
   int64_t bucket_num_;
+  lib::MemoryContext root_context_;
   common::ObMalloc inner_allocator_;
   common::ObAddr host_;
   ObPlanCacheStat pc_stat_;

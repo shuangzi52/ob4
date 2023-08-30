@@ -39,7 +39,8 @@ typedef struct pn_grp_comm_t
 
 #define PN_COMM                \
   bool is_stop_;               \
-  pthread_t pd;                \
+  bool has_stopped_;           \
+  void *pd;                    \
   int accept_qfd;              \
   int gid;                     \
   int tid;                     \
@@ -67,15 +68,18 @@ PN_API void pn_stop(uint64_t gid);
 PN_API void pn_wait(uint64_t gid);
 extern int64_t pnio_keepalive_timeout;
 pn_comm_t* get_current_pnio();
+void pn_release(pn_comm_t* pn_comm);
 
 #define PNIO_OK                     0
 #define PNIO_ERROR                  (-1)
+#define PNIO_STOPPED                (-45)
 #define PNIO_DISCONNECT             (-46)
 #define PNIO_TIMEOUT                (-47)
 #define PNIO_CONNECT_FAIL           (-49)
 #define PNIO_DISPATCH_ERROR         (-51)
 #define PNIO_TIMEOUT_NOT_SENT_OUT       (-54)
 #define PNIO_DISCONNECT_NOT_SENT_OUT    (-55)
+#define PNIO_LISTEN_ERROR               (-56)
 
 /*
 // 启动listen线程和epool线程池, epoll线程池有10个线程

@@ -78,7 +78,7 @@ void ObLockMemCtx::reset()
   callback_pool_.reset();
 }
 
-void ObLockMemCtx::rollback_table_lock_(const int64_t seq_no)
+void ObLockMemCtx::rollback_table_lock_(const ObTxSEQ seq_no)
 {
   int ret = OB_SUCCESS;
   ObLockMemtable *memtable = nullptr;
@@ -153,7 +153,7 @@ int ObLockMemCtx::commit_table_lock_(const SCN &commit_version, const SCN &commi
   return ret;
 }
 
-int ObLockMemCtx::rollback_table_lock(const int64_t seq_no)
+int ObLockMemCtx::rollback_table_lock(const ObTxSEQ seq_no)
 {
   int ret = OB_SUCCESS;
   if (lock_list_.is_empty()) {
@@ -296,7 +296,7 @@ void ObLockMemCtx::set_log_synced(
   }
 }
 
-int ObLockMemCtx::check_lock_exist(
+int ObLockMemCtx::check_lock_exist( //TODO(lihongqin):check it
     const ObLockID &lock_id,
     const ObTableLockOwnerID &owner_id,
     const ObTableLockMode mode,
@@ -344,7 +344,7 @@ int ObLockMemCtx::check_modify_schema_elapsed(
     RDLockGuard guard(list_rwlock_);
     DLIST_FOREACH(curr, lock_list_) {
       if (curr->lock_op_.lock_id_ == lock_id &&
-          curr->lock_op_.create_schema_version_ <= schema_version) {
+          curr->lock_op_.create_schema_version_ < schema_version) {
         // there is some trans that modify the tablet before schema version
         // running.
         ret = OB_EAGAIN;
@@ -370,7 +370,7 @@ int ObLockMemCtx::check_modify_time_elapsed(
     RDLockGuard guard(list_rwlock_);
     DLIST_FOREACH(curr, lock_list_) {
       if (curr->lock_op_.lock_id_ == lock_id &&
-          curr->lock_op_.create_timestamp_ <= timestamp) {
+          curr->lock_op_.create_timestamp_ < timestamp) {
         // there is some trans that modify the tablet before timestamp
         // running.
         ret = OB_EAGAIN;
@@ -414,8 +414,7 @@ int ObLockMemCtx::check_lock_need_replay(
   } else {
     RDLockGuard guard(list_rwlock_);
     DLIST_FOREACH(curr, lock_list_) {
-      if (curr->lock_op_ == lock_op) {
-        need_replay = false;
+      if (!(need_replay = curr->lock_op_.need_replay_or_recover(lock_op))) {
         break;
       }
     }

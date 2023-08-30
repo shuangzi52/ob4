@@ -29,7 +29,12 @@ int ObAllVirtualHADiagnose::inner_get_next_row(common::ObNewRow *&row)
       int ret = OB_SUCCESS;
       storage::DiagnoseInfo diagnose_info;
       if (OB_FAIL(ls.diagnose(diagnose_info))) {
-        SERVER_LOG(WARN, "ls stat diagnose info failed", K(ret), K(ls));
+        if (OB_ENTRY_NOT_EXIST == ret) {
+          SERVER_LOG(WARN, "ls may have been removed, just skip", K(ls));
+          ret = OB_SUCCESS;
+        } else {
+          SERVER_LOG(WARN, "ls stat diagnose info failed", K(ret), K(ls));
+        }
       } else if (OB_FAIL(insert_stat_(diagnose_info))) {
         SERVER_LOG(WARN, "insert stat failed", K(ret), K(diagnose_info));
       } else if (OB_FAIL(scanner_.add_row(cur_row_))) {
@@ -244,6 +249,9 @@ int ObAllVirtualHADiagnose::insert_stat_(storage::DiagnoseInfo &diagnose_info)
         break;
       case ARB_SRV_INFO:
         cur_row_.cells_[i].set_varchar(ObString(""));
+#ifdef OB_BUILD_ARBITRATION
+        cur_row_.cells_[i].set_varchar(diagnose_info.arb_srv_diagnose_info_.diagnose_str_.string());
+#endif
         cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(
                                               ObCharset::get_default_charset()));
         break;

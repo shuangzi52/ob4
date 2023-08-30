@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_external_multi_partition_row.h"
@@ -95,6 +102,7 @@ void ObDirectLoadConstExternalMultiPartitionRow::reset()
 {
   tablet_id_.reset();
   rowkey_datum_array_.reset();
+  seq_no_.reset();
   buf_size_ = 0;
   buf_ = nullptr;
 }
@@ -107,6 +115,7 @@ ObDirectLoadConstExternalMultiPartitionRow &ObDirectLoadConstExternalMultiPartit
     tablet_id_ = other.tablet_id_;
     rowkey_datum_array_ = other.rowkey_datum_array_;
     buf_size_ = other.buf_size_;
+    seq_no_ = other.seq_no_;
     buf_ = other.buf_;
   }
   return *this;
@@ -118,6 +127,7 @@ ObDirectLoadConstExternalMultiPartitionRow &ObDirectLoadConstExternalMultiPartit
   tablet_id_ = other.tablet_id_;
   rowkey_datum_array_ = other.external_row_.rowkey_datum_array_;
   buf_size_ = other.external_row_.buf_size_;
+  seq_no_ = other.external_row_.seq_no_;
   buf_ = other.external_row_.buf_;
   return *this;
 }
@@ -147,6 +157,7 @@ int ObDirectLoadConstExternalMultiPartitionRow::deep_copy(
       LOG_WARN("fail to deep copy datum array", KR(ret));
     } else {
       buf_size_ = src.buf_size_;
+      seq_no_ = src.seq_no_;
       buf_ = buf + pos;
       MEMCPY(buf + pos, src.buf_, buf_size_);
       pos += buf_size_;
@@ -158,7 +169,7 @@ int ObDirectLoadConstExternalMultiPartitionRow::deep_copy(
 int ObDirectLoadConstExternalMultiPartitionRow::to_datums(ObStorageDatum *datums,
                                                           int64_t column_count) const
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(transfer_datum_row_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, transfer_datum_row_time_us);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;

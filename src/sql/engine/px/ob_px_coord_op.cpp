@@ -607,6 +607,37 @@ int ObPxCoordOp::inner_close()
   return ret;
 }
 
+int ObPxCoordOp::inner_drain_exch()
+{
+  int ret = OB_SUCCESS;
+  LOG_TRACE("drain QC", K(get_spec().id_), K(iter_end_), K(exch_drained_),
+            K(enable_px_batch_rescan()), K(lbt()));
+  /**
+    * why different from receive operator?
+    * 1. Why not need try link channel.
+    * There are two situations when qc call drain_exch.
+    * The first is qc return iter_end when inner_get_next_row, in this case, it will not reach here.
+    * The second is plan like this:
+    *               merge join
+    *          QC1              QC2
+    * If QC1 ends, the main thread will call drain exch of QC2.
+    * In this situation, no action is required because the upper operator has already got enough rows
+    * and will call inner_close to terminate all dfos soon.
+    * Therefore, there is no need to send a termination message
+    * 2. Why not drain channels if enable px batch rescan?
+    * If use px batch rescan, drain channel may lead to missing results of other params in the batch.
+  */
+  if (enable_px_batch_rescan()) {
+    // do nothing
+  } else if (iter_end_) {
+    exch_drained_ = true;
+  } else if (!exch_drained_) {
+    dfc_.drain_all_channels();
+    exch_drained_ = true;
+  }
+  return ret;
+}
+
 int ObPxCoordOp::destroy_all_channel()
 {
   int ret = OB_SUCCESS;
@@ -682,7 +713,6 @@ int ObPxCoordOp::wait_all_running_dfos_exit()
   ObPhysicalPlanCtx *phy_plan_ctx = GET_PHY_PLAN_CTX(ctx_);
   ObSEArray<ObDfo *, 32> active_dfos;
   bool all_dfo_terminate = false;
-  int64_t timeout_us = 0;
   int64_t nth_channel = OB_INVALID_INDEX_INT64;
   bool collect_trans_result_ok = false;
   if (OB_FAIL(coord_info_.dfo_mgr_.get_running_dfos(active_dfos))) {
@@ -700,15 +730,15 @@ int ObPxCoordOp::wait_all_running_dfos_exit()
     ObPxTerminateMsgProc terminate_msg_proc(coord_info_, listener);
     ObPxFinishSqcResultP sqc_finish_msg_proc(ctx_, terminate_msg_proc);
     ObPxInitSqcResultP sqc_init_msg_proc(ctx_, terminate_msg_proc);
-    ObBarrierPieceMsgP barrier_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObWinbufPieceMsgP winbuf_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObDynamicSamplePieceMsgP sample_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObRollupKeyPieceMsgP rollup_key_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObRDWFPieceMsgP rd_wf_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObInitChannelPieceMsgP init_channel_piece_msg_proc(ctx_, terminate_msg_proc);
-    ObReportingWFPieceMsgP reporting_wf_piece_msg_proc(ctx_, terminate_msg_proc);
     ObPxQcInterruptedP interrupt_proc(ctx_, terminate_msg_proc);
-    ObOptStatsGatherPieceMsgP opt_stats_gather_piece_msg_proc(ctx_, terminate_msg_proc);
+    dtl::ObDtlPacketEmptyProc<ObBarrierPieceMsg>  barrier_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObWinbufPieceMsg> winbuf_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObDynamicSamplePieceMsg> sample_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObRollupKeyPieceMsg> rollup_key_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObRDWFPieceMsg> rd_wf_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObInitChannelPieceMsg> init_channel_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObReportingWFPieceMsg> reporting_wf_piece_msg_proc;
+    dtl::ObDtlPacketEmptyProc<ObOptStatsGatherPieceMsg> opt_stats_gather_piece_msg_proc;
 
     // 这个注册会替换掉旧的proc.
     (void)msg_loop_.clear_all_proc();
@@ -734,7 +764,6 @@ int ObPxCoordOp::wait_all_running_dfos_exit()
     int64_t start_wait_time = ObTimeUtility::current_time();
     while (OB_SUCC(ret) && wait_msg) {
       ObDtlChannelLoop &loop = msg_loop_;
-      timeout_us = phy_plan_ctx->get_timeout_timestamp() - get_timestamp();
       /**
        * 开始收下一个消息。
        */
@@ -761,7 +790,7 @@ int ObPxCoordOp::wait_all_running_dfos_exit()
         }
       }
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(loop.process_one_if(&control_channels, timeout_us, nth_channel))) {
+      } else if (OB_FAIL(loop.process_one_if(&control_channels, nth_channel))) {
         if (OB_EAGAIN == ret) {
           LOG_DEBUG("no message, waiting sqc report", K(ret));
           ret = OB_SUCCESS;
@@ -844,6 +873,10 @@ int ObPxCoordOp::check_all_sqc(ObIArray<ObDfo *> &active_dfos,
           all_dfo_terminate = false;
           break;
         } else if (sqc->is_server_not_alive() || sqc->is_interrupt_by_dm()) {
+          if (sqc->is_interrupt_by_dm()) {
+            ObRpcResultCode err_msg;
+            ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_, OB_RPC_CONNECT_ERROR, err_msg);
+          }
           sqc->set_server_not_alive(false);
           sqc->set_interrupt_by_dm(false);
           const DASTabletLocIArray &access_locations = sqc->get_access_table_locations();
@@ -1034,17 +1067,6 @@ int ObPxCoordOp::init_batch_info()
     if (OB_SUCC(ret)) {
       batch_rescan_param_version_ = coord_info_.batch_rescan_ctl_->param_version_;
     }
-  }
-  return ret;
-}
-
-int ObPxCoordOp::drain_exch()
-{
-  int ret = OB_SUCCESS;
-  if (enable_px_batch_rescan()) {
-    // do nothing
-  } else if (OB_FAIL(ObPxReceiveOp::drain_exch())) {
-    LOG_WARN("fail to drain exch", K(ret));
   }
   return ret;
 }

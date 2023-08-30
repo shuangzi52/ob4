@@ -237,7 +237,7 @@ private:
 
   int create_missing_select_items(ObSelectStmt *source_stmt,
                                   ObSelectStmt *target_stmt,
-                                  const ObIArray<int64_t> &column_map,
+                                  ObIArray<int64_t> &column_map,
                                   const ObIArray<int64_t> &table_map);
   /**
    * @brief trans_table_item
@@ -430,8 +430,6 @@ private:
                               ObIArray<TableItem *> &table_items);
 
   int left_join_can_be_eliminated(ObDMLStmt *stmt, TableItem *table, bool &can_be_eliminated);
-
-  int preprocess_generate_right_table(ObDMLStmt &stmt, SemiInfo &semi_info);
 
   int eliminate_semi_join_self_key(ObDMLStmt *stmt,
                                    SemiInfo *semi_info,

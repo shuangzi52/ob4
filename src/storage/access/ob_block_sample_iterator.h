@@ -32,7 +32,7 @@ public:
   int open(
       const blocksstable::ObSSTable &sstable,
       const blocksstable::ObDatumRange &range,
-      const ObTableReadInfo &index_read_info,
+      const ObITableReadInfo &rowkey_read_info,
       ObIAllocator &allocator,
       const bool is_reverse_scan);
   int upgrade_to_macro(const blocksstable::ObDatumRange &range);
@@ -41,8 +41,8 @@ public:
   OB_INLINE int64_t get_macro_count() const { return macro_count_; }
   OB_INLINE int64_t get_micro_count() const { return micro_count_; }
   OB_INLINE bool is_reach_end() const { return is_iter_end_; }
-  TO_STRING_KV(K_(is_inited), K_(is_iter_end), K_(is_reverse_scan), K_(curr_key), K_(curr_block_id), K_(macro_count),
-      K_(start_bound_micro_block), K_(end_bound_micro_block), K_(sample_level), K_(tree_cursor));
+  TO_STRING_KV(K_(is_inited), K_(is_iter_end), K_(is_reverse_scan), K_(curr_block_id), K_(macro_count),
+               K_(start_bound_micro_block), K_(end_bound_micro_block), K_(sample_level), K_(tree_cursor));
 
 private:
   int locate_bound(const blocksstable::ObDatumRange &range);
@@ -53,7 +53,6 @@ private:
   int get_current_block_id(blocksstable::ObMicroBlockId &micro_block_id);
 
 private:
-  const blocksstable::ObSSTableMeta *sstable_meta_;
   int64_t macro_count_;
   int64_t micro_count_;
   blocksstable::ObDatumRowkey curr_key_;
@@ -150,7 +149,7 @@ class ObBlockSampleIterator : public ObISampleIterator
 public:
   explicit ObBlockSampleIterator(const common::SampleInfo &sample_info);
   virtual ~ObBlockSampleIterator();
-  void reuse();
+  virtual void reuse();
   virtual void reset() override;
   int open(ObMultipleScanMerge &scan_merge,
            ObTableAccessContext &access_ctx,
@@ -162,7 +161,7 @@ private:
   int open_range(blocksstable::ObDatumRange &range);
 private:
   ObTableAccessContext *access_ctx_;
-  const ObTableReadInfo *read_info_;
+  const ObITableReadInfo *read_info_;
   ObMultipleScanMerge *scan_merge_;
   int64_t block_num_;
   common::ObArenaAllocator range_allocator_;

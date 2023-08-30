@@ -60,7 +60,7 @@ public:
 private:
   int get_next_tx_data_table_(ObITable *&tx_data_memtable);
 
-  void prepare_row_data_(ObITable *tx_data_table, RowData &row_data);
+  int prepare_row_data_(ObITable *tx_data_table, RowData &row_data);
 
   virtual bool is_need_process(uint64_t tenant_id) override;
 
@@ -78,6 +78,7 @@ private:
   int64_t sstable_array_pos_;
   ObSharedGuard<storage::ObLSIterator> ls_iter_guard_;
   ObTabletHandle tablet_handle_;
+  ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper_;
   ObMemtableMgrHandle mgr_handle_;
   common::ObSEArray<ObTableHandleV2, 1> memtable_handles_;
   common::ObSEArray<ObITable *, 8> sstable_handles_;

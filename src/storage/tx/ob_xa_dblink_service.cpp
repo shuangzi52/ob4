@@ -39,17 +39,39 @@ int ObXAService::generate_xid(const ObTransID &tx_id, ObXATransID &new_xid)
   int64_t txid_value = tx_id.get_id();
   static const char *DBLINK_STR = "DBLINK.";
   static const int DBLINK_STR_LENGTH = 7;
-  char txid_str[ObXATransID::MAX_GTRID_LENGTH] = {0};
+  char txid_str[ObXATransID::MAX_GTRID_LENGTH];
+  memset(txid_str, 0, ObXATransID::MAX_GTRID_LENGTH);
   int txid_str_length = sprintf(txid_str, "%ld", txid_value);
   if (ObXATransID::MAX_GTRID_LENGTH < txid_str_length + DBLINK_STR_LENGTH) {
     ret = OB_ERR_UNEXPECTED;
     TRANS_LOG(WARN, "unexpected gtrid length", K(ret), K(txid_str_length));
   } else {
-    char gtrid_str[ObXATransID::MAX_GTRID_LENGTH] = {0};
+    char gtrid_str[ObXATransID::MAX_GTRID_LENGTH];
+    memset(gtrid_str, 0, ObXATransID::MAX_GTRID_LENGTH);
     strncpy(gtrid_str, DBLINK_STR, DBLINK_STR_LENGTH);
     strncpy(gtrid_str + DBLINK_STR_LENGTH, txid_str, txid_str_length);
-    ObString gtrid_string = ObString(DBLINK_STR_LENGTH + txid_str_length, gtrid_str);
-    ret = new_xid.set(gtrid_string, BQUAL_STRING, DBLINK_FORMAT_ID);
+    ObString gtrid_string;
+    if (GCONF.self_addr_.using_ipv4()) {
+      char ip_port[MAX_IP_PORT_LENGTH];
+      int ip_str_length = 0;
+      memset(ip_port, 0, MAX_IP_PORT_LENGTH);
+      if (OB_FAIL(GCONF.self_addr_.addr_to_buffer(ip_port, MAX_IP_PORT_LENGTH, ip_str_length))) {
+        TRANS_LOG(WARN, "convert server to string failed", K(ret), K(tx_id));
+      } else if (ObXATransID::MAX_GTRID_LENGTH < 1 + ip_str_length + txid_str_length + DBLINK_STR_LENGTH) {
+        ret = OB_ERR_UNEXPECTED;
+        TRANS_LOG(WARN, "unexpected gtrid length", K(ret), K(tx_id), K(txid_str_length), K(ip_port), K(ip_str_length));
+      } else {
+        const char *comma = ",";
+        strncpy(gtrid_str + DBLINK_STR_LENGTH + txid_str_length, comma, 1);
+        strncpy(gtrid_str + DBLINK_STR_LENGTH + txid_str_length + 1, ip_port, ip_str_length);
+        gtrid_string = ObString(DBLINK_STR_LENGTH + txid_str_length + 1 + ip_str_length, gtrid_str);
+      }
+    } else {
+      gtrid_string = ObString(DBLINK_STR_LENGTH + txid_str_length, gtrid_str);
+    }
+    if (OB_SUCC(ret)) {
+      ret = new_xid.set(gtrid_string, BQUAL_STRING, DBLINK_FORMAT_ID);
+    }
   }
 
   return ret;
@@ -108,8 +130,10 @@ int ObXAService::xa_start_for_tm_promotion(const int64_t flags,
 
   if (OB_FAIL(ret)) {
     TRANS_LOG(WARN, "xa start for dblink promotion failed", K(ret), K(xid), K(flags));
+    xa_statistics_.inc_failure_dblink_promotion();
   } else {
     TRANS_LOG(INFO, "xa start for dblink promtion", K(ret), K(xid), K(flags));
+    xa_statistics_.inc_success_dblink_promotion();
   }
 
   return ret;
@@ -240,8 +264,10 @@ int ObXAService::xa_start_for_tm(const int64_t flags,
 
   if (OB_FAIL(ret)) {
     TRANS_LOG(WARN, "xa start for dblink failed", K(ret), K(xid), K(flags));
+    xa_statistics_.inc_failure_dblink();
   } else {
     TRANS_LOG(INFO, "xa start for dblink", K(ret), K(xid), K(flags));
+    xa_statistics_.inc_success_dblink();
   }
 
   return ret;
@@ -403,7 +429,8 @@ int ObXAService::xa_start_for_tm_(const int64_t flags,
 
 int ObXAService::xa_start_for_dblink_client(const DblinkDriverProto dblink_type,
                                             ObISQLConnection *dblink_conn,
-                                            ObTxDesc *&tx_desc)
+                                            ObTxDesc *&tx_desc,
+                                            ObXATransID &remote_xid)
 {
   int ret = OB_SUCCESS;
   if (NULL == tx_desc || !tx_desc->is_valid()) {
@@ -427,9 +454,9 @@ int ObXAService::xa_start_for_dblink_client(const DblinkDriverProto dblink_type,
       ret = OB_ERR_UNEXPECTED;
       TRANS_LOG(WARN, "unexpected dblink client", K(ret), K(xid), K(tx_id));
     } else {
-      ObXATransID remote_xid;
       if (client->is_started(xid)) {
         // return success
+        remote_xid = client->get_xid();
       } else if (OB_FAIL(ObXAService::generate_xid_with_new_bqual(xid,
               client->get_index(), remote_xid))) {
         TRANS_LOG(WARN, "fail to generate xid", K(ret), K(xid), K(tx_id), K(remote_xid));
@@ -491,7 +518,7 @@ int ObXAService::commit_for_dblink_trans(ObTxDesc *&tx_desc)
         }
       }
       // step 1.2, xa end for local branch
-      if (OB_SUCCESS != (tmp_ret = xa_end(xid, ObXAFlag::TMSUCCESS, tx_desc))) {
+      if (OB_SUCCESS != (tmp_ret = xa_end(xid, ObXAFlag::OBTMSUCCESS, tx_desc))) {
         TRANS_LOG(WARN, "xa end failed", K(tmp_ret), K(xid), K(tx_id));
         need_rollback = true;
       }
@@ -531,7 +558,8 @@ int ObXAService::commit_for_dblink_trans(ObTxDesc *&tx_desc)
       // if an error is returned in this phase, set this error to ret
       // step 3.1, two phase xa commit/rollback for local branch
       if (need_rollback) {
-        if (OB_SUCCESS != (tmp_ret = xa_rollback(xid, timeout_seconds))) {
+        ObTransID unused_tx_id;
+        if (OB_SUCCESS != (tmp_ret = xa_rollback(xid, timeout_seconds, unused_tx_id))) {
           TRANS_LOG(WARN, "xa rollback for local failed", K(tmp_ret), K(xid), K(tx_id));
           ret = tmp_ret;
         } else {
@@ -543,8 +571,9 @@ int ObXAService::commit_for_dblink_trans(ObTxDesc *&tx_desc)
         if (is_readonly_local_branch) {
           // do nothing
         } else {
-          if (OB_SUCCESS != (tmp_ret = xa_commit(xid, ObXAFlag::TMNOFLAGS, timeout_seconds,
-                  has_tx_level_temp_table))) {
+          ObTransID unused_tx_id;
+          if (OB_SUCCESS != (tmp_ret = xa_commit(xid, ObXAFlag::OBTMNOFLAGS, timeout_seconds,
+                  has_tx_level_temp_table, unused_tx_id))) {
             TRANS_LOG(WARN, "xa rollback for local failed", K(tmp_ret), K(xid), K(tx_id),
                 K(has_tx_level_temp_table));
             ret = tmp_ret;
@@ -610,6 +639,7 @@ int ObXAService::rollback_for_dblink_trans(ObTxDesc *&tx_desc)
     } else {
       const int64_t timeout_seconds = 60;
       ObDBLinkClientArray &client_array = xa_ctx->get_dblink_client_array();
+      ObTransID unused_tx_id;
       // step 1, xa end for each participant
       // step 1.1, xa end for each dblink branch
       for (int i = 0; i < client_array.count(); i++) {
@@ -622,12 +652,12 @@ int ObXAService::rollback_for_dblink_trans(ObTxDesc *&tx_desc)
         }
       }
       // step 1.2, xa end for local branch
-      if (OB_SUCCESS != (tmp_ret = xa_end(xid, ObXAFlag::TMSUCCESS, tx_desc))) {
+      if (OB_SUCCESS != (tmp_ret = xa_end(xid, ObXAFlag::OBTMSUCCESS, tx_desc))) {
         TRANS_LOG(WARN, "xa end failed", K(tmp_ret), K(xid), K(tx_id));
       }
       // step 2, xa rollback for each participant
       // step 2.1, xa rollback for local branch
-      if (OB_SUCCESS != (tmp_ret = xa_rollback(xid, timeout_seconds))) {
+      if (OB_SUCCESS != (tmp_ret = xa_rollback(xid, timeout_seconds, unused_tx_id))) {
         TRANS_LOG(WARN,"xa rollback for local failed", K(tmp_ret), K(xid), K(tx_id));
         ret = tmp_ret;
       }
@@ -678,7 +708,9 @@ int ObXAService::recover_tx_for_dblink_callback(const ObTransID &tx_id,
       } else {
         // do nothing
       }
-      xa_ctx_mgr_.revert_xa_ctx(xa_ctx);
+      if (OB_SUCCESS != ret) {
+        xa_ctx_mgr_.revert_xa_ctx(xa_ctx);
+      }
     }
   }
   TRANS_LOG(INFO, "recover tx for dblink callback", K(ret), K(tx_id));
@@ -698,11 +730,14 @@ int ObXAService::revert_tx_for_dblink_callback(ObTxDesc *&tx_desc)
     if (NULL == xa_ctx) {
       ret = ret = OB_ERR_UNEXPECTED;
       TRANS_LOG(WARN, "xa transaction context is null", K(ret), K(tx_id));
-    } else if (OB_FAIL(xa_ctx->revert_tx_for_dblink_callback(tx_desc))) {
-      TRANS_LOG(WARN, "fail to revert tx for dblink callback", K(ret), K(tx_id));
     } else {
-      // NOTE that tx_desc is null currently
-      // do nothing
+      if (OB_FAIL(xa_ctx->revert_tx_for_dblink_callback(tx_desc))) {
+        TRANS_LOG(WARN, "fail to revert tx for dblink callback", K(ret), K(tx_id));
+      } else {
+        // NOTE that tx_desc is null currently
+        // do nothing
+      }
+      xa_ctx_mgr_.revert_xa_ctx(xa_ctx);
     }
   }
   TRANS_LOG(INFO, "revert tx for dblink callback", K(ret), K(tx_id));

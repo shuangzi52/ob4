@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -302,7 +314,7 @@ static int remove_from_epoll_and_dispatch(acceptfd_sk_t *s, uint64_t gid)
   return err;
 }
 
-void get_src_addr(int fd, char *buf, int len)
+void ussl_get_peer_addr(int fd, char *buf, int len)
 {
   struct sockaddr_storage addr;
   socklen_t sock_len = sizeof(addr);
@@ -349,7 +361,7 @@ static int acceptfd_handle_first_readable_event(acceptfd_sk_t *s)
   ssize_t rbytes = recv(s->fd, buf, sizeof(buf), MSG_PEEK);
   negotiation_head_t *h = (typeof(h))buf;
   char src_addr[IP_STRING_MAX_LEN] = {0};
-  get_src_addr(s->fd, src_addr, IP_STRING_MAX_LEN);
+  ussl_get_peer_addr(s->fd, src_addr, IP_STRING_MAX_LEN);
   if (0 == rbytes) {
     handle_acceptfd_error(s, &err);
   } else if (rbytes < 0) {
@@ -453,7 +465,7 @@ static int acceptfd_handle_ssl_event(acceptfd_sk_t *s)
 {
   int ret = 0;
   char src_addr[IP_STRING_MAX_LEN] = {0};
-  get_src_addr(s->fd, src_addr, IP_STRING_MAX_LEN);
+  ussl_get_peer_addr(s->fd, src_addr, IP_STRING_MAX_LEN);
   ret = ssl_do_handshake(s->fd);
   if (0 == ret) {
     ussl_log_info("ssl_do_handshake succ, fd:%d, client_gid:%lu, src_addr:%s", s->fd, s->fd_info.client_gid, src_addr);

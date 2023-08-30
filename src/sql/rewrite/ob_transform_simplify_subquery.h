@@ -204,7 +204,10 @@ private:
                                  ObNotNullContext *not_null_ctx,
                                  bool &trans_happened);
   int check_can_trans_as_exists(ObRawExpr* expr, bool is_bool_expr, bool &is_valid);
-  int check_stmt_can_trans_as_exists(ObSelectStmt *stmt, bool is_correlated, bool &is_valid);
+  int check_stmt_can_trans_as_exists(ObSelectStmt *stmt,
+                                     bool is_correlated,
+                                     bool &match_index,
+                                     bool &is_valid);
   int query_cmp_to_exists_value_cmp(ObItemType type, bool is_with_all, ObItemType& new_type);
   int add_limit_for_any_all_subquery(ObRawExpr *stmt,bool &trans_happened);
   int prepare_trans_any_all_as_exists(ObQueryRefRawExpr* expr, ObSelectStmt *&trans_stmt);
@@ -217,6 +220,10 @@ private:
                                   ObNotNullContext *not_null_cxt,
                                   bool is_bool_expr,
                                   bool &trans_happened);
+  int empty_table_subquery_can_be_eliminated_in_exists(ObRawExpr *expr,
+                                                       bool &is_valid);
+  int do_trans_empty_table_subquery_as_expr(ObRawExpr *&expr,
+                                            bool &trans_happened);
 };
 
 }

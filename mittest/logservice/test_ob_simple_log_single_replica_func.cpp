@@ -95,87 +95,10 @@ void read_padding_entry(PalfHandleImplGuard &leader, SCN padding_scn, LSN paddin
 
 }
 
-TEST_F(TestObSimpleLogClusterSingleReplica, update_disk_options)
-{
-  SET_CASE_LOG_FILE(TEST_NAME, "update_disk_options");
-  OB_LOGGER.set_log_level("TRACE");
-  const int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  PALF_LOG(INFO, "start update_disk_options", K(id));
-  int64_t leader_idx = 0;
-  PalfHandleImplGuard leader;
-  PalfEnv *palf_env = NULL;
-  EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-  EXPECT_EQ(OB_SUCCESS, get_palf_env(leader_idx, palf_env));
-  PalfOptions opts;
-  EXPECT_EQ(OB_SUCCESS, palf_env->get_options(opts));
-  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 4 * 32 + 10, id, MAX_LOG_BODY_SIZE));
-  while (leader.palf_handle_impl_->log_engine_.log_storage_.log_tail_
-         < LSN(4 * 32 * MAX_LOG_BODY_SIZE)) {
-    sleep(1);
-  }
-  block_id_t min_block_id, max_block_id;
-  EXPECT_EQ(OB_SUCCESS,
-            leader.palf_handle_impl_->log_engine_.get_block_id_range(
-                min_block_id, max_block_id));
-  EXPECT_EQ(4, max_block_id);
-  opts.disk_options_.log_disk_usage_limit_size_ = 8 * PALF_PHY_BLOCK_SIZE;
-  EXPECT_EQ(OB_SUCCESS, palf_env->update_options(opts));
-  sleep(1);
-  opts.disk_options_.log_disk_utilization_limit_threshold_ = 50;
-  opts.disk_options_.log_disk_utilization_threshold_ = 40;
-  EXPECT_EQ(OB_SUCCESS, palf_env->update_options(opts));
-
-  opts.disk_options_.log_disk_usage_limit_size_ = 4 * PALF_PHY_BLOCK_SIZE;
-  EXPECT_EQ(OB_STATE_NOT_MATCH, palf_env->update_options(opts));
-
-  palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_recycling_blocks_ = palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_stopping_writing_;
-  palf_env->palf_env_impl_.disk_options_wrapper_.status_ = PalfDiskOptionsWrapper::Status::NORMAL_STATUS;
-
-  opts.disk_options_.log_disk_utilization_limit_threshold_ = 95;
-  opts.disk_options_.log_disk_utilization_threshold_ = 80;
-  EXPECT_EQ(OB_SUCCESS, palf_env->update_options(opts));
-  EXPECT_EQ(OB_STATE_NOT_MATCH, palf_env->update_options(opts));
-  sleep(1);
-  EXPECT_EQ(PalfDiskOptionsWrapper::Status::SHRINKING_STATUS,
-            palf_env->palf_env_impl_.disk_options_wrapper_.status_);
-  EXPECT_GT(palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_stopping_writing_.log_disk_usage_limit_size_,
-            palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_recycling_blocks_.log_disk_usage_limit_size_);
-  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->set_base_lsn(LSN(4 * PALF_BLOCK_SIZE)));
-  //EXPECT_EQ(LSN(4*PALF_BLOCK_SIZE), leader.palf_handle_.palf_handle_impl_->log_engine_.get_log_meta().get_log_snapshot_meta().base_lsn_);
-  while (leader.palf_handle_impl_->log_engine_.base_lsn_for_block_gc_
-         != LSN(4 * PALF_BLOCK_SIZE)) {
-    sleep(1);
-  }
-  // wait blocks to be recycled
-  while (leader.palf_handle_impl_->log_engine_.get_base_lsn_used_for_block_gc() != (LSN(4*PALF_BLOCK_SIZE))) {
-    sleep(1);
-  }
-  sleep(1);
-  EXPECT_EQ(PalfDiskOptionsWrapper::Status::NORMAL_STATUS,
-            palf_env->palf_env_impl_.disk_options_wrapper_.status_);
-  EXPECT_EQ(
-      opts.disk_options_,
-      palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_recycling_blocks_);
-  EXPECT_EQ(
-      opts.disk_options_,
-      palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_stopping_writing_);
-  PALF_LOG(INFO, "runlin trace", K(opts),
-           "holders:", palf_env->palf_env_impl_.disk_options_wrapper_);
-  // test expand
-  opts.disk_options_.log_disk_usage_limit_size_ = 5 * 1024 * 1024 * 1024ul;
-  EXPECT_EQ(OB_SUCCESS, palf_env->update_options(opts));
-  opts.disk_options_.log_disk_usage_limit_size_ = 6 * 1024 * 1024 * 1024ul;
-  EXPECT_EQ(OB_SUCCESS, palf_env->update_options(opts));
-  EXPECT_EQ(
-      opts.disk_options_,
-      palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_recycling_blocks_);
-  EXPECT_EQ(
-      opts.disk_options_,
-      palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_stopping_writing_);
-}
-
 TEST_F(TestObSimpleLogClusterSingleReplica, delete_paxos_group)
 {
+  update_server_log_disk(10*1024*1024*1024ul);
+  update_disk_options(10*1024*1024*1024ul/palf::PALF_PHY_BLOCK_SIZE);
   SET_CASE_LOG_FILE(TEST_NAME, "delete_paxos_group");
   const int64_t id = ATOMIC_AAF(&palf_id_, 1);
   PALF_LOG(INFO, "start test delete_paxos_group", K(id));
@@ -189,38 +112,6 @@ TEST_F(TestObSimpleLogClusterSingleReplica, delete_paxos_group)
   // EXPECT_EQ(OB_SUCCESS, delete_paxos_group(id));
   // TODO by yunlong: check log sync
   PALF_LOG(INFO, "end test delete_paxos_group", K(id));
-}
-
-TEST_F(TestObSimpleLogClusterSingleReplica, advance_base_lsn)
-{
-  SET_CASE_LOG_FILE(TEST_NAME, "advance_base_lsn");
-  OB_LOGGER.set_log_level("INFO");
-  const int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  PALF_LOG(INFO, "start advance_base_lsn", K(id));
-  int64_t leader_idx = 0;
-  int64_t log_ts = 1;
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 100, id));
-    sleep(2);
-    LSN log_tail =
-        leader.palf_handle_impl_->log_engine_.log_meta_storage_.log_tail_;
-    for (int64_t i = 0; i < 4096; i++) {
-      EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->enable_vote());
-    }
-    while (LSN(4096 * 4096 + log_tail.val_) !=
-        leader.palf_handle_impl_->log_engine_.log_meta_storage_.log_tail_)
-    {
-      sleep(1);
-    }
-  }
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->set_base_lsn(LSN(0)));
-  }
 }
 
 TEST_F(TestObSimpleLogClusterSingleReplica, single_replica_flashback)
@@ -437,6 +328,36 @@ TEST_F(TestObSimpleLogClusterSingleReplica, single_replica_flashback)
   EXPECT_EQ(new_log_tail, leader.palf_handle_impl_->get_end_lsn());
   EXPECT_EQ(OB_ITER_END, read_log(leader));
 
+  // flashback reconfirming leader
+  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 100, leader_idx));
+  wait_until_has_committed(leader, leader.palf_handle_impl_->sw_.get_max_lsn());
+  SCN flashback_scn = leader.palf_handle_impl_->get_max_scn();
+  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 100, leader_idx));
+  wait_until_has_committed(leader, leader.palf_handle_impl_->sw_.get_max_lsn());
+  EXPECT_EQ(OB_ITER_END, read_log(leader));
+  switch_append_to_flashback(leader, mode_version);
+
+  dynamic_cast<palf::PalfEnvImpl*>(get_cluster()[0]->get_palf_env())->log_loop_thread_.stop();
+  dynamic_cast<palf::PalfEnvImpl*>(get_cluster()[0]->get_palf_env())->log_loop_thread_.wait();
+  leader.palf_handle_impl_->state_mgr_.role_ = LEADER;
+  leader.palf_handle_impl_->state_mgr_.state_ = RECONFIRM;
+
+  EXPECT_EQ(OB_EAGAIN, leader.palf_handle_impl_->flashback(mode_version, max_scn, timeout_ts_us));
+  EXPECT_GT(leader.palf_handle_impl_->sw_.get_max_scn(), flashback_scn);
+
+  leader.palf_handle_impl_->state_mgr_.role_ = FOLLOWER;
+  leader.palf_handle_impl_->state_mgr_.state_ = ACTIVE;
+
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->flashback(mode_version, max_scn, timeout_ts_us));
+  EXPECT_LT(leader.palf_handle_impl_->sw_.get_max_scn(), flashback_scn);
+
+  EXPECT_EQ(new_log_tail, leader.palf_handle_impl_->get_end_lsn());
+  EXPECT_EQ(OB_ITER_END, read_log(leader));
+  leader.palf_handle_impl_->state_mgr_.role_ = LEADER;
+  leader.palf_handle_impl_->state_mgr_.state_ = ACTIVE;
+  dynamic_cast<palf::PalfEnvImpl*>(get_cluster()[0]->get_palf_env())->log_loop_thread_.start();
+  switch_flashback_to_append(leader, mode_version);
+
   // 数据全部清空
   wait_until_has_committed(leader, leader.palf_handle_impl_->sw_.get_max_lsn());
   switch_append_to_flashback(leader, mode_version);
@@ -480,6 +401,7 @@ TEST_F(TestObSimpleLogClusterSingleReplica, single_replica_flashback_restart)
 		EXPECT_EQ(OB_ITER_END, get_middle_scn(324, leader, new_scn, header_new));
     switch_flashback_to_append(leader, mode_version);
     EXPECT_EQ(OB_SUCCESS, submit_log(leader, 1000, leader_idx, 1000));
+		wait_until_has_committed(leader, leader.palf_handle_impl_->sw_.get_max_lsn());
 		EXPECT_EQ(OB_SUCCESS, get_middle_scn(1323, leader, new_scn, header_new));
 		EXPECT_EQ(OB_ITER_END, get_middle_scn(1324, leader, new_scn, header_new));
     EXPECT_EQ(OB_ITER_END, read_log(leader));
@@ -683,122 +605,6 @@ TEST_F(TestObSimpleLogClusterSingleReplica, test_meta)
     block_id_t min_block_id, max_block_id;
     EXPECT_EQ(OB_SUCCESS, log_meta_storage->get_block_id_range(min_block_id, max_block_id));
     EXPECT_EQ(min_block_id, max_block_id);
-  }
-}
-
-TEST_F(TestObSimpleLogClusterSingleReplica, test_restart)
-{
-  SET_CASE_LOG_FILE(TEST_NAME, "test_restart");
-  int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  int64_t leader_idx = 0;
-  char meta_fd[OB_MAX_FILE_NAME_LENGTH] = {'\0'};
-  char log_fd[OB_MAX_FILE_NAME_LENGTH] = {'\0'};
-  ObServerLogBlockMgr *pool = NULL;
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 1, id, MAX_LOG_BODY_SIZE));
-    wait_lsn_until_flushed(leader.palf_handle_impl_->get_max_lsn(), leader);
-    LogEngine *log_engine = &leader.palf_handle_impl_->log_engine_;
-    char *meta_log_dir = log_engine->log_meta_storage_.block_mgr_.log_dir_;
-    char *log_dir = log_engine->log_storage_.block_mgr_.log_dir_;
-    EXPECT_EQ(OB_SUCCESS, get_log_pool(leader_idx, pool));
-    char *pool_dir = pool->log_pool_path_;
-    snprintf(meta_fd, OB_MAX_FILE_NAME_LENGTH, "mv %s/%d %s/%d", meta_log_dir, 0, pool_dir, 10000000);
-    snprintf(log_fd, OB_MAX_FILE_NAME_LENGTH, "mv %s/%d %s/%d", log_dir, 0, pool_dir, 100000001);
-    system(meta_fd);
-  }
-  OB_LOGGER.set_log_level("TRACE");
-  sleep(1);
-  EXPECT_EQ(OB_ERR_UNEXPECTED, restart_paxos_groups());
-  system(log_fd);
-  PALF_LOG(INFO, "first restart_paxos_groups");
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-
-  // 验证切文件过程中宕机重启
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 33, id, MAX_LOG_BODY_SIZE));
-    wait_lsn_until_flushed(leader.palf_handle_impl_->get_max_lsn(), leader);
-    block_id_t min_block_id, max_block_id;
-    LogStorage *log_storage = &leader.palf_handle_impl_->log_engine_.log_storage_;
-    LogStorage *meta_storage = &leader.get_palf_handle_impl()->log_engine_.log_meta_storage_;
-    EXPECT_EQ(OB_SUCCESS, log_storage->get_block_id_range(min_block_id, max_block_id));
-    EXPECT_EQ(1, max_block_id);
-    // 模拟只switch block，但没有更新manifest, 此时manifest依旧是1, 宕机重启后由于2号文件为空，manifest会被更新为2
-    EXPECT_EQ(OB_SUCCESS, log_storage->truncate(LSN(PALF_BLOCK_SIZE)));
-    EXPECT_EQ(OB_SUCCESS, log_storage->update_manifest_(1));
-    EXPECT_EQ(PALF_BLOCK_SIZE, log_storage->curr_block_writable_size_);
-    EXPECT_EQ(1, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-  }
-  PALF_LOG(INFO, "second restart_paxos_groups");
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    //检查manifest是否为3
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 1, id, MAX_LOG_BODY_SIZE));
-    LogStorage *meta_storage = &leader.get_palf_handle_impl()->log_engine_.log_meta_storage_;
-    EXPECT_EQ(2, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-  }
-  PALF_LOG(INFO, "third restart_paxos_groups");
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  // 验证重启后新建日志流
-  {
-    PalfHandleImplGuard leader;
-    id = ATOMIC_AAF(&palf_id_, 1);
-    EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 66, id, MAX_LOG_BODY_SIZE));
-    wait_lsn_until_flushed(leader.palf_handle_impl_->get_max_lsn(), leader);
-    EXPECT_EQ(OB_ITER_END, read_log(leader));
-  }
-  // 验证truncate或flashback过程中，修改完manifest后，删除文件前宕机重启（删除1个文件）
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    block_id_t min_block_id, max_block_id;
-    // 此时manifest为3
-    LogStorage *log_storage = &leader.palf_handle_impl_->log_engine_.log_storage_;
-    LogStorage *meta_storage = &leader.get_palf_handle_impl()->log_engine_.log_meta_storage_;
-    EXPECT_EQ(OB_SUCCESS, log_storage->get_block_id_range(min_block_id, max_block_id));
-    EXPECT_EQ(2, max_block_id);
-    EXPECT_EQ(3, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-    // truncate 或 flashback会先更新manifest为2
-    EXPECT_EQ(OB_SUCCESS, log_storage->update_manifest_(2));
-    EXPECT_EQ(2, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-  }
-  // 验证truncate或flashback过程中，修改完manifest后，truncaet/flashback正好将最后一个文件空
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    block_id_t min_block_id, max_block_id;
-    // 此时manifest为2
-    LogStorage *log_storage = &leader.palf_handle_impl_->log_engine_.log_storage_;
-    LogStorage *meta_storage = &leader.get_palf_handle_impl()->log_engine_.log_meta_storage_;
-    EXPECT_EQ(OB_SUCCESS, log_storage->get_block_id_range(min_block_id, max_block_id));
-    EXPECT_EQ(2, max_block_id);
-    // 尽管manifest为2，但在这种场景下，2号文件是可以删除的
-    EXPECT_EQ(2, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-    EXPECT_EQ(OB_SUCCESS, log_storage->truncate(LSN(2*PALF_BLOCK_SIZE)));
-    EXPECT_EQ(OB_SUCCESS, log_storage->update_manifest_(2));
-  }
-  EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, get_leader(id, leader, leader_idx));
-    block_id_t min_block_id, max_block_id;
-    // 重启之后，由于磁盘上最大的文件为2，同时该文件为空，此时会更新manifest为3
-    LogStorage *log_storage = &leader.palf_handle_impl_->log_engine_.log_storage_;
-    LogStorage *meta_storage = &leader.get_palf_handle_impl()->log_engine_.log_meta_storage_;
-    EXPECT_EQ(OB_SUCCESS, log_storage->get_block_id_range(min_block_id, max_block_id));
-    EXPECT_EQ(2, max_block_id);
-    EXPECT_EQ(3, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 1, id, MAX_LOG_BODY_SIZE));
-    wait_lsn_until_flushed(leader.palf_handle_impl_->get_max_lsn(), leader);
-    EXPECT_EQ(3, lsn_2_block(meta_storage->log_block_header_.min_lsn_, PALF_BLOCK_SIZE));
   }
 }
 
@@ -1437,7 +1243,7 @@ TEST_F(TestObSimpleLogClusterSingleReplica, test_iterator_with_flashback)
   EXPECT_EQ(true, iterator.iterator_impl_.curr_entry_is_raw_write_);
 
   // 需要从磁盘上将后面两日志读上来，但由于受控回放不会吐出
-  EXPECT_FALSE(iterator_end_lsn == iterator.iterator_storage_.end_lsn_);
+  // EXPECT_FALSE(iterator_end_lsn == iterator.iterator_storage_.end_lsn_);
   EXPECT_EQ(OB_SUCCESS, iterator.next(max_scn2, next_min_scn, iterate_end_by_replayable_point));
   EXPECT_EQ(false, iterate_end_by_replayable_point);
   EXPECT_EQ(true, iterator.iterator_impl_.curr_entry_is_raw_write_);
@@ -1453,7 +1259,7 @@ TEST_F(TestObSimpleLogClusterSingleReplica, test_iterator_with_flashback)
   LSN last_lsn = raw_write_leader.palf_handle_impl_->get_max_lsn();
   SCN last_scn = raw_write_leader.palf_handle_impl_->get_max_scn();
 
-  LogIOWorker *io_worker = &raw_write_leader.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_;
+  LogIOWorker *io_worker = raw_write_leader.palf_handle_impl_->log_engine_.log_io_worker_;
   IOTaskCond cond(id_raw_write, raw_write_leader.palf_env_impl_->last_palf_epoch_);
   io_worker->submit_io_task(&cond);
   std::vector<LSN> lsns;
@@ -1916,56 +1722,6 @@ TEST_F(TestObSimpleLogClusterSingleReplica, test_iterator_with_flashback)
     EXPECT_EQ(OB_SUCCESS, group_buff_iterator_padding_start.next());
   }
 }
-
-TEST_F(TestObSimpleLogClusterSingleReplica, read_block_in_flashback)
-{
-  disable_hot_cache_ = true;
-  SET_CASE_LOG_FILE(TEST_NAME, "read_block_in_flashback");
-  OB_LOGGER.set_log_level("TRACE");
-  const int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  int64_t leader_idx = 0;
-  PalfHandleImplGuard leader;
-  PalfEnv *palf_env = NULL;
-  EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-
-  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 2 * 32 + 2, id, MAX_LOG_BODY_SIZE));
-  EXPECT_EQ(OB_SUCCESS, wait_until_has_committed(leader, leader.get_palf_handle_impl()->get_max_lsn()));
-
-  block_id_t min_block_id, max_block_id;
-  LogStorage *log_storage = &leader.get_palf_handle_impl()->log_engine_.log_storage_;
-  EXPECT_EQ(OB_SUCCESS, log_storage->get_block_id_range(min_block_id, max_block_id));
-  EXPECT_EQ(2, max_block_id);
-  SCN scn;
-  char block_name_tmp[OB_MAX_FILE_NAME_LENGTH];
-  EXPECT_EQ(OB_SUCCESS, block_id_to_tmp_string(max_block_id, block_name_tmp, OB_MAX_FILE_NAME_LENGTH));
-  char block_name[OB_MAX_FILE_NAME_LENGTH];
-  EXPECT_EQ(OB_SUCCESS, block_id_to_string(max_block_id, block_name, OB_MAX_FILE_NAME_LENGTH));
-  ::renameat(log_storage->block_mgr_.dir_fd_, block_name, log_storage->block_mgr_.dir_fd_, block_name_tmp);
-  EXPECT_EQ(-1, ::openat(log_storage->block_mgr_.dir_fd_, block_name, LOG_READ_FLAG));
-  EXPECT_EQ(OB_NEED_RETRY, read_log(leader));
-  EXPECT_EQ(OB_NEED_RETRY, log_storage->get_block_min_scn(max_block_id, scn));
-
-  // 测试边界场景，read_log_tail_为文件中间，最后一个文件完全被flashback掉, 此时log_tail_是最后一个文件头
-  log_storage->log_tail_ = LSN(2*PALF_BLOCK_SIZE);
-  EXPECT_EQ(OB_NEED_RETRY, read_log(leader));
-  EXPECT_EQ(OB_NEED_RETRY, log_storage->get_block_min_scn(max_block_id, scn));
-
-  // 测试边界场景，read_log_tail_最后一个文件头，最后一个文件完全被flashback掉
-  log_storage->log_tail_ = LSN(2*PALF_BLOCK_SIZE);
-  log_storage->readable_log_tail_ = LSN(2*PALF_BLOCK_SIZE);
-  EXPECT_EQ(OB_ITER_END, read_log(leader));
-  EXPECT_EQ(OB_ERR_OUT_OF_UPPER_BOUND, log_storage->get_block_min_scn(max_block_id, scn));
-
-  // 测试边界场景，readable_log_tail_还没改变前检验是否可读通过，直接读文件时报错文件不存在。
-  log_storage->log_tail_ = LSN(3*PALF_BLOCK_SIZE);
-  log_storage->readable_log_tail_ = LSN(3*PALF_BLOCK_SIZE);
-  // 设置max_block_id_为1是为了构造check_read_out_of_bound返回OB_ERR_OUT_OF_UPPER_BOUND的场景
-  log_storage->block_mgr_.max_block_id_ = 1;
-  // log_storage返回OB_ERR_OUT_OF_UPPER_BOUND, iterator将其转换为OB_ITER_END
-  EXPECT_EQ(OB_ITER_END, read_log(leader));
-  EXPECT_EQ(OB_ERR_OUT_OF_UPPER_BOUND, log_storage->get_block_min_scn(max_block_id, scn));
-}
-
 
 } // namespace unittest
 } // namespace oceanbase

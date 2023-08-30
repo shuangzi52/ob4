@@ -55,7 +55,8 @@ struct ObPlanCacheKey : public ObILibCacheKey
       : key_id_(common::OB_INVALID_ID),
         db_id_(common::OB_INVALID_ID),
         sessid_(0),
-        mode_(PC_TEXT_MODE) {}
+        mode_(PC_TEXT_MODE),
+        is_weak_read_(false) {}
 
   inline void reset()
   {
@@ -66,6 +67,7 @@ struct ObPlanCacheKey : public ObILibCacheKey
     mode_ = PC_TEXT_MODE;
     sys_vars_str_.reset();
     config_str_.reset();
+    is_weak_read_ = false;
     namespace_ = NS_INVALID;
   }
 
@@ -90,6 +92,7 @@ struct ObPlanCacheKey : public ObILibCacheKey
       sessid_ = pc_key.sessid_;
       mode_ = pc_key.mode_;
       namespace_ = pc_key.namespace_;
+      is_weak_read_ = pc_key.is_weak_read_;
     }
     return ret;
   }
@@ -130,6 +133,7 @@ struct ObPlanCacheKey : public ObILibCacheKey
                    mode_ == pc_key.mode_ &&
                    sys_vars_str_ == pc_key.sys_vars_str_ &&
                    config_str_ == pc_key.config_str_ &&
+                   is_weak_read_ == pc_key.is_weak_read_ &&
                    namespace_ == pc_key.namespace_;
 
     return cmp_ret;
@@ -141,6 +145,7 @@ struct ObPlanCacheKey : public ObILibCacheKey
                K_(mode),
                K_(sys_vars_str),
                K_(config_str),
+               K_(is_weak_read),
                K_(namespace));
   //通过name来进行查找，一般是shared sql/procedure
   //cursor用这种方式，对应的namespace是CRSR
@@ -153,6 +158,7 @@ struct ObPlanCacheKey : public ObILibCacheKey
   PlanCacheMode mode_;
   common::ObString sys_vars_str_;
   common::ObString config_str_;
+  bool is_weak_read_;
 };
 
 //记录快速化参数后不需要扣参数的原始字符串及相关信息
@@ -196,7 +202,8 @@ public:
     : inner_alloc_("FastParserRes"),
       raw_params_(&inner_alloc_),
       parameterized_params_(&inner_alloc_),
-      cache_params_(NULL)
+      cache_params_(NULL),
+      values_token_pos_(0)
   {
     reset_question_mark_ctx();
   }
@@ -205,11 +212,14 @@ public:
   common::ObFixedArray<const common::ObObjParam *, common::ObIAllocator> parameterized_params_;
   ParamStore *cache_params_;
   ObQuestionMarkCtx question_mark_ctx_;
+  int64_t values_token_pos_;
+
   void reset() {
     pc_key_.reset();
     raw_params_.reuse();
     parameterized_params_.reuse();
     cache_params_ = NULL;
+    values_token_pos_ = 0;
   }
   void reset_question_mark_ctx()
   {
@@ -220,7 +230,7 @@ public:
     question_mark_ctx_.by_name_ = false;
     question_mark_ctx_.by_defined_name_ = false;
   }
-   TO_STRING_KV(K(pc_key_), K(raw_params_), K(parameterized_params_), K(cache_params_));
+   TO_STRING_KV(K(pc_key_), K(raw_params_), K(parameterized_params_), K(cache_params_), K(values_token_pos_));
 };
 
 enum WayToGenPlan {
@@ -273,6 +283,31 @@ struct SelectItemParamInfo
 
 typedef common::ObFixedArray<SelectItemParamInfo, common::ObIAllocator> SelectItemParamInfoArray;
 
+typedef common::ObFixedArray<ObPCParam *, common::ObIAllocator> ObRawParams;
+typedef common::ObFixedArray<ObRawParams *, common::ObIAllocator> ObRawParams2DArray;
+
+
+struct ObInsertBatchOptInfo
+{
+
+  ObInsertBatchOptInfo(common::ObIAllocator &allocator)
+    : insert_params_count_(0),
+      update_params_count_(0),
+      sql_delta_length_(0),
+      multi_raw_params_(allocator),
+      new_reconstruct_sql_()
+  {}
+
+  TO_STRING_KV(K_(insert_params_count), K_(update_params_count),
+      K_(sql_delta_length), K_(new_reconstruct_sql));
+
+  int64_t insert_params_count_;
+  int64_t update_params_count_;
+  int64_t sql_delta_length_;
+  ObRawParams2DArray multi_raw_params_;
+  ObString new_reconstruct_sql_;
+};
+
 struct ObPlanCacheCtx : public ObILibCacheCtx
 {
   ObPlanCacheCtx(const common::ObString &sql,
@@ -312,7 +347,8 @@ struct ObPlanCacheCtx : public ObILibCacheCtx
       fixed_param_info_list_(allocator),
       dynamic_param_info_list_(allocator),
       tpl_sql_const_cons_(allocator),
-      need_retry_add_plan_(true)
+      need_retry_add_plan_(true),
+      insert_batch_opt_info_(allocator)
   {
     fp_result_.pc_key_.mode_ = mode_;
   }
@@ -383,7 +419,8 @@ struct ObPlanCacheCtx : public ObILibCacheCtx
     K(dynamic_param_info_list_),
     K(tpl_sql_const_cons_),
     K(is_original_ps_mode_),
-    K(need_retry_add_plan_)
+    K(need_retry_add_plan_),
+    K(insert_batch_opt_info_)
     );
   PlanCacheMode mode_; //control use which variables to do match
 
@@ -443,6 +480,7 @@ struct ObPlanCacheCtx : public ObILibCacheCtx
   // **********  for rewrite end **********
   // when schema version of cache node is old, whether remove this node and retry add cache obj.
   bool need_retry_add_plan_;
+  ObInsertBatchOptInfo insert_batch_opt_info_;
 };
 
 struct ObPlanCacheStat

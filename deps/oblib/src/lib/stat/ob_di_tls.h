@@ -22,6 +22,14 @@ namespace oceanbase
 {
 namespace common
 {
+template<class T, int N>
+struct ObDITlsPlaceHolder
+{
+  char buf_[sizeof(T[N])];
+};
+
+extern thread_local bool is_thread_in_exit;
+
 template <class T, size_t tag>
 class ObDITls
 {
@@ -71,6 +79,7 @@ const char* ObDITls<T, tag>::get_label() {
 template <class T, size_t tag>
 ObDITls<T, tag>::~ObDITls()
 {
+  is_thread_in_exit = true;
   if (is_valid()) {
     lib::ObDisableDiagnoseGuard disable_diagnose_guard;
     ob_delete(instance_);
@@ -81,12 +90,14 @@ ObDITls<T, tag>::~ObDITls()
 template <class T, size_t tag>
 T* ObDITls<T, tag>::get_instance()
 {
+  // for static check
+  static ObDITlsPlaceHolder<T, 1> placeholder __attribute__((used));
   static thread_local ObDITls<T, tag> di_tls;
-  if (!di_tls.is_valid()) {
+  if (OB_LIKELY(!di_tls.is_valid() && !is_thread_in_exit)) {
     static const char* label = get_label();
     di_tls.instance_ = (T*)PLACE_HOLDER;
     // add tenant
-    ObMemAttr attr(OB_SERVER_TENANT_ID, label);
+    ObMemAttr attr(ob_thread_tenant_id(), label);
     SET_USE_500(attr);
     di_tls.instance_ = OB_NEW(T, attr);
   }
@@ -141,6 +152,7 @@ const char* ObDITls<T[N], tag>::get_label() {
 template <class T, int N, size_t tag>
 ObDITls<T[N], tag>::~ObDITls()
 {
+  is_thread_in_exit = true;
   if (is_valid()) {
     for (auto i = 0; i < N; ++i) {
       instance_[i].~T();
@@ -152,11 +164,13 @@ ObDITls<T[N], tag>::~ObDITls()
 template <class T, int N, size_t tag>
 T* ObDITls<T[N], tag>::get_instance()
 {
+  // for static check
+  static ObDITlsPlaceHolder<T, N> placeholder __attribute__((used));
   static thread_local ObDITls<T[N], tag> di_tls;
-  if (!di_tls.is_valid()) {
+  if (OB_LIKELY(!di_tls.is_valid() && !is_thread_in_exit)) {
     static const char* label = get_label();
     di_tls.instance_ = (T*)PLACE_HOLDER;
-    ObMemAttr attr(OB_SERVER_TENANT_ID, label);
+    ObMemAttr attr(ob_thread_tenant_id(), label);
     SET_USE_500(attr);
     // add tenant
     if (OB_NOT_NULL(di_tls.instance_ = (T*)ob_malloc(sizeof(T) * N, attr))) {

@@ -74,7 +74,8 @@ public:
         is_select_for_update_(false),
         has_hidden_rowid_(false),
         stmt_sql_(),
-        is_bulk_(false) {}
+        is_bulk_(false),
+        has_link_table_(false) {}
     virtual ~ExternalRetrieveInfo() {}
 
     int build(ObStmt &stmt,
@@ -96,6 +97,7 @@ public:
     bool has_hidden_rowid_;
     ObString stmt_sql_;
     bool is_bulk_;
+    bool has_link_table_;
   };
 
   enum PsMode
@@ -120,7 +122,9 @@ public:
   /// @return OB_ITER_END when no more data available
   int get_next_row(const common::ObNewRow *&row);
   /// close the result set after get all the rows
-  int close();
+  int close() { int unused = 0; return close(unused); }
+  // close result set and rewrite the client ret
+  int close(int &client_ret);
   /// get number of rows affected by INSERT/UPDATE/DELETE
   int64_t get_affected_rows() const;
   int64_t get_return_rows() const { return return_rows_; }
@@ -167,6 +171,7 @@ public:
   bool get_is_select_for_update();
   inline bool has_hidden_rowid();
   inline bool is_bulk();
+  inline bool is_link_table();
   /// whether the result is with rows (true for SELECT statement)
   bool is_with_rows() const;
   // tell mysql if need to do async end trans
@@ -190,7 +195,8 @@ public:
   const common::ObString& get_stmt_ps_sql() const { return ps_sql_; }
   common::ObString& get_stmt_ps_sql() { return ps_sql_; }
   int64_t get_query_string_id() const;
-  void refresh_location_cache(bool is_nonblock, int err);
+  void refresh_location_cache_by_errno(bool is_nonblock, int err);
+  void force_refresh_location_cache(bool is_nonblock, int err);
   bool need_execute_remote_sql_async() const
   { return get_exec_context().use_remote_sql() && !is_inner_result_set_; }
 
@@ -297,7 +303,7 @@ public:
   // 深拷计划中的field columns，存放在field_columns_成员中
   int copy_field_columns(const ObPhysicalPlan &plan);
   bool has_implicit_cursor() const;
-  int switch_implicit_cursor();
+  int switch_implicit_cursor(int64_t &affected_rows);
   void reset_implicit_cursor_idx()
   {
     if (get_exec_context().get_physical_plan_ctx() != nullptr)
@@ -321,6 +327,7 @@ public:
   static void replace_lob_type(const ObSQLSessionInfo &session,
                                const ObField &field,
                                obmysql::ObMySQLField &mfield);
+  void set_close_fail_callback(ObFunction<void(const int, int&)> func) { close_fail_cb_ = func; }
 private:
   // types and constants
   static const int64_t TRANSACTION_SET_VIOLATION_MAX_RETRY = 3;
@@ -426,6 +433,7 @@ private:
   common::ObString ps_sql_; // for sql in pl
   bool is_init_;
   common::ParamStore ps_params_; // 文本 ps params 记录，用于填入 sql_audit
+  common::ObFunction<void(const int, int&)> close_fail_cb_;
 };
 
 
@@ -625,6 +633,11 @@ inline bool ObResultSet::has_hidden_rowid()
 inline bool ObResultSet::is_bulk()
 {
   return external_retrieve_info_.is_bulk_;
+}
+
+inline bool ObResultSet::is_link_table()
+{
+  return external_retrieve_info_.has_link_table_;
 }
 
 inline bool ObResultSet::is_with_rows() const

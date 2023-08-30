@@ -83,10 +83,14 @@ public:
     MAX_STATUS = 3
   };
 
+  static bool is_shrinking(const Status &status)
+  { return Status::SHRINKING_STATUS == status; }
+
   PalfDiskOptionsWrapper() : disk_opts_for_stopping_writing_(),
                              disk_opts_for_recycling_blocks_(),
                              status_(Status::INVALID_STATUS),
                              cur_unrecyclable_log_disk_size_(0),
+                             sequence_(-1),
                              disk_opts_lock_(common::ObLatchIds::PALF_ENV_LOCK) {}
   ~PalfDiskOptionsWrapper() { reset(); }
 
@@ -94,7 +98,7 @@ public:
   void reset();
   int update_disk_options(const PalfDiskOptions &disk_opts);
 
-  void change_to_normal();
+  void change_to_normal(const int64_t sequence);
   const PalfDiskOptions& get_disk_opts_for_stopping_writing() const
   {
     ObSpinLockGuard guard(disk_opts_lock_);
@@ -110,12 +114,14 @@ public:
 
   void get_disk_opts(PalfDiskOptions &disk_opts_for_stopping_writing,
                      PalfDiskOptions &disk_opts_for_recycling_blocks,
-                     Status &status) const
+                     Status &status,
+                     int64_t &sequence) const
   {
     ObSpinLockGuard guard(disk_opts_lock_);
     disk_opts_for_stopping_writing = disk_opts_for_stopping_writing_;
     disk_opts_for_recycling_blocks = disk_opts_for_recycling_blocks_;
     status = status_;
+    sequence = sequence_;
   }
 
   void get_throttling_options(PalfThrottleOptions &options)
@@ -124,17 +130,27 @@ public:
     options.total_disk_space_ = disk_opts_for_stopping_writing_.log_disk_usage_limit_size_;
     options.stopping_writing_percentage_ = disk_opts_for_stopping_writing_.log_disk_utilization_limit_threshold_;
     options.trigger_percentage_ = disk_opts_for_stopping_writing_.log_disk_throttling_percentage_;
+    options.maximum_duration_ = disk_opts_for_stopping_writing_.log_disk_throttling_maximum_duration_;
     options.unrecyclable_disk_space_ = cur_unrecyclable_log_disk_size_;
   }
 
   bool is_shrinking() const
   {
     ObSpinLockGuard guard(disk_opts_lock_);
-    return Status::SHRINKING_STATUS == status_;
+    return is_shrinking(status_);
+  }
+
+  void set_stop_writing_disk_options_with_status(const PalfDiskOptions &new_opts,
+                                                 const Status &status)
+  {
+    ObSpinLockGuard guard(disk_opts_lock_);
+    status_ = status;
+    disk_opts_for_stopping_writing_ = new_opts;
   }
   static constexpr int64_t MB = 1024*1024ll;
   TO_STRING_KV(K_(disk_opts_for_stopping_writing), K_(disk_opts_for_recycling_blocks), K_(status),
-               "cur_unrecyclable_log_disk_size(MB)", cur_unrecyclable_log_disk_size_/MB);
+               "cur_unrecyclable_log_disk_size(MB)", cur_unrecyclable_log_disk_size_/MB,
+               K_(sequence));
 
 private:
   int update_disk_options_not_guarded_by_lock_(const PalfDiskOptions &new_opts);
@@ -147,6 +163,7 @@ private:
   PalfDiskOptions disk_opts_for_recycling_blocks_;
   Status status_;
   int64_t cur_unrecyclable_log_disk_size_;
+  int64_t sequence_;
   mutable ObSpinLock disk_opts_lock_;
 };
 
@@ -174,6 +191,7 @@ public:
   virtual int create_directory(const char *base_dir) = 0;
   virtual int remove_directory(const char *base_dir) = 0;
   virtual bool check_disk_space_enough() = 0;
+  virtual int64_t get_rebuild_replica_log_lag_threshold() const = 0;
   virtual int get_io_start_time(int64_t &last_working_time) = 0;
   virtual int64_t get_tenant_id() = 0;
   // should be removed in version 4.2.0.0
@@ -236,8 +254,11 @@ public:
   int try_recycle_blocks();
   bool check_disk_space_enough() override final;
   int get_disk_usage(int64_t &used_size_byte, int64_t &total_usable_size_byte);
+  int get_stable_disk_usage(int64_t &used_size_byte, int64_t &total_usable_size_byte);
   int update_options(const PalfOptions &options);
   int get_options(PalfOptions &options);
+  int64_t get_rebuild_replica_log_lag_threshold() const
+  {return rebuild_replica_log_lag_threshold_;}
   int for_each(const common::ObFunction<int(const PalfHandle&)> &func);
   int for_each(const common::ObFunction<int(IPalfHandleImpl *ipalf_handle_impl)> &func) override final;
   common::ObILogAllocator* get_log_allocator() override final;
@@ -321,6 +342,12 @@ private:
   int check_tmp_log_dir_exist_(bool &exist) const;
   int remove_stale_incomplete_palf_();
 
+  int init_log_io_worker_config_(const int log_writer_parallelism,
+                                 const int64_t tenant_id,
+                                 LogIOWorkerConfig &config);
+
+  int check_can_update_log_disk_options_(const PalfDiskOptions &disk_options);
+
 private:
   typedef common::RWLock RWLock;
   typedef RWLock::RLockGuard RLockGuard;
@@ -338,7 +365,7 @@ private:
   PalfMonitorCb *monitor_;
 
   PalfDiskOptionsWrapper disk_options_wrapper_;
-  int64_t check_disk_print_log_interval_;
+  int64_t disk_not_enough_print_interval_;
 
   char log_dir_[common::MAX_PATH_SIZE];
   char tmp_log_dir_[common::MAX_PATH_SIZE];
@@ -349,6 +376,7 @@ private:
 
   // last_palf_epoch_ is used to assign increasing epoch for each palf instance.
   int64_t last_palf_epoch_;
+  int64_t rebuild_replica_log_lag_threshold_;//for rebuild test
 
   LogIOWorkerConfig log_io_worker_config_;
   bool diskspace_enough_;

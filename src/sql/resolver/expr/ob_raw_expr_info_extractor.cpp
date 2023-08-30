@@ -470,7 +470,7 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
     if (T_FUN_SYS_AUTOINC_NEXTVAL == expr.get_expr_type()
         || T_FUN_SYS_TABLET_AUTOINC_NEXTVAL == expr.get_expr_type()
         || T_FUN_SYS_SLEEP == expr.get_expr_type()
-        || T_FUN_SYS_LAST_INSERT_ID == expr.get_expr_type()
+        || (T_FUN_SYS_LAST_INSERT_ID == expr.get_expr_type() && expr.get_param_count() > 0)
         || T_FUN_SYS_PART_ID == expr.get_expr_type()
         || T_OP_GET_PACKAGE_VAR == expr.get_expr_type()
         || T_OP_GET_SUBPROGRAM_VAR == expr.get_expr_type()
@@ -533,9 +533,9 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
         LOG_WARN("failed to add flag IS_STATE_FUNC", K(ret));
       }
     }
-    if (OB_SUCC(ret) && T_OP_GET_USER_VAR == expr.get_expr_type()) {
-      if (OB_FAIL(expr.add_flag(IS_USER_VARIABLE))) {
-        LOG_WARN("failed to add flag IS_USER_VARIABLE", K(ret));
+    if (OB_SUCC(ret) && T_OP_GET_USER_VAR == expr.get_expr_type() && !expr.is_const_expr()) {
+      if (OB_FAIL(expr.add_flag(IS_DYNAMIC_USER_VARIABLE))) {
+        LOG_WARN("failed to add flag IS_DYNAMIC_USER_VARIABLE", K(ret));
       }
     }
 

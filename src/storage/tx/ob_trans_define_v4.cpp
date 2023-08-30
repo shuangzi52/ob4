@@ -75,7 +75,7 @@ const ObString &get_tx_isolation_str(const ObTxIsolationLevel isolation)
 }
 
 ObTxSavePoint::ObTxSavePoint()
-  : type_(T::INVL), scn_(0), session_id_(0), user_create_(false), name_() {}
+  : type_(T::INVL), scn_(), session_id_(0), user_create_(false), name_() {}
 
 ObTxSavePoint::ObTxSavePoint(const ObTxSavePoint &a)
 {
@@ -126,7 +126,7 @@ void ObTxSavePoint::release()
 {
   type_ = T::INVL;
   snapshot_ = NULL;
-  scn_ = 0;
+  scn_.reset();
   session_id_ = 0;
   user_create_ = false;
 }
@@ -146,7 +146,7 @@ void ObTxSavePoint::init(ObTxReadSnapshot *snapshot)
   scn_ = snapshot->core_.scn_;
 }
 
-int ObTxSavePoint::init(int64_t scn, const ObString &name, const uint32_t session_id, const bool user_create, const bool stash)
+int ObTxSavePoint::init(const ObTxSEQ &scn, const ObString &name, const uint32_t session_id, const bool user_create, const bool stash)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(name_.assign(name))) {
@@ -185,7 +185,14 @@ DEF_TO_STRING(ObTxSavePoint)
 }
 OB_SERIALIZE_MEMBER(ObTxExecResult, incomplete_, parts_, cflict_txs_);
 OB_SERIALIZE_MEMBER(ObTxSnapshot, tx_id_, version_, scn_, elr_);
-OB_SERIALIZE_MEMBER(ObTxReadSnapshot, valid_, core_, source_, uncertain_bound_, snapshot_lsid_, parts_);
+OB_SERIALIZE_MEMBER(ObTxReadSnapshot,
+                    valid_,
+                    core_,
+                    source_,
+                    uncertain_bound_,
+                    snapshot_lsid_,
+                    parts_,
+                    snapshot_ls_role_);
 OB_SERIALIZE_MEMBER(ObTxPart, id_, addr_, epoch_, first_scn_, last_scn_);
 OB_SERIALIZE_MEMBER(ObTxDesc,
                     tenant_id_,
@@ -265,7 +272,7 @@ ObTxDesc::ObTxDesc()
     access_mode_(ObTxAccessMode::RW),   // default is RW
     snapshot_version_(),
     snapshot_uncertain_bound_(0),
-    snapshot_scn_(0),
+    snapshot_scn_(),
     sess_id_(0),
     assoc_sess_id_(0),
     global_tx_type_(ObGlobalTxType::PLAIN),
@@ -280,8 +287,8 @@ ObTxDesc::ObTxDesc()
     expire_ts_(INT64_MAX),              // never expire by default
     commit_ts_(-1),
     finish_ts_(-1),
-    active_scn_(-1),
-    min_implicit_savepoint_(INT64_MAX),
+    active_scn_(),
+    min_implicit_savepoint_(),
     parts_(),
     savepoints_(),
     cflict_txs_(),
@@ -290,6 +297,8 @@ ObTxDesc::ObTxDesc()
     commit_parts_(),
     commit_version_(),
     commit_out_(-1),
+    commit_times_(0),
+    commit_start_scn_(),
     abort_cause_(0),
     can_elr_(false),
     lock_(common::ObLatchIds::TX_DESC_LOCK),
@@ -328,13 +337,15 @@ int ObTxDesc::switch_to_idle()
   expire_ts_ = INT64_MAX;
   commit_ts_ = 0;
   finish_ts_ = 0;
-  active_scn_ = 0;
+  active_scn_.reset();
   parts_.reset();
   cflict_txs_.reset();
   coord_id_.reset();
   commit_parts_.reset();
   commit_version_.reset();
   commit_out_ = 0;
+  commit_times_ = 0;
+  commit_start_scn_.set_min();
   abort_cause_ = 0;
   can_elr_ = false;
   commit_cb_ = NULL;
@@ -396,7 +407,7 @@ void ObTxDesc::reset()
   access_mode_ = ObTxAccessMode::INVL;
   snapshot_version_.reset();
   snapshot_uncertain_bound_ = 0;
-  snapshot_scn_ = 0;
+  snapshot_scn_.reset();
   global_tx_type_ = ObGlobalTxType::PLAIN;
 
   op_sn_ = -1;
@@ -415,8 +426,8 @@ void ObTxDesc::reset()
   commit_ts_ = -1;
   finish_ts_ = -1;
 
-  active_scn_ = -1;
-  min_implicit_savepoint_ = INT64_MAX; // easy for compare
+  active_scn_.reset();
+  min_implicit_savepoint_.reset();
   parts_.reset();
   savepoints_.reset();
   cflict_txs_.reset();
@@ -426,6 +437,8 @@ void ObTxDesc::reset()
   commit_parts_.reset();
   commit_version_.reset();
   commit_out_ = -1;
+  commit_times_ = 0;
+  commit_start_scn_.set_min();
   abort_cause_ = 0;
   can_elr_ = false;
 
@@ -554,7 +567,13 @@ int ObTxDesc::update_part_(ObTxPart &a, const bool append)
     auto &p = parts_[i];
     if (p.id_ == a.id_) {
       hit = true;
-      if (p.epoch_ <= 0) {
+      if (p.epoch_ == ObTxPart::EPOCH_DEAD) {
+        if (a.epoch_ > 0) { // unexpected: from dead to alive
+          flags_.PART_EPOCH_MISMATCH_ = true;
+          ret = OB_TRANS_NEED_ROLLBACK;
+          TRANS_LOG(WARN, "epoch missmatch", K(ret), K(a), K(p));
+        }
+      } else if (p.epoch_ <= 0) {
         p.epoch_ = a.epoch_;
       } else if (a.epoch_ > 0 && p.epoch_ != a.epoch_) {
         flags_.PART_EPOCH_MISMATCH_ = true;
@@ -562,9 +581,9 @@ int ObTxDesc::update_part_(ObTxPart &a, const bool append)
         TRANS_LOG(WARN, "tx-part epoch changed", K(ret), K(a), K(p));
       }
       if (OB_SUCC(ret)) {
-        p.addr_ = a.addr_;
-        p.first_scn_ = std::min(a.first_scn_, p.first_scn_);
-        p.last_scn_ = std::max(a.last_scn_, p.last_scn_);
+        if (a.addr_.is_valid()) { p.addr_ = a.addr_; }
+        p.first_scn_ = MIN(a.first_scn_, p.first_scn_);
+        p.last_scn_ = p.last_scn_.is_max() ? a.last_scn_ : MAX(a.last_scn_, p.last_scn_);
         p.last_touch_ts_ = exec_info_reap_ts_ + 1;
       }
       break;
@@ -595,8 +614,8 @@ int ObTxDesc::update_clean_part(const share::ObLSID &id,
   p.id_ = id;
   p.epoch_ = epoch;
   p.addr_ = addr;
-  p.first_scn_ = INT64_MAX;
-  p.last_scn_ = INT64_MIN;
+  p.first_scn_ = ObTxSEQ::MAX_VAL();
+  p.last_scn_ = get_tx_seq();
   return update_part_(p, false);
 }
 
@@ -623,9 +642,9 @@ int ObTxDesc::update_parts(const share::ObLSArray &list)
     auto &it = list[i];
     ObTxPart n;
     n.id_ = it;
-    n.epoch_ = -1;
-    n.first_scn_ = INT64_MAX;
-    n.last_scn_ = INT64_MAX;
+    n.epoch_ = ObTxPart::EPOCH_UNKNOWN;
+    n.first_scn_ = ObTxSEQ::MAX_VAL();
+    n.last_scn_ = ObTxSEQ::MAX_VAL();
     if (OB_TMP_FAIL(update_part_(n))) {
       ret = tmp_ret;
     }
@@ -639,7 +658,7 @@ void ObTxDesc::implicit_start_tx_()
     state_ = ObTxDesc::State::IMPLICIT_ACTIVE;
     active_ts_ = ObClockGenerator::getClock();
     expire_ts_ = active_ts_ + timeout_us_;
-    active_scn_ = ObSequence::get_max_seq_no();
+    active_scn_ = get_tx_seq();
     state_change_flags_.mark_all();
   }
 }
@@ -844,20 +863,22 @@ bool ObTxDesc::is_xa_terminate_state_() const
 
 bool ObTxDesc::has_implicit_savepoint() const
 {
-  return min_implicit_savepoint_ != INT64_MAX;
+  return min_implicit_savepoint_.is_valid();
 }
-void ObTxDesc::add_implicit_savepoint(const int64_t savepoint)
+void ObTxDesc::add_implicit_savepoint(const ObTxSEQ savepoint)
 {
-  min_implicit_savepoint_ = std::min(savepoint, min_implicit_savepoint_);
+  if (!min_implicit_savepoint_.is_valid() || min_implicit_savepoint_ > savepoint ) {
+    min_implicit_savepoint_ = savepoint;
+  }
 }
 void ObTxDesc::release_all_implicit_savepoint()
 {
-  min_implicit_savepoint_ = INT64_MAX;
+  min_implicit_savepoint_.reset();
 }
-void ObTxDesc::release_implicit_savepoint(const int64_t savepoint)
+void ObTxDesc::release_implicit_savepoint(const ObTxSEQ savepoint)
 {
   if (min_implicit_savepoint_ == savepoint) {
-    min_implicit_savepoint_ = INT64_MAX;
+    min_implicit_savepoint_.reset();
   }
   // invalid txn snapshot if it was created after the savepoint
   if (snapshot_version_.is_valid() && savepoint < snapshot_scn_) {
@@ -991,11 +1012,11 @@ ObTxParam::~ObTxParam()
 }
 
 ObTxSnapshot::ObTxSnapshot()
-  : version_(), tx_id_(), scn_(-1), elr_(false) {}
+  : version_(), tx_id_(), scn_(), elr_(false) {}
 
 ObTxSnapshot::~ObTxSnapshot()
 {
-  scn_ = -1;
+  scn_.reset();
   elr_ = false;
 }
 
@@ -1003,7 +1024,7 @@ void ObTxSnapshot::reset()
 {
   version_.reset();
   tx_id_.reset();
-  scn_ = -1;
+  scn_.reset();
   elr_ = false;
 }
 
@@ -1021,6 +1042,7 @@ ObTxReadSnapshot::ObTxReadSnapshot()
     core_(),
     source_(SRC::INVL),
     snapshot_lsid_(),
+    snapshot_ls_role_(common::ObRole::INVALID_ROLE),
     uncertain_bound_(0),
     parts_()
 {}
@@ -1029,6 +1051,7 @@ ObTxReadSnapshot::~ObTxReadSnapshot()
 {
   valid_ = false;
   source_ = SRC::INVL;
+  snapshot_ls_role_ = common::INVALID_ROLE;
   uncertain_bound_ = 0;
 }
 
@@ -1038,6 +1061,7 @@ void ObTxReadSnapshot::reset()
   core_.reset();
   source_ = SRC::INVL;
   snapshot_lsid_.reset();
+  snapshot_ls_role_ = common::INVALID_ROLE;
   uncertain_bound_ = 0;
   parts_.reset();
 }
@@ -1049,6 +1073,7 @@ int ObTxReadSnapshot::assign(const ObTxReadSnapshot &from)
   core_ = from.core_;
   source_ = from.source_;
   snapshot_lsid_ = from.snapshot_lsid_;
+  snapshot_ls_role_ = from.snapshot_ls_role_;
   uncertain_bound_ = from.uncertain_bound_;
   if (OB_FAIL(parts_.assign(from.parts_))) {
    TRANS_LOG(WARN, "assign snapshot fail", K(ret), K(from));
@@ -1060,7 +1085,7 @@ void ObTxReadSnapshot::init_weak_read(const SCN snapshot)
 {
   core_.version_ = snapshot;
   core_.tx_id_.reset();
-  core_.scn_ = 0;
+  core_.scn_.reset();
   core_.elr_ = false;
   source_ = SRC::WEAK_READ_SERVICE;
   parts_.reset();
@@ -1071,7 +1096,7 @@ void ObTxReadSnapshot::init_special_read(const SCN snapshot)
 {
   core_.version_ = snapshot;
   core_.tx_id_.reset();
-  core_.scn_ = 0;
+  core_.scn_.reset();
   core_.elr_ = false;
   source_ = SRC::SPECIAL;
   parts_.reset();
@@ -1108,7 +1133,7 @@ ObString ObTxReadSnapshot::get_source_name() const
 }
 
 ObTxExecResult::ObTxExecResult()
-  : allocator_("TxExecResult", MTL_ID()),
+  : allocator_("TxExecResult", 0 == MTL_ID() ? OB_SERVER_TENANT_ID : MTL_ID()),
     incomplete_(false),
     touched_ls_list_(OB_MALLOC_NORMAL_BLOCK_SIZE, allocator_),
     parts_(OB_MALLOC_NORMAL_BLOCK_SIZE, allocator_),
@@ -1217,17 +1242,15 @@ ObTxPart::ObTxPart()
   : id_(),
     addr_(),
     epoch_(-1),
-    first_scn_(INT64_MAX),
-    last_scn_(INT64_MIN),
+    first_scn_(),
+    last_scn_(),
     last_touch_ts_(0)
 {}
 ObTxPart::~ObTxPart()
 {
   epoch_ = -1;
-  // make first_scn > last_scn
-  // so that default is clean
-  first_scn_ = INT64_MAX;
-  last_scn_ = INT64_MIN;
+  first_scn_.reset();
+  last_scn_.reset();
   last_touch_ts_ = 0;
 }
 
@@ -1518,6 +1541,38 @@ void TxCtxStateHelper::restore_state()
   }
 }
 
+OB_SERIALIZE_MEMBER_SIMPLE(ObTxSEQ, raw_val_);
+DEF_TO_STRING(ObTxSEQ)
+{
+  int64_t pos = 0;
+  if (raw_val_ == INT64_MAX) {
+    BUF_PRINTF("MAX");
+  } else if (_sign_ == 0 && n_format_) {
+    J_OBJ_START();
+    J_KV(K_(branch), "seq", seq_);
+    J_OBJ_END();
+  } else {
+    BUF_PRINTF("%lu", raw_val_);
+  }
+  return pos;
+}
+
+ObTxSEQ ObTxDesc::get_tx_seq(int64_t seq_abs) const
+{
+  return ObTxSEQ::mk_v0(seq_abs > 0 ? seq_abs : ObSequence::get_max_seq_no());
+}
+ObTxSEQ ObTxDesc::get_and_inc_tx_seq(int16_t branch, int N) const
+{
+  UNUSED(branch);
+  auto seq = ObSequence::get_and_inc_max_seq_no(N);
+  return ObTxSEQ::mk_v0(seq);
+}
+ObTxSEQ ObTxDesc::inc_and_get_tx_seq(int16_t branch) const
+{
+  UNUSED(branch);
+  auto seq = ObSequence::inc_and_get_max_seq_no();
+  return ObTxSEQ::mk_v0(seq);
+}
 } // transaction
 } // oceanbase
 #undef USING_LOG_PREFIX

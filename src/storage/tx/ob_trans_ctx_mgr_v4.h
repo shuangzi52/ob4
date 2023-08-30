@@ -90,6 +90,7 @@ typedef common::LinkHashValue<share::ObLSID> ObLSTxCtxMgrHashValue;
 struct ObTxCreateArg
 {
   ObTxCreateArg(const bool for_replay,
+                const bool for_special_tx,
                 const uint64_t tenant_id,
                 const ObTransID &trans_id,
                 const share::ObLSID &ls_id,
@@ -100,6 +101,7 @@ struct ObTxCreateArg
                 const int64_t trans_expired_time,
                 ObTransService *trans_service)
       : for_replay_(for_replay),
+        for_special_tx_(for_special_tx),
         tenant_id_(tenant_id),
         tx_id_(trans_id),
         ls_id_(ls_id),
@@ -116,11 +118,12 @@ struct ObTxCreateArg
         && trans_expired_time_ > 0
         && NULL != trans_service_;
   }
-  TO_STRING_KV(K_(for_replay),
+  TO_STRING_KV(K_(for_replay), K_(for_special_tx),
                  K_(tenant_id), K_(tx_id),
                  K_(ls_id), K_(cluster_id), K_(cluster_version),
                  K_(session_id), K_(scheduler), K_(trans_expired_time), KP_(trans_service));
   bool for_replay_;
+  bool for_special_tx_;
   uint64_t tenant_id_;
   ObTransID tx_id_;
   share::ObLSID ls_id_;
@@ -254,11 +257,21 @@ public:
 
   // Block this ObLSTxCtxMgr, it can no longer create new tx_ctx;
   // @param [out] is_all_tx_cleaned_up: set it to true, when all transactions are cleaned up;
-  int block(bool &is_all_tx_cleaned_up);
+  int block_tx(bool &is_all_tx_cleaned_up);
+  int block_all(bool &is_all_tx_cleaned_up);
+
+  // Block this ObLSTxCtxMgr, it can no longer create normal tx_ctx;
+  // Allow create special tx_ctx, exp: mds_trans;
+  // @param [out] is_all_tx_cleaned_up: set it to true, when all transactions are cleaned up;
+  int block_normal(bool &is_all_tx_cleaned_up);
+  int unblock_normal();
   int online();
 
   // Get the TxCtx count in this ObLSTxCtxMgr;
   int64_t get_tx_ctx_count() const { return get_tx_ctx_count_(); }
+
+  // Get the count of active transactions which have not been committed or aborted
+  int64_t get_active_tx_count() const { return ATOMIC_LOAD(&active_tx_count_); }
 
   // Check all active and not "for_replay" tx_ctx in this ObLSTxCtxMgr
   // whether all the transactions that modify the specified tablet before
@@ -315,6 +328,10 @@ public:
   // @param [in] tx_id
   // @param [in] fd
   int dump_single_tx_data_2_text(const int64_t tx_id, FILE *fd);
+  int start_readonly_request();
+  int end_readonly_request();
+
+  void dump_readonly_request(const int64_t max_req_number);
 
   // check this ObLSTxCtxMgr contains the specified ObLSID
   bool contain(const share::ObLSID &ls_id)
@@ -328,6 +345,26 @@ public:
 
   // Decrease this ObLSTxCtxMgr's total_tx_ctx_count
   void dec_total_tx_ctx_count() { (void)ATOMIC_AAF(&total_tx_ctx_count_, -1); }
+
+  // Increase active trx count in this ls
+  void inc_active_tx_count() { (void)ATOMIC_AAF(&active_tx_count_, 1); }
+
+  // Decrease active trx count in this ls
+  void dec_active_tx_count() { (void)ATOMIC_AAF(&active_tx_count_, -1); }
+
+  void inc_total_active_readonly_request_count()
+  {
+    const int64_t count = ATOMIC_AAF(&total_active_readonly_request_count_, 1);
+  }
+  void dec_total_active_readonly_request_count()
+  {
+    int ret = common::OB_ERR_UNEXPECTED;
+    const int64_t count = ATOMIC_AAF(&total_active_readonly_request_count_, -1);
+    if (OB_UNLIKELY(count < 0)) {
+      TRANS_LOG(ERROR, "unexpected total_active_readonly_request_count", KP(this), K(count));
+    }
+  }
+  int64_t get_total_active_readonly_request_count() { return ATOMIC_LOAD(&total_active_readonly_request_count_); }
 
   // Get all tx obj lock information in this ObLSTxCtxMgr
   // @param [out] iter: all tx obj lock op information
@@ -474,6 +511,12 @@ public:
   // Get the state of this ObLSTxCtxMgr
   int64_t get_state() { return get_state_(); }
 
+  // check is master
+  bool is_master() const { return is_master_(); }
+
+  // check is blocked
+  bool is_tx_blocked() const { return is_tx_blocked_(); }
+
   // Switch the prev_aggre_log_ts and aggre_log_ts during dump starts
   int refresh_aggre_rec_scn();
 
@@ -483,12 +526,15 @@ public:
 
   int get_max_decided_scn(share::SCN & scn);
 
+  int do_standby_cleanup();
+
   TO_STRING_KV(KP(this),
                K_(ls_id),
                K_(tenant_id),
                "state",
                State::state_str(state_),
                K_(total_tx_ctx_count),
+               K_(active_tx_count),
                K_(ls_retain_ctx_mgr),
                K_(aggre_rec_scn),
                K_(prev_aggre_rec_scn),
@@ -518,6 +564,8 @@ public:
   static const int64_t MAX_HASH_ITEM_PRINT = 16;
   static const int64_t WAIT_SW_CB_TIMEOUT = 100 * 1000; // 100 ms
   static const int64_t WAIT_SW_CB_INTERVAL = 10 * 1000; // 10 ms
+  static const int64_t WAIT_READONLY_REQUEST_TIME = 10 * 1000 * 1000;
+  static const int64_t READONLY_REQUEST_TRACE_ID_NUM = 8192;
 private:
   class State
   {
@@ -528,13 +576,18 @@ private:
     static const int64_t T_PENDING = 2;
     static const int64_t R_PENDING = 3;
     static const int64_t L_WORKING = 4;
-    static const int64_t F_BLOCKED = 5;
-    static const int64_t L_BLOCKED = 6;
-    static const int64_t T_BLOCKED_PENDING = 7;
-    static const int64_t R_BLOCKED_PENDING = 8;
-    static const int64_t STOPPED = 9;
-    static const int64_t END = 10;
-    static const int64_t MAX = 11;
+    static const int64_t F_TX_BLOCKED = 5;
+    static const int64_t L_TX_BLOCKED = 6;
+    static const int64_t L_BLOCKED_NORMAL = 7;
+    static const int64_t T_TX_BLOCKED_PENDING = 8;
+    static const int64_t R_TX_BLOCKED_PENDING = 9;
+    static const int64_t F_ALL_BLOCKED = 10;
+    static const int64_t T_ALL_BLOCKED_PENDING = 11;
+    static const int64_t R_ALL_BLOCKED_PENDING = 12;
+    static const int64_t L_ALL_BLOCKED = 13;
+    static const int64_t STOPPED = 14;
+    static const int64_t END = 15;
+    static const int64_t MAX = 16;
   public:
     static bool is_valid(const int64_t state)
     { return state > INVALID && state < MAX; }
@@ -553,10 +606,17 @@ private:
         TCM_STATE_CASE_TO_STR(T_PENDING);
         TCM_STATE_CASE_TO_STR(R_PENDING);
         TCM_STATE_CASE_TO_STR(L_WORKING);
-        TCM_STATE_CASE_TO_STR(F_BLOCKED);
-        TCM_STATE_CASE_TO_STR(L_BLOCKED);
-        TCM_STATE_CASE_TO_STR(T_BLOCKED_PENDING);
-        TCM_STATE_CASE_TO_STR(R_BLOCKED_PENDING);
+        TCM_STATE_CASE_TO_STR(F_TX_BLOCKED);
+        TCM_STATE_CASE_TO_STR(L_TX_BLOCKED);
+        TCM_STATE_CASE_TO_STR(L_BLOCKED_NORMAL);
+        TCM_STATE_CASE_TO_STR(T_TX_BLOCKED_PENDING);
+        TCM_STATE_CASE_TO_STR(R_TX_BLOCKED_PENDING);
+
+        TCM_STATE_CASE_TO_STR(F_ALL_BLOCKED);
+        TCM_STATE_CASE_TO_STR(T_ALL_BLOCKED_PENDING);
+        TCM_STATE_CASE_TO_STR(R_ALL_BLOCKED_PENDING);
+        TCM_STATE_CASE_TO_STR(L_ALL_BLOCKED);
+
         TCM_STATE_CASE_TO_STR(STOPPED);
         TCM_STATE_CASE_TO_STR(END);
         default:
@@ -577,10 +637,13 @@ private:
     static const int64_t SWL_CB_FAIL = 3;// start working log callback failed
     static const int64_t LEADER_TAKEOVER = 4;
     static const int64_t RESUME_LEADER = 5;
-    static const int64_t BLOCK = 6;
-    static const int64_t STOP = 7;
-    static const int64_t ONLINE = 8;
-    static const int64_t MAX = 9;
+    static const int64_t BLOCK_TX = 6;
+    static const int64_t BLOCK_NORMAL = 7;
+    static const int64_t BLOCK_ALL = 8;
+    static const int64_t STOP = 9;
+    static const int64_t ONLINE = 10;
+    static const int64_t UNBLOCK_NORMAL = 11;
+    static const int64_t MAX = 12;
 
   public:
     static bool is_valid(const int64_t op)
@@ -601,9 +664,12 @@ private:
         TCM_OP_CASE_TO_STR(SWL_CB_FAIL);
         TCM_OP_CASE_TO_STR(LEADER_TAKEOVER);
         TCM_OP_CASE_TO_STR(RESUME_LEADER);
-        TCM_OP_CASE_TO_STR(BLOCK);
+        TCM_OP_CASE_TO_STR(BLOCK_TX);
+        TCM_OP_CASE_TO_STR(BLOCK_NORMAL);
+        TCM_OP_CASE_TO_STR(BLOCK_ALL);
         TCM_OP_CASE_TO_STR(STOP);
         TCM_OP_CASE_TO_STR(ONLINE);
+        TCM_OP_CASE_TO_STR(UNBLOCK_NORMAL);
       default:
         break;
       }
@@ -633,21 +699,71 @@ private:
   inline bool is_master_() const
   { return is_master_(ATOMIC_LOAD(&state_)); }
   inline bool is_master_(int64_t state) const
-  { return State::L_WORKING == state || State::L_BLOCKED == state; }
+  { return State::L_WORKING == state ||
+           State::L_TX_BLOCKED == state ||
+           State::L_BLOCKED_NORMAL == state ||
+           State::L_ALL_BLOCKED == state; }
 
   inline bool is_follower_() const
   { return is_follower_(ATOMIC_LOAD(&state_)); }
   inline bool is_follower_(int64_t state) const
-  { return State::F_WORKING == state || State::F_BLOCKED == state; }
+  { return State::F_WORKING == state ||
+           State::F_TX_BLOCKED == state ||
+           State::F_ALL_BLOCKED == state; }
 
-  inline bool is_blocked_() const
-  { return is_blocked_(ATOMIC_LOAD(&state_)); }
-  inline bool is_blocked_(int64_t state) const
+  inline bool is_tx_blocked_() const
+  { return is_tx_blocked_(ATOMIC_LOAD(&state_)); }
+  inline bool is_tx_blocked_(int64_t state) const
   {
-    return State::F_BLOCKED == state ||
-           State::L_BLOCKED == state ||
-           State::T_BLOCKED_PENDING == state ||
-           State::R_BLOCKED_PENDING == state;
+    return State::F_TX_BLOCKED == state ||
+           State::L_TX_BLOCKED == state ||
+           State::T_TX_BLOCKED_PENDING == state ||
+           State::R_TX_BLOCKED_PENDING == state ||
+           State::F_ALL_BLOCKED == state ||
+           State::T_ALL_BLOCKED_PENDING == state ||
+           State::R_ALL_BLOCKED_PENDING == state ||
+           State::L_ALL_BLOCKED == state;
+  }
+
+  inline bool is_normal_blocked_() const
+  { return is_normal_blocked_(ATOMIC_LOAD(&state_)); }
+  inline bool is_normal_blocked_(int64_t state) const
+  { return State::L_BLOCKED_NORMAL == state; }
+
+  inline bool is_all_blocked_() const
+  { return is_all_blocked_(ATOMIC_LOAD(&state_)); }
+  inline bool is_all_blocked_(const int64_t state) const
+  {
+    return State::F_ALL_BLOCKED == state ||
+           State::T_ALL_BLOCKED_PENDING == state ||
+           State::R_ALL_BLOCKED_PENDING == state ||
+           State::L_ALL_BLOCKED == state;
+  }
+
+  // check pending substate
+  inline bool is_t_pending_() const
+  { return is_t_pending_(ATOMIC_LOAD(&state_)); }
+  inline bool is_t_pending_(int64_t state) const
+  {
+    return State::T_PENDING == state ||
+           State::T_TX_BLOCKED_PENDING == state ||
+           State::T_ALL_BLOCKED_PENDING == state;
+  }
+
+  inline bool is_r_pending_() const
+  { return is_r_pending_(ATOMIC_LOAD(&state_)); }
+  inline bool is_r_pending_(int64_t state) const
+  {
+    return State::R_PENDING == state ||
+           State::R_TX_BLOCKED_PENDING == state ||
+           State::R_ALL_BLOCKED_PENDING == state;
+  }
+
+  inline bool is_pending_() const
+  { return is_pending_(ATOMIC_LOAD(&state_)); }
+  inline bool is_pending_(int64_t state) const
+  {
+    return is_t_pending_(state) || is_r_pending_(state);
   }
 
   inline bool is_stopped_() const
@@ -693,7 +809,11 @@ private:
   mutable RWLock minor_merge_lock_;
 
   // Total TxCtx count in this ObLSTxCtxMgr
-  int64_t total_tx_ctx_count_;
+  int64_t total_tx_ctx_count_ CACHE_ALIGNED;
+
+  int64_t total_active_readonly_request_count_ CACHE_ALIGNED;
+
+  int64_t active_tx_count_;
 
   // It is used to record the time point of leader takeover
   // gts must be refreshed to the newest before the leader provides services
@@ -721,6 +841,7 @@ private:
 
   // Online timestamp for ObLSTxCtxMgr
   int64_t online_ts_;
+  ObCurTraceId::TraceId readonly_request_trace_id_set_[READONLY_REQUEST_TRACE_ID_NUM];
 };
 
 // Used to iteratively access TxCtx in ObLSTxCtxMgr;
@@ -867,7 +988,9 @@ public:
   // and returns whether there are still active transactions through out parameters;
   // @param [in] ls_id: the specifiied ls ID
   // @param [out] is_all_tx_cleaned_up, set it to true, when all transactions are cleaned up;
-  int block_ls(const share::ObLSID &ls_id, bool &is_all_tx_cleaned_up);
+  int block_tx(const share::ObLSID &ls_id, bool &is_all_tx_cleaned_up);
+  // block tx and readonly request
+  int block_all(const share::ObLSID &ls_id, bool &is_all_tx_cleaned_up);
 
   // Traverse the specified ObLSTxCtxMgr and kill all transactions it holds;
   // @param [in] ls_id: the specifiied ls ID
@@ -950,6 +1073,7 @@ public:
 
   int get_max_decided_scn(const share::ObLSID &ls_id, share::SCN & scn);
 
+  int do_all_ls_standby_cleanup(ObTimeGuard &cleanup_timeguard);
 private:
   int create_ls_(const int64_t tenant_id,
                  const share::ObLSID &ls_id,

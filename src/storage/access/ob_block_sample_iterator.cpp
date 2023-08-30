@@ -26,8 +26,7 @@ namespace storage
  */
 
 ObBlockSampleSSTableEndkeyIterator::ObBlockSampleSSTableEndkeyIterator()
-  : sstable_meta_(nullptr),
-    macro_count_(0),
+  : macro_count_(0),
     micro_count_(0),
     curr_key_(),
     tree_cursor_(),
@@ -50,7 +49,6 @@ ObBlockSampleSSTableEndkeyIterator::~ObBlockSampleSSTableEndkeyIterator()
 void ObBlockSampleSSTableEndkeyIterator::reset()
 {
   if (is_inited_) {
-    sstable_meta_ = nullptr;
     macro_count_ = 0;
     micro_count_ = 0;
     tree_cursor_.reset();
@@ -68,7 +66,7 @@ void ObBlockSampleSSTableEndkeyIterator::reset()
 int ObBlockSampleSSTableEndkeyIterator::open(
     const ObSSTable &sstable,
     const ObDatumRange &range,
-    const ObTableReadInfo &index_read_info,
+    const ObITableReadInfo &rowkey_read_info,
     ObIAllocator &allocator,
     const bool is_reverse_scan)
 {
@@ -80,13 +78,12 @@ int ObBlockSampleSSTableEndkeyIterator::open(
   } else if (OB_UNLIKELY(!sstable.is_valid() || !range.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid sstable", K(ret), K(sstable), K(range));
-  } else if (sstable.get_meta().is_empty()) {
+  } else if (sstable.is_empty()) {
     is_iter_end_ = true;
     is_inited_ = true;
-  } else if (OB_FAIL(tree_cursor_.init(sstable, allocator, &index_read_info))) {
+  } else if (OB_FAIL(tree_cursor_.init(sstable, allocator, &rowkey_read_info))) {
     STORAGE_LOG(WARN, "Fail to init index tree cursor", K(ret), K(sstable));
   } else {
-    sstable_meta_ = &sstable.get_meta();
     sample_level_ = ObIndexBlockTreeCursor::LEAF;
     is_reverse_scan_ = is_reverse_scan;
 
@@ -103,7 +100,7 @@ int ObBlockSampleSSTableEndkeyIterator::open(
     if (OB_SUCC(ret)) {
       is_inited_ = true;
     }
-
+    STORAGE_LOG(TRACE, "open iter", K(ret), K(macro_count_), K(micro_count_), K(sstable));
   }
 
   return ret;
@@ -318,8 +315,8 @@ int ObBlockSampleRangeIterator::open(
     allocator_ = &allocator;
     sample_range_ = &range;
     is_reverse_scan_ = is_reverse_scan;
-    datum_utils_  = &get_table_param.tablet_iter_.tablet_handle_.get_obj()->get_full_read_info().get_datum_utils();
-    schema_rowkey_column_count_ = get_table_param.tablet_iter_.tablet_handle_.get_obj()->get_full_read_info().get_schema_rowkey_count();
+    datum_utils_  = &get_table_param.tablet_iter_.get_tablet()->get_rowkey_read_info().get_datum_utils();
+    schema_rowkey_column_count_ = get_table_param.tablet_iter_.get_tablet()->get_rowkey_read_info().get_schema_rowkey_count();
     endkey_comparor_.init(*datum_utils_, is_reverse_scan_);
 
     if (OB_FAIL(init_and_push_endkey_iterator(get_table_param))) {
@@ -375,7 +372,11 @@ int ObBlockSampleRangeIterator::get_next_range(const ObDatumRange *&range)
     STORAGE_LOG(WARN, "Fail to deep copy to current key", K(ret), KPC(min_iter));
   } else if (FALSE_IT(generate_cur_range(curr_key_.key_))) {
   } else if (OB_FAIL(move_endkey_iter(*min_iter))) {
-    STORAGE_LOG(WARN, "Fail to move forward endkey iterator", K(ret), K(*min_iter));
+    if (OB_ITER_END == ret) {
+      ret = OB_SUCCESS;
+    } else {
+      STORAGE_LOG(WARN, "Fail to move forward endkey iterator", K(ret), K(*min_iter));
+    }
   }
   if (OB_SUCC(ret)) {
     range = &curr_range_;
@@ -397,20 +398,20 @@ int ObBlockSampleRangeIterator::init_and_push_endkey_iterator(ObGetTableParam &g
       ObITable *table = nullptr;
       ObSSTable *sstable = nullptr;
       ObBlockSampleSSTableEndkeyIterator *iter = nullptr;
-      if (OB_FAIL(get_table_param.tablet_iter_.table_iter_.get_next(table))) {
+      if (OB_FAIL(get_table_param.tablet_iter_.table_iter()->get_next(table))) {
         if (OB_LIKELY(OB_ITER_END == ret)) {
           ret = OB_SUCCESS;
           break;
         } else {
-          STORAGE_LOG(WARN, "Fail to get next table iter", K(ret), K(get_table_param.tablet_iter_.table_iter_));
+          STORAGE_LOG(WARN, "Fail to get next table iter", K(ret), K(get_table_param.tablet_iter_.table_iter()));
         }
       } else if (!table->is_sstable() || table->is_ddl_mem_sstable()) {
       } else if (OB_ISNULL(table) || OB_ISNULL(sample_range_) || OB_ISNULL(allocator_)) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Unexpected null sstable", K(ret), KP(table), KP(sample_range_), KP(allocator_));
       } else if (FALSE_IT(sstable = static_cast<ObSSTable*>(table))) {
-      } else if (sstable->get_meta().is_empty()) {
-        STORAGE_LOG(DEBUG, "Skip empty sstable", KPC(sstable), K(sstable->get_meta()));
+      } else if (sstable->is_empty()) {
+        STORAGE_LOG(DEBUG, "Skip empty sstable", KPC(sstable));
       } else if (OB_ISNULL(buf = allocator_->alloc(sizeof(ObBlockSampleSSTableEndkeyIterator)))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         STORAGE_LOG(WARN, "Fail to allocate memory for ObBlockSampleSSTableEndkeyIterator", K(ret));
@@ -418,7 +419,7 @@ int ObBlockSampleRangeIterator::init_and_push_endkey_iterator(ObGetTableParam &g
         iter = new (buf) ObBlockSampleSSTableEndkeyIterator();
 
         if (OB_FAIL(iter->open(*sstable, *sample_range_,
-            get_table_param.tablet_iter_.tablet_handle_.get_obj()->get_index_read_info(),
+            get_table_param.tablet_iter_.get_tablet()->get_rowkey_read_info(),
             *allocator_, is_reverse_scan_))) {
           STORAGE_LOG(WARN, "Fail to open ObBlockSampleSSTableEndkeyIterator", K(ret), KPC(sstable), KPC(sample_range_));
         } else if (OB_FAIL(endkey_iters_.push_back(iter))) {
@@ -436,7 +437,7 @@ int ObBlockSampleRangeIterator::init_and_push_endkey_iterator(ObGetTableParam &g
     }
   }
   if (OB_SUCC(ret)) {
-    get_table_param.tablet_iter_.table_iter_.resume();
+    get_table_param.tablet_iter_.table_iter()->resume();
   }
 
   return ret;
@@ -454,18 +455,23 @@ int ObBlockSampleRangeIterator::calculate_level_and_batch_size(const double perc
     micro_count += endkey_iters_[i]->get_micro_count();
   }
   if (macro_count > macro_threshold) {
-    // macro level
+    // switch to macro level, reset previous info
+    curr_key_.reset();
+    endkey_heap_.reset();
     batch_size_ = macro_count * percent / 100 / EXPECTED_OPEN_RANGE_NUM;
     for (int64_t i = 0 ; OB_SUCC(ret) && i < endkey_iters_.count() ; ++i) {
-      if (OB_FAIL(endkey_iters_[i]->upgrade_to_macro(*sample_range_))) {
+      ObBlockSampleSSTableEndkeyIterator *iter = endkey_iters_[i];
+      if (OB_FAIL(iter->upgrade_to_macro(*sample_range_))) {
         STORAGE_LOG(WARN, "Fail to upgrade to macro level", K(ret));
+      } else if (!iter->is_reach_end() && OB_FAIL(endkey_heap_.push(iter))) {
+        STORAGE_LOG(WARN, "Fail to push endkey heap", K(ret), K(iter), K(endkey_heap_));
       }
     }
   } else {
     // micro level
    batch_size_ = micro_count * percent / 100 / EXPECTED_OPEN_RANGE_NUM;
   }
-
+  STORAGE_LOG(TRACE, "calculate", K(ret), K(macro_count), K(micro_count), K(macro_threshold), K(batch_size_));
   return ret;
 }
 
@@ -553,7 +559,9 @@ int ObBlockSampleRangeIterator::move_endkey_iter(ObBlockSampleSSTableEndkeyItera
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "ObBlockSampleRangeIterator is not inited", K(ret), KP(allocator_));
   } else if (OB_FAIL(iter.move_forward())) {
-    STORAGE_LOG(WARN, "Fail to move forward endkey iter", K(ret), K(iter));
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+      STORAGE_LOG(WARN, "Fail to move forward endkey iter", K(ret), K(iter));
+    }
   } else if (!iter.is_reach_end() && OB_FAIL(endkey_heap_.push(&iter))) {
     STORAGE_LOG(WARN, "Fail to push endkey heap", K(ret), K(iter), K(endkey_heap_));
   }
@@ -656,7 +664,7 @@ int ObBlockSampleIterator::open(ObMultipleScanMerge &scan_merge,
     scan_merge_ = &scan_merge;
     has_opened_range_ = false;
     access_ctx_ = &access_ctx;
-    read_info_ = &get_table_param.tablet_iter_.tablet_handle_.get_obj()->get_full_read_info();
+    read_info_ = &get_table_param.tablet_iter_.get_tablet()->get_rowkey_read_info();
   }
 
   return ret;

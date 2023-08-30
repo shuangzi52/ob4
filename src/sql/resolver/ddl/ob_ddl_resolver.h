@@ -167,9 +167,6 @@ public:
                                bool need_rewrite_length,
                                const bool is_byte_length = false);
   static int rewrite_text_length_mysql(ObObjType &type, int32_t &length);
-  static int check_uniq_allow(share::schema::ObTableSchema &table_schema,
-                              const obrpc::ObCreateIndexArg &index_arg,
-                              bool &allow);
   // check whether the column is allowed to be primary key.
   int check_add_column_as_pk_allowed(const ObColumnSchemaV2 &column_schema);
   static int get_primary_key_default_value(
@@ -279,6 +276,24 @@ public:
       const common::ObTimeZoneInfoWrap &tz_info_wrap,
       const common::ObString *nls_formats,
       common::ObIAllocator &allocator);
+  static int get_udt_column_default_values(const ObObj &default_value,
+                                           const common::ObTimeZoneInfoWrap &tz_info_wrap,
+                                           const common::ObString *nls_formats,
+                                           ObIAllocator &allocator,
+                                           ObColumnSchemaV2 &column,
+                                           const ObSQLMode sql_mode,
+                                           ObSQLSessionInfo *session_info,
+                                           ObSchemaChecker *schema_checker,
+                                           ObObj &extend_result,
+                                           obrpc::ObDDLArg &ddl_arg);
+  static int ob_udt_check_and_add_ddl_dependency(const uint64_t schema_id,
+                                                 const ObSchemaType schema_type,
+                                                 const int64_t schema_version,
+                                                 const uint64_t schema_tenant_id,
+                                                 obrpc::ObDDLArg &ddl_arg);
+  static int add_udt_default_dependency(ObRawExpr *expr,
+                                        ObSchemaChecker *schema_checker,
+                                        obrpc::ObDDLArg &ddl_arg);
   static int adjust_string_column_length_within_max(
       share::schema::ObColumnSchemaV2 &column,
       const bool is_oracle_mode);
@@ -407,13 +422,15 @@ public:
   int resolve_subpartition_option(ObPartitionedStmt *stmt,
                                   ParseNode *subpart_node,
                                   share::schema::ObTableSchema &table_schema);
+  // @param [in] resolved_cols the columns which have been resolved in alter table, default null
   int resolve_spatial_index_constraint(
       const share::schema::ObTableSchema &table_schema,
       const common::ObString &column_name,
       int64_t column_num,
       const int64_t index_keyname_value,
       bool is_explicit_order,
-      bool is_func_index);
+      bool is_func_index,
+      ObIArray<share::schema::ObColumnSchemaV2*> *resolved_cols = NULL);
   int resolve_spatial_index_constraint(
       const share::schema::ObColumnSchemaV2 &column_schema,
       int64_t column_num,
@@ -421,13 +438,6 @@ public:
       bool is_oracle_mode,
       bool is_explicit_order);
 protected:
-  static int check_same_substr_expr(ObRawExpr &left, ObRawExpr &right, bool &same);
-  static int check_uniq_allow(ObResolverParams &params,
-                              share::schema::ObTableSchema &table_schema,
-                              const obrpc:: ObCreateIndexArg &index_arg,
-                              ObRawExpr *part_func_expr,
-                              common::ObIArray<ObRawExpr *> &constraint_exprs,
-                              bool &allow);
   static int get_part_str_with_type(
       const bool is_oracle_mode,
       share::schema::ObPartitionFuncType part_func_type,
@@ -469,7 +479,8 @@ protected:
       common::ObString &pk_name,
       const bool is_oracle_temp_table = false,
       const bool is_create_table_as = false,
-      const bool is_external_table = false);
+      const bool is_external_table = false,
+      const bool allow_has_default = true);
   int resolve_uk_name_from_column_attribute(
       ParseNode *attrs_node,
       common::ObString &uk_name);
@@ -488,7 +499,8 @@ protected:
   int resolve_normal_column_attribute(share::schema::ObColumnSchemaV2 &column,
                                       ParseNode *attrs_node,
                                       ObColumnResolveStat &reslove_stat,
-                                      common::ObString &pk_name);
+                                      common::ObString &pk_name,
+                                      const bool allow_has_default = true);
   int resolve_normal_column_attribute_check_cons(ObColumnSchemaV2 &column,
                                                  ParseNode *attrs_node,
                                                  ObCreateTableStmt *create_table_stmt);
@@ -539,7 +551,7 @@ protected:
       common::ObSEArray<ObRawExpr*, 8> &range_exprs);
   static int resolve_interval_node(
       ObResolverParams &params,
-      ParseNode *interval_node, 
+      ParseNode *interval_node,
       common::ColumnType &col_dt,
       int64_t precision,
       int64_t scale,
@@ -595,20 +607,10 @@ protected:
     int resolve_enum_or_set_column(
       const ParseNode *type_node,
       share::schema::ObColumnSchemaV2 &column);
-  
+
   static int is_gen_col_with_udf(const ObTableSchema &table_schema,
                                  const ObRawExpr *col_expr,
                                  bool &res);
-
-
-  int resolve_range_partition_elements(ParseNode *node,
-                                       const bool is_subpartition,
-                                       const share::schema::ObPartitionFuncType part_type,
-                                       common::ObIArray<ObRawExpr *> &range_value_exprs,
-                                       common::ObIArray<share::schema::ObPartition> &partitions,
-                                       common::ObIArray<share::schema::ObSubPartition> &subpartitions,
-                                       int64_t &expr_num,
-                                       const bool &in_tablegroup = false);
 
   int resolve_range_value_exprs(ParseNode *expr_list_node,
                                 const share::schema::ObPartitionFuncType part_type,
@@ -845,6 +847,8 @@ protected:
 
   int check_format_valid(const ObExternalFileFormat &format, bool &is_valid);
 
+  int deep_copy_string_in_part_expr(ObPartitionedStmt* stmt);
+  int deep_copy_column_expr_name(common::ObIAllocator &allocator, ObIArray<ObRawExpr*> &exprs);
   void reset();
   int64_t block_size_;
   int64_t consistency_level_;

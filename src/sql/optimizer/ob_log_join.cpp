@@ -246,36 +246,35 @@ int ObLogJoin::get_plan_item_info(PlanText &plan_text,
   return ret;
 }
 
-int ObLogJoin::inner_replace_op_exprs(
-  const ObIArray<std::pair<ObRawExpr *, ObRawExpr *> >&to_replace_exprs)
+int ObLogJoin::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_join_conditions()))) {
+  if (OB_FAIL(replace_exprs_action(replacer, get_join_conditions()))) {
     LOG_WARN("failed to extract subplan params in log join_conditions", K(ret));
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_join_filters()))) {
+  } else if (OB_FAIL(replace_exprs_action(replacer, get_join_filters()))) {
     LOG_WARN("failed to extract subplan params in log join_filters", K(ret));
   } else {
     int64_t N = get_nl_params().count();
     for (int64_t i = 0; OB_SUCC(ret) && i < N; ++i) {
       ObRawExpr *&cur_expr = get_nl_params().at(i)->get_ref_expr();
-      if (OB_FAIL(replace_expr_action(to_replace_exprs, cur_expr))) {
+      if (OB_FAIL(replace_expr_action(replacer, cur_expr))) {
         LOG_WARN("failed to extract subplan params in log join_filters", K(ret));
       } else { /* Do nothing */ }
     }
   }
   // add extra replace expr
   if (OB_SUCC(ret) && (CONNECT_BY_JOIN == join_type_)) {
-    if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_connect_by_root_exprs()))) {
+    if (OB_FAIL(replace_exprs_action(replacer, get_connect_by_root_exprs()))) {
       LOG_WARN("failed to replace connect by root exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_sys_connect_by_path_exprs()))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, get_sys_connect_by_path_exprs()))) {
       LOG_WARN("failed to replace sys connect by path exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_prior_exprs()))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, get_prior_exprs()))) {
       LOG_WARN("failed to replace prior exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_connect_by_pseudo_columns()))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, get_connect_by_pseudo_columns()))) {
       LOG_WARN("failed to replace connect by pseudo columns", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_connect_by_prior_exprs()))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, get_connect_by_prior_exprs()))) {
       LOG_WARN("failed to replace connect by prior exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, get_connect_by_extra_exprs()))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, get_connect_by_extra_exprs()))) {
       LOG_WARN("failed to replace sys connect by extra exprs", K(ret));
     }
   }
@@ -1250,16 +1249,8 @@ int ObLogJoin::check_and_set_use_batch()
       LOG_WARN("failed to check contains limit", K(ret));
     } else if (contains_limit) {
       can_use_batch_nlj_ = false;
-    } else if (get_child(1)->is_table_scan()) {
-      ObLogTableScan *ts = NULL;
-      if (OB_ISNULL(ts = static_cast<ObLogTableScan *>(get_child(1)))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("invalid input", K(ret));
-      } else if (ts->has_index_scan_filter() && ts->get_index_back() && ts->get_is_index_global()) {
-        // For the global index lookup, if there is a pushdown filter when scanning the index,
-        // batch cannot be used.
-        can_use_batch_nlj_ = false;
-      }
+    } else if (OB_FAIL(check_if_disable_batch(get_child(1)))) {
+      LOG_WARN("failed to check if disable batch", K(ret));
     }
   }
   // set use batch
@@ -1268,6 +1259,60 @@ int ObLogJoin::check_and_set_use_batch()
       LOG_WARN("failed to set use batch nlj", K(ret));
     }
   }
+  return ret;
+}
+
+int ObLogJoin::check_if_disable_batch(ObLogicalOperator* root)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(root)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret));
+  } else if (!can_use_batch_nlj_) {
+    // do nothing
+  } else if (root->is_table_scan()) {
+    ObLogTableScan *ts = NULL;
+    ObLogPlan *plan = NULL;
+    ObTablePartitionInfo *info = NULL;
+    if (OB_ISNULL(ts = static_cast<ObLogTableScan *>(root)) ||
+        OB_ISNULL(plan = get_plan()) ||
+        OB_ISNULL(info = ts->get_table_partition_info())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid input", K(ret));
+    } else if (ts->has_index_scan_filter() && ts->get_index_back() && ts->get_is_index_global()) {
+      // For the global index lookup, if there is a pushdown filter when scanning the index,
+      // batch cannot be used.
+      can_use_batch_nlj_ = false;
+    } else {
+      SMART_VAR(ObTablePartitionInfo, tmp_info) {
+        ObTablePartitionInfo *tmp_info_ptr = &tmp_info;
+        if (OB_FAIL(plan->gen_das_table_location_info(ts, tmp_info_ptr))) {
+          LOG_WARN("failed to gen das table location info", K(ret));
+        } else {
+          if (tmp_info.get_table_location().use_das() &&
+              tmp_info.get_table_location().get_has_dynamic_exec_param()) {
+            // dynamic partition pruning, no need to check
+          } else if (10 < info->get_phy_tbl_location_info().get_phy_part_loc_info_list().count()) {
+            can_use_batch_nlj_ = false;
+          }
+        }
+      }
+    }
+  } else if (log_op_def::LOG_SUBPLAN_SCAN == root->get_type()) {
+    if (OB_FAIL(SMART_CALL(check_if_disable_batch(root->get_child(0))))) {
+      LOG_WARN("failed to check if disable batch", K(ret));
+    }
+  } else if (log_op_def::LOG_SET == root->get_type()) {
+    for (int64_t i = 0; OB_SUCC(ret) && can_use_batch_nlj_ && i < root->get_num_of_child(); ++i) {
+      ObLogicalOperator *child = root->get_child(i);
+      if (OB_ISNULL(child)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid child", K(ret));
+      } else if (OB_FAIL(SMART_CALL(check_if_disable_batch(child)))) {
+        LOG_WARN("failed to check if disable batch", K(ret));
+      }
+    }
+  } else { /* do nothing */ }
   return ret;
 }
 

@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -48,59 +56,50 @@ public:
   bool is_valid() const { return is_inited_; }
   TO_STRING_KV(K_(is_inited));
 public:
-  OB_INLINE obsys::ObRWLock &get_status_lock()
+  OB_INLINE lib::ObMutex &get_op_lock()
   {
-    return status_lock_;
+    return op_lock_;
   }
   OB_INLINE table::ObTableLoadStatusType get_status() const
   {
     obsys::ObRLockGuard guard(status_lock_);
     return status_;
   }
-  OB_INLINE int get_error_code() const
+  OB_INLINE void get_status(table::ObTableLoadStatusType &status, int &error_code) const
   {
     obsys::ObRLockGuard guard(status_lock_);
-    return error_code_;
+    status = status_;
+    error_code = error_code_;
   }
   OB_INLINE int set_status_inited()
   {
-    obsys::ObWLockGuard guard(status_lock_);
-    return advance_status_unlock(table::ObTableLoadStatusType::INITED);
+    return advance_status(table::ObTableLoadStatusType::INITED);
   }
   OB_INLINE int set_status_loading()
   {
-    obsys::ObWLockGuard guard(status_lock_);
-    return advance_status_unlock(table::ObTableLoadStatusType::LOADING);
+    return advance_status(table::ObTableLoadStatusType::LOADING);
   }
   OB_INLINE int set_status_frozen()
   {
-    obsys::ObWLockGuard guard(status_lock_);
-    return advance_status_unlock(table::ObTableLoadStatusType::FROZEN);
+    return advance_status(table::ObTableLoadStatusType::FROZEN);
   }
   OB_INLINE int set_status_merging()
   {
-    obsys::ObWLockGuard guard(status_lock_);
-    return advance_status_unlock(table::ObTableLoadStatusType::MERGING);
+    return advance_status(table::ObTableLoadStatusType::MERGING);
   }
   OB_INLINE int set_status_merged()
   {
-    obsys::ObWLockGuard guard(status_lock_);
-    return advance_status_unlock(table::ObTableLoadStatusType::MERGED);
+    return advance_status(table::ObTableLoadStatusType::MERGED);
   }
-  OB_INLINE int set_status_commit_unlock()
+  OB_INLINE int set_status_commit()
   {
-    return advance_status_unlock(table::ObTableLoadStatusType::COMMIT);
+    return advance_status(table::ObTableLoadStatusType::COMMIT);
   }
   int set_status_error(int error_code);
   int set_status_abort();
-  int check_status_unlock(table::ObTableLoadStatusType status) const;
-  OB_INLINE int check_status(table::ObTableLoadStatusType status) const
-  {
-    obsys::ObRLockGuard guard(status_lock_);
-    return check_status_unlock(status);
-  }
+  int check_status(table::ObTableLoadStatusType status) const;
 private:
-  int advance_status_unlock(table::ObTableLoadStatusType status);
+  int advance_status(table::ObTableLoadStatusType status);
 public:
   int start_trans(const table::ObTableLoadTransId &trans_id, ObTableLoadStoreTrans *&trans);
   int commit_trans(ObTableLoadStoreTrans *trans);
@@ -130,6 +129,7 @@ public:
   int commit_autoinc_value();
 public:
   ObTableLoadTableCtx * const ctx_;
+  common::ObArenaAllocator allocator_;
   common::ObArray<table::ObTableLoadLSIdAndPartitionId> ls_partition_ids_;
   common::ObArray<table::ObTableLoadLSIdAndPartitionId> target_ls_partition_ids_;
   storage::ObDirectLoadTableDataDesc table_data_desc_;
@@ -174,8 +174,8 @@ private:
   typedef common::ObLinkHashMap<table::ObTableLoadSegmentID, SegmentCtx> SegmentCtxMap;
 private:
   ObTableLoadObjectAllocator<ObTableLoadStoreTrans> trans_allocator_; // 多线程安全
-  common::ObArenaAllocator allocator_;
-  obsys::ObRWLock status_lock_;
+  lib::ObMutex op_lock_;
+  mutable obsys::ObRWLock status_lock_;
   table::ObTableLoadStatusType status_;
   int error_code_;
   mutable obsys::ObRWLock rwlock_;

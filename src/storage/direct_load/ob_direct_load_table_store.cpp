@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_table_store.h"
@@ -27,6 +34,8 @@ using namespace table;
 ObDirectLoadTableStoreParam::ObDirectLoadTableStoreParam()
   : snapshot_version_(0),
     datum_utils_(nullptr),
+    col_descs_(nullptr),
+    cmp_funcs_(nullptr),
     file_mgr_(nullptr),
     is_multiple_mode_(false),
     is_fast_heap_table_(false),
@@ -45,7 +54,7 @@ ObDirectLoadTableStoreParam::~ObDirectLoadTableStoreParam()
 bool ObDirectLoadTableStoreParam::is_valid() const
 {
   return snapshot_version_ > 0 && table_data_desc_.is_valid() && nullptr != datum_utils_ &&
-         nullptr != file_mgr_ &&
+         nullptr != col_descs_ && nullptr != cmp_funcs_ && nullptr != file_mgr_ &&
          (!is_fast_heap_table_ ||
           (nullptr != insert_table_ctx_ && nullptr != fast_heap_table_ctx_)) &&
          nullptr != dml_row_handler_;
@@ -103,6 +112,7 @@ int ObDirectLoadTableStoreBucket::init(const ObDirectLoadTableStoreParam &param,
       fast_heap_table_build_param.table_data_desc_ = param.table_data_desc_;
       fast_heap_table_build_param.datum_utils_ = param.datum_utils_;
       fast_heap_table_build_param.col_descs_ = param.col_descs_;
+      fast_heap_table_build_param.cmp_funcs_ = param.cmp_funcs_;
       fast_heap_table_build_param.insert_table_ctx_ = param.insert_table_ctx_;
       fast_heap_table_build_param.fast_heap_table_ctx_ = param.fast_heap_table_ctx_;
       fast_heap_table_build_param.dml_row_handler_ = param.dml_row_handler_;
@@ -145,9 +155,10 @@ int ObDirectLoadTableStoreBucket::init(const ObDirectLoadTableStoreParam &param,
 }
 
 int ObDirectLoadTableStoreBucket::append_row(const ObTabletID &tablet_id,
+                                             const ObTableLoadSequenceNo &seq_no,
                                              const ObDatumRow &datum_row)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(table_store_bucket_append_row);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, table_store_bucket_append_row);
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -157,7 +168,7 @@ int ObDirectLoadTableStoreBucket::append_row(const ObTabletID &tablet_id,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(tablet_id), K(datum_row), KPC(param_));
   } else {
-    if (OB_FAIL(table_builder_->append_row(tablet_id, datum_row))) {
+    if (OB_FAIL(table_builder_->append_row(tablet_id, seq_no, datum_row))) {
       LOG_WARN("fail to append row", KR(ret));
     }
   }
@@ -253,7 +264,7 @@ int ObDirectLoadTableStore::new_bucket(ObDirectLoadTableStoreBucket *&bucket)
 int ObDirectLoadTableStore::get_bucket(const ObTabletID &tablet_id,
                                        ObDirectLoadTableStoreBucket *&bucket)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(table_store_get_bucket);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, table_store_get_bucket);
   int ret = OB_SUCCESS;
   bucket = nullptr;
   if (!param_.is_multiple_mode_) {
@@ -288,9 +299,9 @@ int ObDirectLoadTableStore::get_bucket(const ObTabletID &tablet_id,
   return ret;
 }
 
-int ObDirectLoadTableStore::append_row(const ObTabletID &tablet_id, const ObDatumRow &datum_row)
+int ObDirectLoadTableStore::append_row(const ObTabletID &tablet_id, const ObTableLoadSequenceNo &seq_no, const ObDatumRow &datum_row)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(table_store_append_row);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, table_store_append_row);
   OB_TABLE_LOAD_STATISTICS_COUNTER(table_store_row_count);
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -303,7 +314,7 @@ int ObDirectLoadTableStore::append_row(const ObTabletID &tablet_id, const ObDatu
     ObDirectLoadTableStoreBucket *bucket = nullptr;
     if (OB_FAIL(get_bucket(tablet_id, bucket))) {
       LOG_WARN("fail to get bucket", KR(ret), K(tablet_id));
-    } else if (OB_FAIL(bucket->append_row(tablet_id, datum_row))) {
+    } else if (OB_FAIL(bucket->append_row(tablet_id, seq_no, datum_row))) {
       LOG_WARN("fail to append row to bucket", KR(ret), K(tablet_id), K(datum_row));
     }
   }

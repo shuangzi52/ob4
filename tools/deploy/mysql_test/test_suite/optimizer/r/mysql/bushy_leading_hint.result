@@ -33,30 +33,30 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |12          |
-|1 |└─HASH JOIN          |    |5       |12          |
-|2 |  ├─TABLE FULL SCAN  |c   |11      |3           |
-|3 |  └─HASH JOIN        |    |4       |7           |
-|4 |    ├─TABLE FULL SCAN|b   |11      |3           |
-|5 |    └─TABLE FULL SCAN|a   |2       |3           |
+|0 |SCALAR GROUP BY      |    |1       |18          |
+|1 |└─HASH JOIN          |    |5       |18          |
+|2 |  ├─TABLE FULL SCAN  |c   |11      |5           |
+|3 |  └─HASH JOIN        |    |4       |12          |
+|4 |    ├─TABLE FULL SCAN|b   |11      |5           |
+|5 |    └─TABLE FULL SCAN|a   |2       |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 * a.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 * a.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 * a.c2)])
-  1 - output([a.c1], [b.d2], [a.c2]), filter(nil), rowset=256
+  1 - output([a.c1], [b.d2], [a.c2]), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1]), other_conds(nil)
-  2 - output([c.c1]), filter(nil), rowset=256
+  2 - output([c.c1]), filter(nil), rowset=16
       access([c.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([a.c1], [b.d2], [b.d1], [a.c2]), filter(nil), rowset=256
+  3 - output([a.c1], [b.d2], [b.d1], [a.c2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  4 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  4 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=256
+  5 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
@@ -72,30 +72,30 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |11          |
-|1 |└─HASH JOIN          |    |6       |11          |
-|2 |  ├─TABLE FULL SCAN  |c   |11      |3           |
-|3 |  └─HASH JOIN        |    |4       |7           |
-|4 |    ├─TABLE FULL SCAN|b   |11      |3           |
-|5 |    └─TABLE FULL SCAN|a   |2       |3           |
+|0 |SCALAR GROUP BY      |    |1       |18          |
+|1 |└─HASH JOIN          |    |6       |18          |
+|2 |  ├─TABLE FULL SCAN  |c   |11      |5           |
+|3 |  └─HASH JOIN        |    |4       |11          |
+|4 |    ├─TABLE FULL SCAN|b   |11      |5           |
+|5 |    └─TABLE FULL SCAN|a   |2       |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(a.c1)], [T_FUN_SUM(a.c2 + b.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(a.c1)], [T_FUN_SUM(a.c2 + b.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(a.c1)], [T_FUN_SUM(a.c2 + b.d2)])
-  1 - output([b.d2], [a.c1], [a.c2]), filter(nil), rowset=256
+  1 - output([b.d2], [a.c1], [a.c2]), filter(nil), rowset=16
       equal_conds([c.c1 = b.d2 + 1]), other_conds(nil)
-  2 - output([c.c1]), filter(nil), rowset=256
+  2 - output([c.c1]), filter(nil), rowset=16
       access([c.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([b.d2], [a.c1], [a.c2]), filter(nil), rowset=256
+  3 - output([b.d2], [a.c1], [a.c2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  4 - output([b.d2]), filter(nil), rowset=256
+  4 - output([b.d2]), filter(nil), rowset=16
       access([b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([a.c1], [a.c2]), filter([a.c2 < 15]), rowset=256
+  5 - output([a.c1], [a.c2]), filter([a.c2 < 15]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
@@ -112,38 +112,38 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |17          |
-|1 |└─HASH JOIN          |    |8       |17          |
-|2 |  ├─HASH JOIN        |    |17      |8           |
-|3 |  │ ├─TABLE FULL SCAN|c   |11      |3           |
-|4 |  │ └─TABLE FULL SCAN|d   |11      |3           |
-|5 |  └─HASH JOIN        |    |4       |6           |
-|6 |    ├─TABLE FULL SCAN|a   |2       |3           |
-|7 |    └─TABLE FULL SCAN|b   |11      |3           |
+|0 |SCALAR GROUP BY      |    |1       |26          |
+|1 |└─HASH JOIN          |    |8       |26          |
+|2 |  ├─HASH JOIN        |    |17      |13          |
+|3 |  │ ├─TABLE FULL SCAN|c   |11      |5           |
+|4 |  │ └─TABLE FULL SCAN|d   |11      |5           |
+|5 |  └─HASH JOIN        |    |4       |11          |
+|6 |    ├─TABLE FULL SCAN|a   |2       |5           |
+|7 |    └─TABLE FULL SCAN|b   |11      |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)], [T_FUN_SUM(b.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)], [T_FUN_SUM(b.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)], [T_FUN_SUM(b.d2)])
-  1 - output([a.c1], [b.d2]), filter(nil), rowset=256
+  1 - output([a.c1], [b.d2]), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1]), other_conds(nil)
-  2 - output([c.c1]), filter(nil), rowset=256
+  2 - output([c.c1]), filter(nil), rowset=16
       equal_conds([d.c2 = c.c2]), other_conds(nil)
-  3 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  3 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([d.c2]), filter(nil), rowset=256
+  4 - output([d.c2]), filter(nil), rowset=16
       access([d.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([a.c1], [b.d2], [b.d1]), filter(nil), rowset=256
+  5 - output([a.c1], [b.d2], [b.d1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  6 - output([a.c1]), filter([a.c2 < 5]), rowset=256
+  6 - output([a.c1]), filter([a.c2 < 5]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  7 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -162,38 +162,38 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |21          |
-|1 |└─HASH JOIN          |    |29      |20          |
-|2 |  ├─HASH JOIN        |    |17      |8           |
-|3 |  │ ├─TABLE FULL SCAN|c   |11      |3           |
-|4 |  │ └─TABLE FULL SCAN|d   |11      |3           |
-|5 |  └─HASH JOIN        |    |15      |8           |
-|6 |    ├─TABLE FULL SCAN|a   |11      |3           |
-|7 |    └─TABLE FULL SCAN|b   |11      |3           |
+|0 |SCALAR GROUP BY      |    |1       |31          |
+|1 |└─HASH JOIN          |    |29      |30          |
+|2 |  ├─HASH JOIN        |    |17      |13          |
+|3 |  │ ├─TABLE FULL SCAN|c   |11      |5           |
+|4 |  │ └─TABLE FULL SCAN|d   |11      |5           |
+|5 |  └─HASH JOIN        |    |15      |12          |
+|6 |    ├─TABLE FULL SCAN|a   |11      |5           |
+|7 |    └─TABLE FULL SCAN|b   |11      |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d1 + c.c1 - d.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d1 + c.c1 - d.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d1 + c.c1 - d.c2)])
-  1 - output([b.d1], [c.c1], [d.c2], [a.c1]), filter(nil), rowset=256
+  1 - output([b.d1], [c.c1], [d.c2], [a.c1]), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1]), other_conds(nil)
-  2 - output([c.c1], [d.c2]), filter(nil), rowset=256
+  2 - output([c.c1], [d.c2]), filter(nil), rowset=16
       equal_conds([d.c2 = c.c2]), other_conds(nil)
-  3 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  3 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([d.c2]), filter(nil), rowset=256
+  4 - output([d.c2]), filter(nil), rowset=16
       access([d.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([b.d1], [a.c1]), filter(nil), rowset=256
+  5 - output([b.d1], [a.c1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  6 - output([a.c1]), filter(nil), rowset=256
+  6 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  7 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -213,38 +213,38 @@ Query Plan
 =======================================================
 |ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------
-|0 |SCALAR GROUP BY        |    |1       |14          |
-|1 |└─HASH JOIN            |    |3       |14          |
-|2 |  ├─TABLE FULL SCAN    |c   |11      |3           |
-|3 |  └─HASH JOIN          |    |4       |9           |
-|4 |    ├─HASH JOIN        |    |2       |6           |
-|5 |    │ ├─TABLE FULL SCAN|a   |2       |3           |
-|6 |    │ └─TABLE FULL SCAN|d   |2       |3           |
-|7 |    └─TABLE FULL SCAN  |b   |11      |3           |
+|0 |SCALAR GROUP BY        |    |1       |23          |
+|1 |└─HASH JOIN            |    |3       |23          |
+|2 |  ├─TABLE FULL SCAN    |c   |11      |5           |
+|3 |  └─HASH JOIN          |    |4       |16          |
+|4 |    ├─HASH JOIN        |    |2       |10          |
+|5 |    │ ├─TABLE FULL SCAN|a   |2       |5           |
+|6 |    │ └─TABLE FULL SCAN|d   |2       |5           |
+|7 |    └─TABLE FULL SCAN  |b   |11      |5           |
 =======================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(a.c1)], [T_FUN_SUM(b.d1 * b.d2 - a.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(a.c1)], [T_FUN_SUM(b.d1 * b.d2 - a.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(a.c1)], [T_FUN_SUM(b.d1 * b.d2 - a.c2)])
-  1 - output([b.d1], [b.d2], [a.c1], [a.c2]), filter(nil), rowset=256
+  1 - output([b.d1], [b.d2], [a.c1], [a.c2]), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1], [b.d2 = c.c2]), other_conds(nil)
-  2 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  2 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([b.d1], [b.d2], [a.c1], [a.c2]), filter(nil), rowset=256
+  3 - output([b.d1], [b.d2], [a.c1], [a.c2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  4 - output([a.c1], [a.c2]), filter(nil), rowset=256
+  4 - output([a.c1], [a.c2]), filter(nil), rowset=16
       equal_conds([d.c2 = a.c1]), other_conds(nil)
-  5 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=256
+  5 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([d.c2]), filter([d.c1 = d.c2]), rowset=256
+  6 - output([d.c2]), filter([d.c1 = d.c2]), rowset=16
       access([d.c2], [d.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  7 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -264,30 +264,30 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |14          |
-|1 |└─HASH JOIN          |    |3       |14          |
-|2 |  ├─TABLE FULL SCAN  |c   |11      |3           |
-|3 |  └─HASH JOIN        |    |15      |8           |
-|4 |    ├─TABLE FULL SCAN|d   |11      |3           |
-|5 |    └─TABLE FULL SCAN|b   |11      |3           |
+|0 |SCALAR GROUP BY      |    |1       |21          |
+|1 |└─HASH JOIN          |    |3       |21          |
+|2 |  ├─TABLE FULL SCAN  |c   |11      |5           |
+|3 |  └─HASH JOIN        |    |15      |13          |
+|4 |    ├─TABLE FULL SCAN|d   |11      |5           |
+|5 |    └─TABLE FULL SCAN|b   |11      |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)])
-  1 - output(nil), filter(nil), rowset=256
+  1 - output(nil), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1], [d.c2 = c.c2]), other_conds(nil)
-  2 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  2 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([d.c2], [b.d1]), filter(nil), rowset=256
+  3 - output([d.c2], [b.d1]), filter(nil), rowset=16
       equal_conds([d.c1 = b.d2]), other_conds(nil)
-  4 - output([d.c2], [d.c1]), filter(nil), rowset=256
+  4 - output([d.c2], [d.c1]), filter(nil), rowset=16
       access([d.c2], [d.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([b.d1], [b.d2]), filter(nil), rowset=256
+  5 - output([b.d1], [b.d2]), filter(nil), rowset=16
       access([b.d1], [b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -309,78 +309,78 @@ Query Plan
 ===========================================================
 |ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------
-|0 |SCALAR GROUP BY            |    |1       |35          |
-|1 |└─HASH JOIN                |    |7       |35          |
-|2 |  ├─HASH JOIN              |    |3       |20          |
-|3 |  │ ├─HASH JOIN            |    |2       |11          |
-|4 |  │ │ ├─HASH JOIN          |    |2       |8           |
-|5 |  │ │ │ ├─TABLE FULL SCAN  |t2  |2       |3           |
-|6 |  │ │ │ └─HASH JOIN        |    |2       |6           |
-|7 |  │ │ │   ├─TABLE FULL SCAN|t1  |1       |3           |
-|8 |  │ │ │   └─TABLE FULL SCAN|t3  |2       |3           |
-|9 |  │ │ └─TABLE FULL SCAN    |t7  |11      |3           |
-|10|  │ └─HASH JOIN            |    |15      |7           |
-|11|  │   ├─TABLE FULL SCAN    |t8  |11      |3           |
-|12|  │   └─TABLE FULL SCAN    |t9  |11      |3           |
-|13|  └─HASH JOIN              |    |19      |13          |
-|14|    ├─HASH JOIN            |    |15      |7           |
-|15|    │ ├─TABLE FULL SCAN    |t4  |11      |3           |
-|16|    │ └─TABLE FULL SCAN    |t5  |11      |3           |
-|17|    └─TABLE FULL SCAN      |t6  |11      |3           |
+|0 |SCALAR GROUP BY            |    |1       |56          |
+|1 |└─HASH JOIN                |    |7       |56          |
+|2 |  ├─HASH JOIN              |    |3       |33          |
+|3 |  │ ├─HASH JOIN            |    |2       |20          |
+|4 |  │ │ ├─HASH JOIN          |    |2       |14          |
+|5 |  │ │ │ ├─TABLE FULL SCAN  |t2  |2       |5           |
+|6 |  │ │ │ └─HASH JOIN        |    |2       |10          |
+|7 |  │ │ │   ├─TABLE FULL SCAN|t1  |1       |5           |
+|8 |  │ │ │   └─TABLE FULL SCAN|t3  |2       |5           |
+|9 |  │ │ └─TABLE FULL SCAN    |t7  |11      |5           |
+|10|  │ └─HASH JOIN            |    |15      |12          |
+|11|  │   ├─TABLE FULL SCAN    |t8  |11      |5           |
+|12|  │   └─TABLE FULL SCAN    |t9  |11      |5           |
+|13|  └─HASH JOIN              |    |19      |20          |
+|14|    ├─HASH JOIN            |    |15      |12          |
+|15|    │ ├─TABLE FULL SCAN    |t4  |11      |5           |
+|16|    │ └─TABLE FULL SCAN    |t5  |11      |5           |
+|17|    └─TABLE FULL SCAN      |t6  |11      |5           |
 ===========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)])
-  1 - output(nil), filter(nil), rowset=256
+  1 - output(nil), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  2 - output([t1.c1]), filter(nil), rowset=256
+  2 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t8.c1]), other_conds(nil)
-  3 - output([t1.c1]), filter(nil), rowset=256
+  3 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  4 - output([t1.c1]), filter(nil), rowset=256
+  4 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  5 - output([t2.c1]), filter([t2.c2 < 4]), rowset=256
+  5 - output([t2.c1]), filter([t2.c2 < 4]), rowset=16
       access([t2.c1], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t1.c1]), filter(nil), rowset=256
+  6 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  7 - output([t1.c1]), filter([t1.c3 = 'hello11']), rowset=256
+  7 - output([t1.c1]), filter([t1.c3 = 'hello11']), rowset=16
       access([t1.c1], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=256
+  8 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t7.c1]), filter(nil), rowset=256
+  9 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t8.c1]), filter(nil), rowset=256
+ 10 - output([t8.c1]), filter(nil), rowset=16
       equal_conds([t8.c1 = t9.c1]), other_conds(nil)
- 11 - output([t8.c1]), filter(nil), rowset=256
+ 11 - output([t8.c1]), filter(nil), rowset=16
       access([t8.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t9.c1]), filter(nil), rowset=256
+ 12 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t4.c1]), filter(nil), rowset=256
+ 13 - output([t4.c1]), filter(nil), rowset=16
       equal_conds([t4.c1 = t6.c1]), other_conds(nil)
- 14 - output([t4.c1]), filter(nil), rowset=256
+ 14 - output([t4.c1]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
- 15 - output([t4.c1]), filter(nil), rowset=256
+ 15 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t5.c1]), filter(nil), rowset=256
+ 16 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t6.c1]), filter(nil), rowset=256
+ 17 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -404,76 +404,76 @@ Query Plan
 ===================================================================
 |ID|OPERATOR                           |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------------
-|0 |SCALAR GROUP BY                    |    |1       |247         |
-|1 |└─HASH JOIN                        |    |6       |246         |
-|2 |  ├─HASH JOIN                      |    |67      |196         |
-|3 |  │ ├─HASH JOIN                    |    |19      |15          |
-|4 |  │ │ ├─HASH JOIN                  |    |15      |8           |
-|5 |  │ │ │ ├─TABLE FULL SCAN          |t1  |11      |3           |
-|6 |  │ │ │ └─TABLE FULL SCAN          |t2  |11      |3           |
-|7 |  │ │ └─TABLE FULL SCAN            |t3  |11      |3           |
-|8 |  │ └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |44          |
-|9 |  │   ├─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|10|  │   │ ├─TABLE FULL SCAN          |t4  |11      |3           |
-|11|  │   │ └─MATERIAL                 |    |11      |3           |
-|12|  │   │   └─TABLE FULL SCAN        |t5  |11      |3           |
-|13|  │   └─MATERIAL                   |    |11      |3           |
-|14|  │     └─TABLE FULL SCAN          |t6  |11      |3           |
-|15|  └─NESTED-LOOP JOIN CARTESIAN     |    |121     |9           |
-|16|    ├─TABLE FULL SCAN              |t7  |11      |3           |
-|17|    └─MATERIAL                     |    |11      |4           |
-|18|      └─TABLE FULL SCAN            |t8  |11      |3           |
+|0 |SCALAR GROUP BY                    |    |1       |266         |
+|1 |└─HASH JOIN                        |    |6       |266         |
+|2 |  ├─HASH JOIN                      |    |67      |211         |
+|3 |  │ ├─HASH JOIN                    |    |19      |22          |
+|4 |  │ │ ├─HASH JOIN                  |    |15      |13          |
+|5 |  │ │ │ ├─TABLE FULL SCAN          |t1  |11      |5           |
+|6 |  │ │ │ └─TABLE FULL SCAN          |t2  |11      |5           |
+|7 |  │ │ └─TABLE FULL SCAN            |t3  |11      |5           |
+|8 |  │ └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |51          |
+|9 |  │   ├─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|10|  │   │ ├─TABLE FULL SCAN          |t4  |11      |5           |
+|11|  │   │ └─MATERIAL                 |    |11      |5           |
+|12|  │   │   └─TABLE FULL SCAN        |t5  |11      |5           |
+|13|  │   └─MATERIAL                   |    |11      |5           |
+|14|  │     └─TABLE FULL SCAN          |t6  |11      |5           |
+|15|  └─NESTED-LOOP JOIN CARTESIAN     |    |121     |13          |
+|16|    ├─TABLE FULL SCAN              |t7  |11      |5           |
+|17|    └─MATERIAL                     |    |11      |6           |
+|18|      └─TABLE FULL SCAN            |t8  |11      |5           |
 ===================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.d1 + t3.c1 + t4.d2 - t5.c1 + t6.d2 - t7.c1 - t8.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.d1 + t3.c1 + t4.d2 - t5.c1 + t6.d2 - t7.c1 - t8.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.d1 + t3.c1 + t4.d2 - t5.c1 + t6.d2 - t7.c1 - t8.d2)])
-  1 - output([t7.c1], [t2.d1], [t4.d2], [t8.d2], [t6.d2], [t1.c1], [t5.c1], [t3.c1]), filter(nil), rowset=256
+  1 - output([t7.c1], [t2.d1], [t4.d2], [t8.d2], [t6.d2], [t1.c1], [t5.c1], [t3.c1]), filter(nil), rowset=16
       equal_conds([t7.c1 = t2.d1], [t2.d2 = t7.c2], [t8.d1 = t4.d2], [t8.d2 = t6.d2]), other_conds(nil)
-  2 - output([t2.d1], [t4.d2], [t6.d2], [t1.c1], [t5.c1], [t2.d2], [t3.c1]), filter(nil), rowset=256
+  2 - output([t2.d1], [t4.d2], [t6.d2], [t1.c1], [t5.c1], [t2.d2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t4.d1 = t1.c1], [t5.c1 = t2.d2], [t6.d2 = t3.c1]), other_conds(nil)
-  3 - output([t2.d1], [t1.c1], [t2.d2], [t3.c1]), filter(nil), rowset=256
+  3 - output([t2.d1], [t1.c1], [t2.d2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t1.c2 = t3.c1]), other_conds(nil)
-  4 - output([t2.d1], [t1.c1], [t2.d2], [t1.c2]), filter(nil), rowset=256
+  4 - output([t2.d1], [t1.c1], [t2.d2], [t1.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.d1]), other_conds(nil)
-  5 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  5 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t2.d1], [t2.d2]), filter(nil), rowset=256
+  6 - output([t2.d1], [t2.d2]), filter(nil), rowset=16
       access([t2.d1], [t2.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t3.c1]), filter(nil), rowset=256
+  7 - output([t3.c1]), filter(nil), rowset=16
       access([t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t4.d2], [t6.d2], [t5.c1], [t4.d1]), filter(nil), rowset=256
+  8 - output([t4.d2], [t6.d2], [t5.c1], [t4.d1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  9 - output([t4.d2], [t5.c1], [t4.d1]), filter(nil), rowset=256
+  9 - output([t4.d2], [t5.c1], [t4.d1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
- 10 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
+ 10 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
       access([t4.d1], [t4.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t5.c1]), filter(nil), rowset=256
- 12 - output([t5.c1]), filter(nil), rowset=256
+ 11 - output([t5.c1]), filter(nil), rowset=16
+ 12 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t6.d2]), filter(nil), rowset=256
- 14 - output([t6.d2]), filter(nil), rowset=256
+ 13 - output([t6.d2]), filter(nil), rowset=16
+ 14 - output([t6.d2]), filter(nil), rowset=16
       access([t6.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t7.c1], [t8.d2], [t7.c2], [t8.d1]), filter(nil), rowset=256
+ 15 - output([t7.c1], [t8.d2], [t7.c2], [t8.d1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
- 16 - output([t7.c1], [t7.c2]), filter(nil), rowset=256
+ 16 - output([t7.c1], [t7.c2]), filter(nil), rowset=16
       access([t7.c1], [t7.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t8.d2], [t8.d1]), filter(nil), rowset=256
- 18 - output([t8.d1], [t8.d2]), filter(nil), rowset=256
+ 17 - output([t8.d2], [t8.d1]), filter(nil), rowset=16
+ 18 - output([t8.d1], [t8.d2]), filter(nil), rowset=16
       access([t8.d1], [t8.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
@@ -494,40 +494,40 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |18          |
-|1 |└─HASH JOIN                    |    |8       |18          |
-|2 |  ├─TABLE FULL SCAN            |c   |11      |3           |
-|3 |  └─NESTED-LOOP JOIN CARTESIAN |    |40      |10          |
-|4 |    ├─TABLE FULL SCAN          |d   |11      |3           |
-|5 |    └─MATERIAL                 |    |4       |7           |
-|6 |      └─HASH JOIN              |    |4       |6           |
-|7 |        ├─TABLE FULL SCAN      |a   |2       |3           |
-|8 |        └─TABLE FULL SCAN      |b   |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |27          |
+|1 |└─HASH JOIN                    |    |8       |27          |
+|2 |  ├─TABLE FULL SCAN            |c   |11      |5           |
+|3 |  └─NESTED-LOOP JOIN CARTESIAN |    |40      |16          |
+|4 |    ├─TABLE FULL SCAN          |d   |11      |5           |
+|5 |    └─MATERIAL                 |    |4       |11          |
+|6 |      └─HASH JOIN              |    |4       |11          |
+|7 |        ├─TABLE FULL SCAN      |a   |2       |5           |
+|8 |        └─TABLE FULL SCAN      |b   |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(a.c1 + b.d2 + a.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(a.c1 + b.d2 + a.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(a.c1 + b.d2 + a.c2)])
-  1 - output([a.c1], [b.d2], [a.c2]), filter(nil), rowset=256
+  1 - output([a.c1], [b.d2], [a.c2]), filter(nil), rowset=16
       equal_conds([d.c2 = c.c2], [b.d1 = c.c1]), other_conds(nil)
-  2 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  2 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([d.c2], [a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=256
+  3 - output([d.c2], [a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  4 - output([d.c2]), filter(nil), rowset=256
+  4 - output([d.c2]), filter(nil), rowset=16
       access([d.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=256
-  6 - output([a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=256
+  5 - output([a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=16
+  6 - output([a.c1], [b.d2], [a.c2], [b.d1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  7 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=256
+  7 - output([a.c1], [a.c2]), filter([a.c2 < 5]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  8 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -548,78 +548,78 @@ Query Plan
 =================================================================
 |ID|OPERATOR                         |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------------
-|0 |SCALAR GROUP BY                  |    |1       |48          |
-|1 |└─HASH JOIN                      |    |14      |47          |
-|2 |  ├─TABLE FULL SCAN              |t2  |11      |3           |
-|3 |  └─HASH JOIN                    |    |10      |42          |
-|4 |    ├─TABLE FULL SCAN            |t1  |11      |3           |
-|5 |    └─HASH JOIN                  |    |7       |38          |
-|6 |      ├─TABLE FULL SCAN          |t3  |2       |3           |
-|7 |      └─HASH JOIN                |    |41      |32          |
-|8 |        ├─TABLE FULL SCAN        |t7  |11      |3           |
-|9 |        └─HASH JOIN              |    |32      |25          |
-|10|          ├─TABLE FULL SCAN      |t8  |11      |3           |
-|11|          └─HASH JOIN            |    |25      |19          |
-|12|            ├─TABLE FULL SCAN    |t9  |11      |3           |
-|13|            └─HASH JOIN          |    |19      |13          |
-|14|              ├─TABLE FULL SCAN  |t4  |11      |3           |
-|15|              └─HASH JOIN        |    |15      |8           |
-|16|                ├─TABLE FULL SCAN|t5  |11      |3           |
-|17|                └─TABLE FULL SCAN|t6  |11      |3           |
+|0 |SCALAR GROUP BY                  |    |1       |71          |
+|1 |└─HASH JOIN                      |    |14      |71          |
+|2 |  ├─TABLE FULL SCAN              |t2  |11      |5           |
+|3 |  └─HASH JOIN                    |    |10      |64          |
+|4 |    ├─TABLE FULL SCAN            |t1  |11      |5           |
+|5 |    └─HASH JOIN                  |    |7       |57          |
+|6 |      ├─TABLE FULL SCAN          |t3  |2       |5           |
+|7 |      └─HASH JOIN                |    |41      |48          |
+|8 |        ├─TABLE FULL SCAN        |t7  |11      |5           |
+|9 |        └─HASH JOIN              |    |32      |38          |
+|10|          ├─TABLE FULL SCAN      |t8  |11      |5           |
+|11|          └─HASH JOIN            |    |25      |29          |
+|12|            ├─TABLE FULL SCAN    |t9  |11      |5           |
+|13|            └─HASH JOIN          |    |19      |21          |
+|14|              ├─TABLE FULL SCAN  |t4  |11      |5           |
+|15|              └─HASH JOIN        |    |15      |12          |
+|16|                ├─TABLE FULL SCAN|t5  |11      |5           |
+|17|                └─TABLE FULL SCAN|t6  |11      |5           |
 =================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.c1 + t3.c1 + t4.c2 - t5.c1 + t6.c2 - t7.c1 - t8.c2) + cast(T_FUN_COUNT(t9.c1), DECIMAL(20, 0))]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.c1 + t3.c1 + t4.c2 - t5.c1 + t6.c2 - t7.c1 - t8.c2) + cast(T_FUN_COUNT(t9.c1), DECIMAL(20, 0))]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t2.c1 + t3.c1 + t4.c2 - t5.c1 + t6.c2 - t7.c1 - t8.c2)], [T_FUN_COUNT(t9.c1)])
-  1 - output([t1.c1], [t2.c1], [t3.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t2.c1], [t3.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  2 - output([t2.c1]), filter(nil), rowset=256
+  2 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t1.c1], [t3.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t3.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  4 - output([t1.c1]), filter(nil), rowset=256
+  4 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t3.c1], [t3.c2], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  5 - output([t3.c1], [t3.c2], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t3.c1 = t4.c1]), other_conds(nil)
-  6 - output([t3.c2], [t3.c1]), filter([t3.c2 = t3.c1]), rowset=256
+  6 - output([t3.c2], [t3.c1]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t4.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  7 - output([t4.c1], [t7.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t7.c1]), other_conds(nil)
-  8 - output([t7.c1]), filter(nil), rowset=256
+  8 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t4.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  9 - output([t4.c1], [t8.c2], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t8.c1]), other_conds(nil)
- 10 - output([t8.c1], [t8.c2]), filter(nil), rowset=256
+ 10 - output([t8.c1], [t8.c2]), filter(nil), rowset=16
       access([t8.c1], [t8.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t4.c1], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+ 11 - output([t4.c1], [t9.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t9.c1]), other_conds(nil)
- 12 - output([t9.c1]), filter(nil), rowset=256
+ 12 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t4.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+ 13 - output([t4.c1], [t5.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
- 14 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+ 14 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t5.c1], [t6.c2]), filter(nil), rowset=256
+ 15 - output([t5.c1], [t6.c2]), filter(nil), rowset=16
       equal_conds([t5.c1 = t6.c1]), other_conds(nil)
- 16 - output([t5.c1]), filter(nil), rowset=256
+ 16 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t6.c1], [t6.c2]), filter(nil), rowset=256
+ 17 - output([t6.c1], [t6.c2]), filter(nil), rowset=16
       access([t6.c1], [t6.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -643,60 +643,60 @@ Query Plan
 ===================================================================
 |ID|OPERATOR                           |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------------
-|0 |SCALAR GROUP BY                    |    |1       |193         |
-|1 |└─HASH JOIN                        |    |1       |193         |
-|2 |  ├─HASH JOIN                      |    |2       |171         |
-|3 |  │ ├─TABLE FULL SCAN              |t1  |11      |3           |
-|4 |  │ └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |45          |
-|5 |  │   ├─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|6 |  │   │ ├─TABLE FULL SCAN          |t2  |11      |3           |
-|7 |  │   │ └─MATERIAL                 |    |11      |3           |
-|8 |  │   │   └─TABLE FULL SCAN        |t3  |11      |3           |
-|9 |  │   └─MATERIAL                   |    |11      |4           |
-|10|  │     └─TABLE FULL SCAN          |t4  |11      |3           |
-|11|  └─NESTED-LOOP JOIN CARTESIAN     |    |121     |8           |
-|12|    ├─TABLE FULL SCAN              |t5  |11      |3           |
-|13|    └─MATERIAL                     |    |11      |3           |
-|14|      └─TABLE FULL SCAN            |t6  |11      |3           |
+|0 |SCALAR GROUP BY                    |    |1       |209         |
+|1 |└─HASH JOIN                        |    |1       |209         |
+|2 |  ├─HASH JOIN                      |    |2       |183         |
+|3 |  │ ├─TABLE FULL SCAN              |t1  |11      |5           |
+|4 |  │ └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |51          |
+|5 |  │   ├─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|6 |  │   │ ├─TABLE FULL SCAN          |t2  |11      |5           |
+|7 |  │   │ └─MATERIAL                 |    |11      |5           |
+|8 |  │   │   └─TABLE FULL SCAN        |t3  |11      |5           |
+|9 |  │   └─MATERIAL                   |    |11      |6           |
+|10|  │     └─TABLE FULL SCAN          |t4  |11      |5           |
+|11|  └─NESTED-LOOP JOIN CARTESIAN     |    |121     |12          |
+|12|    ├─TABLE FULL SCAN              |t5  |11      |5           |
+|13|    └─MATERIAL                     |    |11      |5           |
+|14|      └─TABLE FULL SCAN            |t6  |11      |5           |
 ===================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(t1.c1)], [T_FUN_COUNT(t2.d1 * t3.c1)], [T_FUN_SUM(t4.d1 + t5.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(t1.c1)], [T_FUN_COUNT(t2.d1 * t3.c1)], [T_FUN_SUM(t4.d1 + t5.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(t1.c1)], [T_FUN_COUNT(t2.d1 * t3.c1)], [T_FUN_SUM(t4.d1 + t5.c1)])
-  1 - output([t4.d1], [t5.c1], [t2.d1], [t1.c1], [t3.c1]), filter(nil), rowset=256
+  1 - output([t4.d1], [t5.c1], [t2.d1], [t1.c1], [t3.c1]), filter(nil), rowset=16
       equal_conds([t4.d1 = t5.c1 + t6.d2], [t2.d2 = t5.c1], [t2.d1 = t6.d2], [t1.c1 + t4.d2 = t5.c2 + t6.d2 - 1]), other_conds(nil)
-  2 - output([t4.d1], [t2.d1], [t1.c1], [t3.c1], [t2.d2], [t4.d2]), filter(nil), rowset=256
+  2 - output([t4.d1], [t2.d1], [t1.c1], [t3.c1], [t2.d2], [t4.d2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.d1], [t1.c2 = t3.c1]), other_conds([t1.c1 + t2.d2 = t4.d1 + t1.c2])
-  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t4.d1], [t2.d1], [t3.c1], [t2.d2], [t4.d2]), filter(nil), rowset=256
+  4 - output([t4.d1], [t2.d1], [t3.c1], [t2.d2], [t4.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  5 - output([t2.d1], [t3.c1], [t2.d2]), filter(nil), rowset=256
+  5 - output([t2.d1], [t3.c1], [t2.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  6 - output([t2.d1], [t2.d2]), filter(nil), rowset=256
+  6 - output([t2.d1], [t2.d2]), filter(nil), rowset=16
       access([t2.d1], [t2.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t3.c1]), filter(nil), rowset=256
-  8 - output([t3.c1]), filter(nil), rowset=256
+  7 - output([t3.c1]), filter(nil), rowset=16
+  8 - output([t3.c1]), filter(nil), rowset=16
       access([t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
- 10 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
+  9 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
+ 10 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
       access([t4.d1], [t4.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t5.c1], [t6.d2], [t5.c2]), filter(nil), rowset=256
+ 11 - output([t5.c1], [t6.d2], [t5.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
- 12 - output([t5.c1], [t5.c2]), filter(nil), rowset=256
+ 12 - output([t5.c1], [t5.c2]), filter(nil), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t6.d2]), filter(nil), rowset=256
- 14 - output([t6.d2]), filter(nil), rowset=256
+ 13 - output([t6.d2]), filter(nil), rowset=16
+ 14 - output([t6.d2]), filter(nil), rowset=16
       access([t6.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -718,42 +718,42 @@ Query Plan
 =================================================================
 |ID|OPERATOR                         |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------------
-|0 |SCALAR GROUP BY                  |    |1       |171         |
-|1 |└─HASH JOIN                      |    |2       |171         |
-|2 |  ├─TABLE FULL SCAN              |t1  |11      |3           |
-|3 |  └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |45          |
-|4 |    ├─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|5 |    │ ├─TABLE FULL SCAN          |t2  |11      |3           |
-|6 |    │ └─MATERIAL                 |    |11      |3           |
-|7 |    │   └─TABLE FULL SCAN        |t3  |11      |3           |
-|8 |    └─MATERIAL                   |    |11      |4           |
-|9 |      └─TABLE FULL SCAN          |t4  |11      |3           |
+|0 |SCALAR GROUP BY                  |    |1       |183         |
+|1 |└─HASH JOIN                      |    |2       |183         |
+|2 |  ├─TABLE FULL SCAN              |t1  |11      |5           |
+|3 |  └─NESTED-LOOP JOIN CARTESIAN   |    |1331    |51          |
+|4 |    ├─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|5 |    │ ├─TABLE FULL SCAN          |t2  |11      |5           |
+|6 |    │ └─MATERIAL                 |    |11      |5           |
+|7 |    │   └─TABLE FULL SCAN        |t3  |11      |5           |
+|8 |    └─MATERIAL                   |    |11      |6           |
+|9 |      └─TABLE FULL SCAN          |t4  |11      |5           |
 =================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 * t3.c1 - t4.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 * t3.c1 - t4.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 * t3.c1 - t4.d2)])
-  1 - output([t2.d1], [t3.c1], [t4.d2]), filter(nil), rowset=256
+  1 - output([t2.d1], [t3.c1], [t4.d2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.d1], [t1.c2 = t3.c1]), other_conds([t1.c1 + t2.d2 = t4.d1 + t1.c2])
-  2 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t2.d1], [t3.c1], [t2.d2], [t4.d1], [t4.d2]), filter(nil), rowset=256
+  3 - output([t2.d1], [t3.c1], [t2.d2], [t4.d1], [t4.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  4 - output([t2.d1], [t3.c1], [t2.d2]), filter(nil), rowset=256
+  4 - output([t2.d1], [t3.c1], [t2.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  5 - output([t2.d1], [t2.d2]), filter(nil), rowset=256
+  5 - output([t2.d1], [t2.d2]), filter(nil), rowset=16
       access([t2.d1], [t2.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t3.c1]), filter(nil), rowset=256
-  7 - output([t3.c1]), filter(nil), rowset=256
+  6 - output([t3.c1]), filter(nil), rowset=16
+  7 - output([t3.c1]), filter(nil), rowset=16
       access([t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
-  9 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
+  8 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
+  9 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
       access([t4.d1], [t4.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
@@ -773,32 +773,32 @@ Query Plan
 =======================================================
 |ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------
-|0 |SCALAR GROUP BY        |    |1       |15          |
-|1 |└─HASH JOIN            |    |4       |15          |
-|2 |  ├─TABLE FULL SCAN    |t1  |11      |3           |
-|3 |  └─NESTED-LOOP JOIN   |    |22      |8           |
-|4 |    ├─TABLE FULL SCAN  |t2  |11      |3           |
-|5 |    └─MATERIAL         |    |11      |4           |
-|6 |      └─TABLE FULL SCAN|t3  |11      |3           |
+|0 |SCALAR GROUP BY        |    |1       |22          |
+|1 |└─HASH JOIN            |    |4       |21          |
+|2 |  ├─TABLE FULL SCAN    |t1  |11      |5           |
+|3 |  └─NESTED-LOOP JOIN   |    |22      |13          |
+|4 |    ├─TABLE FULL SCAN  |t2  |11      |5           |
+|5 |    └─MATERIAL         |    |11      |6           |
+|6 |      └─TABLE FULL SCAN|t3  |11      |5           |
 =======================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 + t3.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 + t3.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t2.d1 + t3.c2)])
-  1 - output([t2.d1], [t3.c2]), filter(nil), rowset=256
+  1 - output([t2.d1], [t3.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.d1], [t1.c2 = t3.c1]), other_conds(nil)
-  2 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t2.d1], [t3.c1], [t3.c2]), filter(nil), rowset=256
+  3 - output([t2.d1], [t3.c1], [t3.c2]), filter(nil), rowset=16
       conds([t2.d1 = t3.c1 + t2.d2]), nl_params_(nil), use_batch=false
-  4 - output([t2.d1], [t2.d2]), filter(nil), rowset=256
+  4 - output([t2.d1], [t2.d2]), filter(nil), rowset=16
       access([t2.d1], [t2.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t3.c1], [t3.c2]), filter(nil), rowset=256
-  6 - output([t3.c1], [t3.c2]), filter(nil), rowset=256
+  5 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  6 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
       access([t3.c1], [t3.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -826,77 +826,77 @@ Query Plan
 ======================================================================
 |ID|OPERATOR                             |NAME |EST.ROWS|EST.TIME(us)|
 ----------------------------------------------------------------------
-|0 |SCALAR GROUP BY                      |     |1       |75          |
-|1 |└─HASH JOIN                          |     |17      |75          |
-|2 |  ├─TABLE FULL SCAN                  |a    |11      |3           |
-|3 |  └─HASH JOIN                        |     |13      |70          |
-|4 |    ├─HASH SEMI JOIN                 |     |10      |65          |
-|5 |    │ ├─TABLE FULL SCAN              |c    |11      |3           |
-|6 |    │ └─SUBPLAN SCAN                 |VIEW1|361     |30          |
-|7 |    │   └─NESTED-LOOP JOIN CARTESIAN |     |361     |29          |
-|8 |    │     ├─HASH JOIN                |     |26      |13          |
-|9 |    │     │ ├─TABLE FULL SCAN        |z    |11      |3           |
-|10|    │     │ └─HASH JOIN              |     |17      |8           |
-|11|    │     │   ├─TABLE FULL SCAN      |x    |11      |3           |
-|12|    │     │   └─TABLE FULL SCAN      |y    |11      |3           |
-|13|    │     └─MATERIAL                 |     |15      |7           |
-|14|    │       └─NESTED-LOOP JOIN       |     |15      |7           |
-|15|    │         ├─TABLE FULL SCAN      |y2   |11      |3           |
-|16|    │         └─MATERIAL             |     |11      |3           |
-|17|    │           └─TABLE FULL SCAN    |y3   |11      |3           |
-|18|    └─TABLE FULL SCAN                |b    |11      |3           |
+|0 |SCALAR GROUP BY                      |     |1       |94          |
+|1 |└─HASH JOIN                          |     |17      |94          |
+|2 |  ├─TABLE FULL SCAN                  |a    |11      |5           |
+|3 |  └─HASH JOIN                        |     |13      |86          |
+|4 |    ├─HASH SEMI JOIN                 |     |10      |79          |
+|5 |    │ ├─TABLE FULL SCAN              |c    |11      |5           |
+|6 |    │ └─SUBPLAN SCAN                 |VIEW1|361     |42          |
+|7 |    │   └─NESTED-LOOP JOIN CARTESIAN |     |361     |41          |
+|8 |    │     ├─HASH JOIN                |     |26      |21          |
+|9 |    │     │ ├─TABLE FULL SCAN        |z    |11      |5           |
+|10|    │     │ └─HASH JOIN              |     |17      |13          |
+|11|    │     │   ├─TABLE FULL SCAN      |x    |11      |5           |
+|12|    │     │   └─TABLE FULL SCAN      |y    |11      |5           |
+|13|    │     └─MATERIAL                 |     |15      |11          |
+|14|    │       └─NESTED-LOOP JOIN       |     |15      |11          |
+|15|    │         ├─TABLE FULL SCAN      |y2   |11      |5           |
+|16|    │         └─MATERIAL             |     |11      |5           |
+|17|    │           └─TABLE FULL SCAN    |y3   |11      |5           |
+|18|    └─TABLE FULL SCAN                |b    |11      |5           |
 ======================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1)])
-  1 - output([b.d1]), filter(nil), rowset=256
+  1 - output([b.d1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds(nil)
-  2 - output([a.c1]), filter(nil), rowset=256
+  2 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([b.d1]), filter(nil), rowset=256
+  3 - output([b.d1]), filter(nil), rowset=16
       equal_conds([b.d2 = c.c1]), other_conds(nil)
-  4 - output([c.c1]), filter(nil), rowset=256
+  4 - output([c.c1]), filter(nil), rowset=16
       equal_conds([c.c2 = VIEW1.c1]), other_conds(nil)
-  5 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  5 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([VIEW1.c1]), filter(nil), rowset=256
+  6 - output([VIEW1.c1]), filter(nil), rowset=16
       access([VIEW1.c1])
-  7 - output([x.c1]), filter(nil), rowset=256
+  7 - output([x.c1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  8 - output([x.c1]), filter(nil), rowset=256
+  8 - output([x.c1]), filter(nil), rowset=16
       equal_conds([y.d1 = z.c2]), other_conds(nil)
-  9 - output([z.c2]), filter(nil), rowset=256
+  9 - output([z.c2]), filter(nil), rowset=16
       access([z.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([z.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([x.c1], [y.d1]), filter(nil), rowset=256
+ 10 - output([x.c1], [y.d1]), filter(nil), rowset=16
       equal_conds([x.c2 = y.d2]), other_conds(nil)
- 11 - output([x.c2], [x.c1]), filter(nil), rowset=256
+ 11 - output([x.c2], [x.c1]), filter(nil), rowset=16
       access([x.c2], [x.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([y.d2], [y.d1]), filter(nil), rowset=256
+ 12 - output([y.d2], [y.d1]), filter(nil), rowset=16
       access([y.d2], [y.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([y.__pk_increment]), range(MIN ; MAX)always true
- 13 - output(nil), filter(nil), rowset=256
- 14 - output(nil), filter(nil), rowset=256
+ 13 - output(nil), filter(nil), rowset=16
+ 14 - output(nil), filter(nil), rowset=16
       conds([y2.c1 = y3.c1]), nl_params_(nil), use_batch=false
- 15 - output([y2.c1]), filter(nil), rowset=256
+ 15 - output([y2.c1]), filter(nil), rowset=16
       access([y2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([y2.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([y3.c1]), filter(nil), rowset=256
- 17 - output([y3.c1]), filter(nil), rowset=256
+ 16 - output([y3.c1]), filter(nil), rowset=16
+ 17 - output([y3.c1]), filter(nil), rowset=16
       access([y3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([y3.__pk_increment]), range(MIN ; MAX)always true
- 18 - output([b.d1], [b.d2]), filter(nil), rowset=256
+ 18 - output([b.d1], [b.d2]), filter(nil), rowset=16
       access([b.d1], [b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -925,20 +925,20 @@ Query Plan
 ===========================================================================
 |ID|OPERATOR                           |NAME        |EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------------------
-|0 |TEMP TABLE TRANSFORMATION          |            |2       |137         |
-|1 |├─TEMP TABLE INSERT                |TEMP1       |43      |132         |
-|2 |│ └─HASH JOIN                      |            |43      |124         |
-|3 |│   ├─HASH JOIN                    |            |278     |37          |
-|4 |│   │ ├─HASH JOIN                  |            |20      |14          |
-|5 |│   │ │ ├─TABLE FULL SCAN          |t6          |11      |3           |
-|6 |│   │ │ └─HASH JOIN                |            |14      |8           |
-|7 |│   │ │   ├─TABLE FULL SCAN        |t5          |11      |3           |
-|8 |│   │ │   └─TABLE FULL SCAN        |t4          |11      |3           |
-|9 |│   │ └─NESTED-LOOP JOIN CARTESIAN |            |121     |8           |
-|10|│   │   ├─TABLE FULL SCAN          |t3          |11      |3           |
-|11|│   │   └─MATERIAL                 |            |11      |3           |
-|12|│   │     └─TABLE FULL SCAN        |t1          |11      |3           |
-|13|│   └─TABLE FULL SCAN              |t2          |11      |3           |
+|0 |TEMP TABLE TRANSFORMATION          |            |2       |160         |
+|1 |├─TEMP TABLE INSERT                |TEMP1       |43      |156         |
+|2 |│ └─HASH JOIN                      |            |43      |148         |
+|3 |│   ├─HASH JOIN                    |            |278     |57          |
+|4 |│   │ ├─HASH JOIN                  |            |20      |21          |
+|5 |│   │ │ ├─TABLE FULL SCAN          |t6          |11      |5           |
+|6 |│   │ │ └─HASH JOIN                |            |14      |13          |
+|7 |│   │ │   ├─TABLE FULL SCAN        |t5          |11      |5           |
+|8 |│   │ │   └─TABLE FULL SCAN        |t4          |11      |5           |
+|9 |│   │ └─NESTED-LOOP JOIN CARTESIAN |            |121     |12          |
+|10|│   │   ├─TABLE FULL SCAN          |t3          |11      |5           |
+|11|│   │   └─MATERIAL                 |            |11      |5           |
+|12|│   │     └─TABLE FULL SCAN        |t1          |11      |5           |
+|13|│   └─TABLE FULL SCAN              |t2          |11      |5           |
 |14|└─UNION ALL                        |            |2       |5           |
 |15|  ├─SCALAR GROUP BY                |            |1       |2           |
 |16|  │ └─TEMP TABLE ACCESS            |VIEW1(TEMP1)|36      |1           |
@@ -947,51 +947,51 @@ Query Plan
 ===========================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=256
-  1 - output(nil), filter(nil), rowset=256
-  2 - output([t5.c2], [t2.c1], [t1.c1], [t2.c2], [t5.c1], [t6.c2]), filter(nil), rowset=256
+  0 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  1 - output(nil), filter(nil), rowset=16
+  2 - output([t5.c2], [t2.c1], [t1.c1], [t2.c2], [t5.c1], [t6.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1], [t2.c2 = t3.c1]), other_conds(nil)
-  3 - output([t5.c2], [t1.c1], [t5.c1], [t6.c2], [t3.c1]), filter(nil), rowset=256
+  3 - output([t5.c2], [t1.c1], [t5.c1], [t6.c2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t3.c2 = t4.c1]), other_conds(nil)
-  4 - output([t5.c2], [t5.c1], [t6.c2], [t4.c1]), filter(nil), rowset=256
+  4 - output([t5.c2], [t5.c1], [t6.c2], [t4.c1]), filter(nil), rowset=16
       equal_conds([t5.c2 = t6.c1]), other_conds(nil)
-  5 - output([t6.c1], [t6.c2]), filter(nil), rowset=256
+  5 - output([t6.c1], [t6.c2]), filter(nil), rowset=16
       access([t6.c1], [t6.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t5.c2], [t5.c1], [t4.c1]), filter(nil), rowset=256
+  6 - output([t5.c2], [t5.c1], [t4.c1]), filter(nil), rowset=16
       equal_conds([t4.c2 = t5.c1]), other_conds(nil)
-  7 - output([t5.c1], [t5.c2]), filter([t5.c2 != 44 OR t5.c2 != 55]), rowset=256
+  7 - output([t5.c1], [t5.c2]), filter([t5.c2 != 44 OR t5.c2 != 55]), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+  8 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t1.c1], [t3.c1], [t3.c2]), filter(nil), rowset=256
+  9 - output([t1.c1], [t3.c1], [t3.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
- 10 - output([t3.c1], [t3.c2]), filter(nil), rowset=256
+ 10 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
       access([t3.c1], [t3.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t1.c1]), filter(nil), rowset=256
- 12 - output([t1.c1]), filter(nil), rowset=256
+ 11 - output([t1.c1]), filter(nil), rowset=16
+ 12 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t2.c1], [t2.c2]), filter(nil), rowset=256
+ 13 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
       access([t2.c1], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
- 14 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=256
- 15 - output([cast(T_FUN_COUNT(*), DECIMAL(20, 0))], [T_FUN_SUM(VIEW1.t2.c1)]), filter(nil), rowset=256
+ 14 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 15 - output([cast(T_FUN_COUNT(*), DECIMAL(20, 0))], [T_FUN_SUM(VIEW1.t2.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(VIEW1.t2.c1)])
- 16 - output([VIEW1.t2.c1]), filter([VIEW1.t5.c2 != 44]), rowset=256
+ 16 - output([VIEW1.t2.c1]), filter([VIEW1.t5.c2 != 44]), rowset=16
       access([VIEW1.t5.c2], [VIEW1.t2.c1])
- 17 - output([T_FUN_SUM(VIEW2.t1.c1)], [cast(T_FUN_MAX(VIEW2.t2.c2), DECIMAL(11, 0)) + T_FUN_SUM(VIEW2.t5.c1 - VIEW2.t6.c2)]), filter(nil), rowset=256
+ 17 - output([T_FUN_SUM(VIEW2.t1.c1)], [cast(T_FUN_MAX(VIEW2.t2.c2), DECIMAL(11, 0)) + T_FUN_SUM(VIEW2.t5.c1 - VIEW2.t6.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_SUM(VIEW2.t1.c1)], [T_FUN_MAX(VIEW2.t2.c2)], [T_FUN_SUM(VIEW2.t5.c1 - VIEW2.t6.c2)])
- 18 - output([VIEW2.t1.c1], [VIEW2.t2.c2], [VIEW2.t5.c1], [VIEW2.t6.c2]), filter([VIEW2.t5.c2 != 55]), rowset=256
+ 18 - output([VIEW2.t1.c1], [VIEW2.t2.c2], [VIEW2.t5.c1], [VIEW2.t6.c2]), filter([VIEW2.t5.c2 != 55]), rowset=16
       access([VIEW2.t5.c2], [VIEW2.t1.c1], [VIEW2.t2.c2], [VIEW2.t5.c1], [VIEW2.t6.c2])
 select /*+ leading(t6, (t5, t4), (t3, t1), (t2)) */ count(*), sum(t2.c1) from nn1 t1, nn1 t2 , nn1 t3, nn1 t4, nn1 t5,  nn1 t6
 where t1.c1 = t2.c1 and t2.c2 = t3.c1 and t3.c2 = t4.c1 and t4.c2 = t5.c1 and t5.c2 = t6.c1 and t5.c2 <> 44
@@ -1028,78 +1028,78 @@ Query Plan
 =============================================================
 |ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------
-|0 |SCALAR GROUP BY              |    |1       |30          |
-|1 |└─HASH JOIN                  |    |1       |30          |
-|2 |  ├─HASH JOIN                |    |1       |28          |
-|3 |  │ ├─HASH JOIN              |    |1       |23          |
-|4 |  │ │ ├─TABLE FULL SCAN      |t9  |11      |3           |
-|5 |  │ │ └─HASH JOIN            |    |1       |19          |
-|6 |  │ │   ├─HASH JOIN          |    |1       |15          |
-|7 |  │ │   │ ├─HASH JOIN        |    |1       |8           |
-|8 |  │ │   │ │ ├─TABLE FULL SCAN|t8  |11      |3           |
-|9 |  │ │   │ │ └─TABLE FULL SCAN|t7  |11      |3           |
-|10|  │ │   │ └─HASH JOIN        |    |1       |7           |
-|11|  │ │   │   ├─TABLE FULL SCAN|t6  |11      |3           |
-|12|  │ │   │   └─TABLE FULL SCAN|t5  |1       |3           |
-|13|  │ │   └─TABLE FULL SCAN    |t4  |11      |3           |
-|14|  │ └─HASH JOIN              |    |1       |5           |
-|15|  │   ├─TABLE FULL SCAN      |t3  |1       |3           |
-|16|  │   └─TABLE FULL SCAN      |t1  |1       |3           |
-|17|  └─TABLE FULL SCAN          |t2  |1       |3           |
+|0 |SCALAR GROUP BY              |    |1       |49          |
+|1 |└─HASH JOIN                  |    |1       |49          |
+|2 |  ├─HASH JOIN                |    |1       |44          |
+|3 |  │ ├─HASH JOIN              |    |1       |35          |
+|4 |  │ │ ├─TABLE FULL SCAN      |t9  |11      |5           |
+|5 |  │ │ └─HASH JOIN            |    |1       |29          |
+|6 |  │ │   ├─HASH JOIN          |    |1       |24          |
+|7 |  │ │   │ ├─HASH JOIN        |    |1       |12          |
+|8 |  │ │   │ │ ├─TABLE FULL SCAN|t8  |11      |5           |
+|9 |  │ │   │ │ └─TABLE FULL SCAN|t7  |11      |5           |
+|10|  │ │   │ └─HASH JOIN        |    |1       |12          |
+|11|  │ │   │   ├─TABLE FULL SCAN|t6  |11      |5           |
+|12|  │ │   │   └─TABLE FULL SCAN|t5  |1       |5           |
+|13|  │ │   └─TABLE FULL SCAN    |t4  |11      |5           |
+|14|  │ └─HASH JOIN              |    |1       |10          |
+|15|  │   ├─TABLE FULL SCAN      |t3  |1       |5           |
+|16|  │   └─TABLE FULL SCAN      |t1  |1       |5           |
+|17|  └─TABLE FULL SCAN          |t2  |1       |5           |
 =============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t9.c1 - t5.c1 + t4.d2 - t1.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t9.c1 - t5.c1 + t4.d2 - t1.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t9.c1 - t5.c1 + t4.d2 - t1.c1)])
-  1 - output([t1.c1], [t4.d2], [t9.c1], [t5.c1]), filter(nil), rowset=256
+  1 - output([t1.c1], [t4.d2], [t9.c1], [t5.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 % 3 = t2.d2 % 2], [t1.c1 % 5 = t2.d1 % 5], [t1.c2 % 5 = t2.d2 % 5], [t1.c1 % 7 = t2.d1 % 7]), other_conds(nil)
-  2 - output([t1.c1], [t1.c1 % 5], [t1.c2 % 5], [t4.d2], [t1.c1 % 7], [t9.c1], [t5.c1], [t1.c1 % 3]), filter(nil), rowset=256
+  2 - output([t1.c1], [t1.c1 % 5], [t1.c2 % 5], [t4.d2], [t1.c1 % 7], [t9.c1], [t5.c1], [t1.c1 % 3]), filter(nil), rowset=16
       equal_conds([t1.c2 % 7 = t4.d1 % 3], [t1.c1 % 5 = t4.d1 % 4], [t1.c2 % 5 = t4.d2 % 5], [t1.c1 % 7 = t4.d1 % 7]), other_conds(nil)
-  3 - output([t4.d2], [t4.d2 % 5], [t9.c1], [t5.c1], [t4.d1 % 3], [t4.d1 % 4], [t4.d1 % 7]), filter(nil), rowset=256
+  3 - output([t4.d2], [t4.d2 % 5], [t9.c1], [t5.c1], [t4.d1 % 3], [t4.d1 % 4], [t4.d1 % 7]), filter(nil), rowset=16
       equal_conds([t4.d2 % 5 = t9.c1 % 4], [t8.d2 % 5 = t9.c1 % 14]), other_conds(nil)
-  4 - output([t9.c1]), filter(nil), rowset=256
+  4 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t4.d2], [t4.d2 % 5], [t5.c1], [t4.d1 % 3], [t4.d1 % 4], [t4.d1 % 7], [t8.d2]), filter(nil), rowset=256
+  5 - output([t4.d2], [t4.d2 % 5], [t5.c1], [t4.d1 % 3], [t4.d1 % 4], [t4.d1 % 7], [t8.d2]), filter(nil), rowset=16
       equal_conds([t4.d2 % 5 = t5.c1 % 6], [t4.d1 % 3 = t6.d2 % 2], [t4.d1 % 4 = t6.d1 % 4], [t4.d1 % 7 = t6.d1 % 7]), other_conds(nil)
-  6 - output([t5.c1], [t5.c1 % 6], [t6.d1 % 4], [t6.d1 % 7], [t8.d2], [t6.d2]), filter(nil), rowset=256
+  6 - output([t5.c1], [t5.c1 % 6], [t6.d1 % 4], [t6.d1 % 7], [t8.d2], [t6.d2]), filter(nil), rowset=16
       equal_conds([t5.c1 % 4 = t7.c1 % 1], [t5.c1 % 6 = t7.c2 % 5], [t5.c1 % 7 = t8.d1 % 6], [t6.d1 % 4 = t7.c1 % 3], [t6.d1 % 7 = t7.c1 % 7]), other_conds(nil)
-  7 - output([t7.c1], [t7.c1 % 7], [t8.d1], [t8.d2], [t7.c2]), filter(nil), rowset=256
+  7 - output([t7.c1], [t7.c1 % 7], [t8.d1], [t8.d2], [t7.c2]), filter(nil), rowset=16
       equal_conds([t7.c1 % 7 = t8.d1 % 3]), other_conds(nil)
-  8 - output([t8.d1], [t8.d2]), filter(nil), rowset=256
+  8 - output([t8.d1], [t8.d2]), filter(nil), rowset=16
       access([t8.d1], [t8.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t7.c1], [t7.c2]), filter(nil), rowset=256
+  9 - output([t7.c1], [t7.c2]), filter(nil), rowset=16
       access([t7.c1], [t7.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t5.c1], [t6.d1], [t5.c1 % 6], [t6.d2]), filter(nil), rowset=256
+ 10 - output([t5.c1], [t6.d1], [t5.c1 % 6], [t6.d2]), filter(nil), rowset=16
       equal_conds([t5.c1 % 2 = t6.d2 % 5]), other_conds(nil)
- 11 - output([t6.d2], [t6.d1]), filter(nil), rowset=256
+ 11 - output([t6.d2], [t6.d1]), filter(nil), rowset=16
       access([t6.d2], [t6.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t5.c1], [t5.c1 % 6], [t5.c1 % 2]), filter([t5.c1 % 6 = t5.c1 % 2], [t5.c1 % 6 = t5.c2 % 5]), rowset=256
+ 12 - output([t5.c1], [t5.c1 % 6], [t5.c1 % 2]), filter([t5.c1 % 6 = t5.c1 % 2], [t5.c1 % 6 = t5.c2 % 5]), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false,false],
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t4.d1], [t4.d2]), filter(nil), rowset=256
+ 13 - output([t4.d1], [t4.d2]), filter(nil), rowset=16
       access([t4.d1], [t4.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 14 - output([t1.c1], [t1.c1 % 5], [t1.c2 % 5], [t1.c1 % 7], [t1.c1 % 3], [t1.c2 % 7]), filter(nil), rowset=256
+ 14 - output([t1.c1], [t1.c1 % 5], [t1.c2 % 5], [t1.c1 % 7], [t1.c1 % 3], [t1.c2 % 7]), filter(nil), rowset=16
       equal_conds([t1.c1 % 5 = t3.c1 % 4], [t1.c1 % 3 = t3.c2 % 7], [t1.c2 % 5 = t3.c2 % 5], [t1.c1 % 7 = t3.c1 % 7]), other_conds(nil)
- 15 - output([t3.c1], [t3.c2], [t3.c2 % 7]), filter([t3.c2 % 7 = t3.c1 % 3]), rowset=256
+ 15 - output([t3.c1], [t3.c2], [t3.c2 % 7]), filter([t3.c2 % 7 = t3.c1 % 3]), rowset=16
       access([t3.c1], [t3.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t1.c1], [t1.c2], [t1.c1 % 5], [t1.c1 % 3], [t1.c2 % 7]), filter([t1.c1 % 3 = t1.c2 % 7], [t1.c1 % 5 = t1.c1 % 4]), rowset=256
+ 16 - output([t1.c1], [t1.c2], [t1.c1 % 5], [t1.c1 % 3], [t1.c2 % 7]), filter([t1.c1 % 3 = t1.c2 % 7], [t1.c1 % 5 = t1.c1 % 4]), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false,false],
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t2.d2], [t2.d1], [t2.d2 % 2], [t2.d1 % 5]), filter([t2.d2 % 2 = t2.d2 % 7], [t2.d2 % 2 = t2.d1 % 3], [t2.d1 % 5 = t2.d1 % 4]), rowset=256
+ 17 - output([t2.d2], [t2.d1], [t2.d2 % 2], [t2.d1 % 5]), filter([t2.d2 % 2 = t2.d2 % 7], [t2.d2 % 2 = t2.d1 % 3], [t2.d1 % 5 = t2.d1 % 4]), rowset=16
       access([t2.d2], [t2.d1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false,false,false],
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
@@ -1135,44 +1135,44 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |SCALAR GROUP BY          |    |1       |23          |
-|1 |└─HASH JOIN              |    |17      |22          |
-|2 |  ├─TABLE FULL SCAN      |a   |11      |3           |
-|3 |  └─HASH JOIN            |    |19      |17          |
-|4 |    ├─SUBPLAN SCAN       |c   |11      |6           |
-|5 |    │ └─HASH DISTINCT    |    |11      |6           |
-|6 |    │   └─TABLE FULL SCAN|cc  |11      |3           |
-|7 |    └─HASH JOIN          |    |20      |8           |
-|8 |      ├─TABLE FULL SCAN  |nn2 |11      |3           |
-|9 |      └─TABLE FULL SCAN  |d   |11      |3           |
+|0 |SCALAR GROUP BY          |    |1       |33          |
+|1 |└─HASH JOIN              |    |17      |32          |
+|2 |  ├─TABLE FULL SCAN      |a   |11      |5           |
+|3 |  └─HASH JOIN            |    |19      |24          |
+|4 |    ├─SUBPLAN SCAN       |c   |11      |8           |
+|5 |    │ └─HASH DISTINCT    |    |11      |8           |
+|6 |    │   └─TABLE FULL SCAN|cc  |11      |5           |
+|7 |    └─HASH JOIN          |    |20      |12          |
+|8 |      ├─TABLE FULL SCAN  |nn2 |11      |5           |
+|9 |      └─TABLE FULL SCAN  |d   |11      |5           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1)])
-  1 - output([a.c1]), filter(nil), rowset=256
+  1 - output([a.c1]), filter(nil), rowset=16
       equal_conds([a.c1 = c.c1]), other_conds(nil)
-  2 - output([a.c1]), filter(nil), rowset=256
+  2 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([c.c1]), filter(nil), rowset=256
+  3 - output([c.c1]), filter(nil), rowset=16
       equal_conds([c.c2 = d.d2]), other_conds(nil)
-  4 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  4 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2])
-  5 - output([cc.c1], [cc.c2]), filter(nil), rowset=256
+  5 - output([cc.c1], [cc.c2]), filter(nil), rowset=16
       distinct([cc.c1], [cc.c2])
-  6 - output([cc.c1], [cc.c2]), filter(nil), rowset=256
+  6 - output([cc.c1], [cc.c2]), filter(nil), rowset=16
       access([cc.c1], [cc.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([cc.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([d.d2]), filter(nil), rowset=256
+  7 - output([d.d2]), filter(nil), rowset=16
       equal_conds([nn2.d2 = d.d1]), other_conds(nil)
-  8 - output([nn2.d2]), filter(nil), rowset=256
+  8 - output([nn2.d2]), filter(nil), rowset=16
       access([nn2.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([nn2.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([d.d1], [d.d2]), filter(nil), rowset=256
+  9 - output([d.d1], [d.d2]), filter(nil), rowset=16
       access([d.d1], [d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
@@ -1192,40 +1192,40 @@ Query Plan
 =================================================================
 |ID|OPERATOR                         |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------------
-|0 |SCALAR GROUP BY                  |    |1       |31          |
-|1 |└─HASH JOIN                      |    |29      |30          |
-|2 |  ├─TABLE FULL SCAN              |a   |11      |3           |
-|3 |  └─HASH JOIN                    |    |22      |24          |
-|4 |    ├─TABLE FULL SCAN            |c   |11      |3           |
-|5 |    └─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|6 |      ├─TABLE FULL SCAN          |b   |11      |3           |
-|7 |      └─MATERIAL                 |    |11      |3           |
-|8 |        └─TABLE FULL SCAN        |d   |11      |3           |
+|0 |SCALAR GROUP BY                  |    |1       |40          |
+|1 |└─HASH JOIN                      |    |29      |40          |
+|2 |  ├─TABLE FULL SCAN              |a   |11      |5           |
+|3 |  └─HASH JOIN                    |    |22      |31          |
+|4 |    ├─TABLE FULL SCAN            |c   |11      |5           |
+|5 |    └─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|6 |      ├─TABLE FULL SCAN          |b   |11      |5           |
+|7 |      └─MATERIAL                 |    |11      |5           |
+|8 |        └─TABLE FULL SCAN        |d   |11      |5           |
 =================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2)])
-  1 - output([b.d2]), filter(nil), rowset=256
+  1 - output([b.d2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds(nil)
-  2 - output([a.c1]), filter(nil), rowset=256
+  2 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  3 - output([b.d2], [b.d1]), filter(nil), rowset=16
       equal_conds([b.d2 = c.c1], [c.c2 = d.d2]), other_conds(nil)
-  4 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  4 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([b.d2], [b.d1], [d.d2]), filter(nil), rowset=256
+  5 - output([b.d2], [b.d1], [d.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  6 - output([b.d1], [b.d2]), filter(nil), rowset=256
+  6 - output([b.d1], [b.d2]), filter(nil), rowset=16
       access([b.d1], [b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([d.d2]), filter(nil), rowset=256
-  8 - output([d.d2]), filter(nil), rowset=256
+  7 - output([d.d2]), filter(nil), rowset=16
+  8 - output([d.d2]), filter(nil), rowset=16
       access([d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
@@ -1246,48 +1246,48 @@ Query Plan
 =================================================================
 |ID|OPERATOR                         |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------------
-|0 |SUBPLAN FILTER                   |    |1       |32          |
-|1 |├─SCALAR GROUP BY                |    |1       |3           |
-|2 |│ └─TABLE FULL SCAN              |x   |11      |3           |
-|3 |└─HASH JOIN                      |    |1       |30          |
-|4 |  ├─TABLE FULL SCAN              |a   |11      |3           |
-|5 |  └─HASH JOIN                    |    |22      |24          |
-|6 |    ├─TABLE FULL SCAN            |c   |11      |3           |
-|7 |    └─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|8 |      ├─TABLE FULL SCAN          |b   |11      |3           |
-|9 |      └─MATERIAL                 |    |11      |3           |
-|10|        └─TABLE FULL SCAN        |d   |11      |3           |
+|0 |SUBPLAN FILTER                   |    |1       |44          |
+|1 |├─SCALAR GROUP BY                |    |1       |5           |
+|2 |│ └─TABLE FULL SCAN              |x   |11      |5           |
+|3 |└─HASH JOIN                      |    |1       |39          |
+|4 |  ├─TABLE FULL SCAN              |a   |11      |5           |
+|5 |  └─HASH JOIN                    |    |22      |31          |
+|6 |    ├─TABLE FULL SCAN            |c   |11      |5           |
+|7 |    └─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|8 |      ├─TABLE FULL SCAN          |b   |11      |5           |
+|9 |      └─MATERIAL                 |    |11      |5           |
+|10|        └─TABLE FULL SCAN        |d   |11      |5           |
 =================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([subquery(1)]), filter(nil), rowset=256
+  0 - output([subquery(1)]), filter(nil), rowset=16
       exec_params_([x.c1(:0)], [T_FUN_COUNT_SUM(T_FUN_COUNT(x.c2))(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
-  1 - output([x.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(x.c2))]), filter(nil), rowset=256
+  1 - output([x.c1], [T_FUN_COUNT_SUM(T_FUN_COUNT(x.c2))]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(x.c2))])
-  2 - output([x.c1], [T_FUN_COUNT(x.c2)]), filter(nil), rowset=256
+  2 - output([x.c1], [T_FUN_COUNT(x.c2)]), filter(nil), rowset=16
       access([x.c1], [x.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([:1]), filter(nil), rowset=256
+  3 - output([:1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds([:0 = a.c1 + b.d1 + c.c2 - d.d2 * 5])
-  4 - output([a.c1]), filter(nil), rowset=256
+  4 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([b.d1], [c.c2], [d.d2]), filter(nil), rowset=256
+  5 - output([b.d1], [c.c2], [d.d2]), filter(nil), rowset=16
       equal_conds([b.d2 = c.c1], [c.c2 = d.d2]), other_conds(nil)
-  6 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  6 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([b.d1], [d.d2], [b.d2]), filter(nil), rowset=256
+  7 - output([b.d1], [d.d2], [b.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  8 - output([b.d1], [b.d2]), filter(nil), rowset=256
+  8 - output([b.d1], [b.d2]), filter(nil), rowset=16
       access([b.d1], [b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([d.d2]), filter(nil), rowset=256
- 10 - output([d.d2]), filter(nil), rowset=256
+  9 - output([d.d2]), filter(nil), rowset=16
+ 10 - output([d.d2]), filter(nil), rowset=16
       access([d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
@@ -1308,62 +1308,62 @@ Query Plan
 ================================================================
 |ID|OPERATOR                       |NAME |EST.ROWS|EST.TIME(us)|
 ----------------------------------------------------------------
-|0 |SCALAR GROUP BY                |     |1       |22          |
-|1 |└─NESTED-LOOP JOIN CARTESIAN   |     |5       |22          |
-|2 |  ├─HASH JOIN                  |     |3       |20          |
-|3 |  │ ├─NESTED-LOOP JOIN         |     |2       |17          |
-|4 |  │ │ ├─SUBPLAN SCAN           |VIEW1|1       |13          |
-|5 |  │ │ │ └─SCALAR GROUP BY      |     |1       |13          |
-|6 |  │ │ │   └─HASH JOIN          |     |19      |13          |
-|7 |  │ │ │     ├─TABLE FULL SCAN  |x    |11      |3           |
-|8 |  │ │ │     └─HASH JOIN        |     |15      |8           |
-|9 |  │ │ │       ├─TABLE FULL SCAN|y    |11      |3           |
-|10|  │ │ │       └─TABLE FULL SCAN|z    |11      |3           |
-|11|  │ │ └─TABLE FULL SCAN        |t1   |11      |3           |
-|12|  │ └─TABLE FULL SCAN          |t2   |11      |3           |
-|13|  └─MATERIAL                   |     |2       |3           |
-|14|    └─TABLE FULL SCAN          |t3   |2       |3           |
+|0 |SCALAR GROUP BY                |     |1       |36          |
+|1 |└─NESTED-LOOP JOIN CARTESIAN   |     |5       |36          |
+|2 |  ├─HASH JOIN                  |     |3       |31          |
+|3 |  │ ├─NESTED-LOOP JOIN         |     |2       |26          |
+|4 |  │ │ ├─SUBPLAN SCAN           |VIEW1|1       |21          |
+|5 |  │ │ │ └─SCALAR GROUP BY      |     |1       |21          |
+|6 |  │ │ │   └─HASH JOIN          |     |19      |20          |
+|7 |  │ │ │     ├─TABLE FULL SCAN  |x    |11      |5           |
+|8 |  │ │ │     └─HASH JOIN        |     |15      |13          |
+|9 |  │ │ │       ├─TABLE FULL SCAN|y    |11      |5           |
+|10|  │ │ │       └─TABLE FULL SCAN|z    |11      |5           |
+|11|  │ │ └─TABLE FULL SCAN        |t1   |11      |5           |
+|12|  │ └─TABLE FULL SCAN          |t2   |11      |5           |
+|13|  └─MATERIAL                   |     |2       |5           |
+|14|    └─TABLE FULL SCAN          |t3   |2       |5           |
 ================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_SUM(t1.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_SUM(t1.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_SUM(t1.c1)])
-  1 - output([t1.c1]), filter(nil), rowset=256
+  1 - output([t1.c1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  2 - output([t1.c1]), filter(nil), rowset=256
+  2 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t2.c2 = t1.c2]), other_conds(nil)
-  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       conds([t1.c1 = VIEW1.count(*)]), nl_params_(nil), use_batch=false
-  4 - output([VIEW1.count(*)]), filter(nil), rowset=256
+  4 - output([VIEW1.count(*)]), filter(nil), rowset=16
       access([VIEW1.count(*)])
-  5 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  5 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)])
-  6 - output(nil), filter(nil), rowset=256
+  6 - output(nil), filter(nil), rowset=16
       equal_conds([x.c1 = y.d1]), other_conds(nil)
-  7 - output([x.c1]), filter(nil), rowset=256
+  7 - output([x.c1]), filter(nil), rowset=16
       access([x.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([y.d1]), filter(nil), rowset=256
+  8 - output([y.d1]), filter(nil), rowset=16
       equal_conds([y.d2 = z.c1]), other_conds(nil)
-  9 - output([y.d1], [y.d2]), filter(nil), rowset=256
+  9 - output([y.d1], [y.d2]), filter(nil), rowset=16
       access([y.d1], [y.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([y.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([z.c1]), filter(nil), rowset=256
+ 10 - output([z.c1]), filter(nil), rowset=16
       access([z.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([z.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t1.c2], [t1.c1]), filter(nil), rowset=256
+ 11 - output([t1.c2], [t1.c1]), filter(nil), rowset=16
       access([t1.c2], [t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t2.c2]), filter(nil), rowset=256
+ 12 - output([t2.c2]), filter(nil), rowset=16
       access([t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
- 13 - output(nil), filter(nil), rowset=256
- 14 - output(nil), filter([t3.c1 IN (1, 2)]), rowset=256
+ 13 - output(nil), filter(nil), rowset=16
+ 14 - output(nil), filter([t3.c1 IN (1, 2)]), rowset=16
       access([t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -1383,40 +1383,40 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |62          |
-|1 |└─HASH JOIN                    |    |239     |54          |
-|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |15          |
-|3 |  │ ├─HASH JOIN                |    |17      |8           |
-|4 |  │ │ ├─TABLE FULL SCAN        |d   |11      |3           |
-|5 |  │ │ └─TABLE FULL SCAN        |c   |11      |3           |
-|6 |  │ └─MATERIAL                 |    |11      |3           |
-|7 |  │   └─TABLE FULL SCAN        |b   |11      |3           |
-|8 |  └─TABLE FULL SCAN            |a   |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |79          |
+|1 |└─HASH JOIN                    |    |239     |71          |
+|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |22          |
+|3 |  │ ├─HASH JOIN                |    |17      |13          |
+|4 |  │ │ ├─TABLE FULL SCAN        |d   |11      |5           |
+|5 |  │ │ └─TABLE FULL SCAN        |c   |11      |5           |
+|6 |  │ └─MATERIAL                 |    |11      |5           |
+|7 |  │   └─TABLE FULL SCAN        |b   |11      |5           |
+|8 |  └─TABLE FULL SCAN            |a   |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)])
-  1 - output([b.d1], [d.d2]), filter(nil), rowset=256
+  1 - output([b.d1], [d.d2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds(nil)
-  2 - output([b.d1], [d.d2]), filter(nil), rowset=256
+  2 - output([b.d1], [d.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  3 - output([d.d2]), filter(nil), rowset=256
+  3 - output([d.d2]), filter(nil), rowset=16
       equal_conds([c.c2 = d.d1]), other_conds(nil)
-  4 - output([d.d1], [d.d2]), filter(nil), rowset=256
+  4 - output([d.d1], [d.d2]), filter(nil), rowset=16
       access([d.d1], [d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([c.c2]), filter(nil), rowset=256
+  5 - output([c.c2]), filter(nil), rowset=16
       access([c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([b.d1]), filter(nil), rowset=256
-  7 - output([b.d1]), filter(nil), rowset=256
+  6 - output([b.d1]), filter(nil), rowset=16
+  7 - output([b.d1]), filter(nil), rowset=16
       access([b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([a.c1]), filter(nil), rowset=256
+  8 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
@@ -1434,40 +1434,40 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |68          |
-|1 |└─HASH JOIN                    |    |239     |60          |
-|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |15          |
-|3 |  │ ├─HASH JOIN                |    |17      |8           |
-|4 |  │ │ ├─TABLE FULL SCAN        |d   |11      |3           |
-|5 |  │ │ └─TABLE FULL SCAN        |c   |11      |3           |
-|6 |  │ └─MATERIAL                 |    |11      |3           |
-|7 |  │   └─TABLE FULL SCAN        |b   |11      |3           |
-|8 |  └─TABLE FULL SCAN            |a   |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |84          |
+|1 |└─HASH JOIN                    |    |239     |76          |
+|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |21          |
+|3 |  │ ├─HASH JOIN                |    |17      |12          |
+|4 |  │ │ ├─TABLE FULL SCAN        |d   |11      |5           |
+|5 |  │ │ └─TABLE FULL SCAN        |c   |11      |5           |
+|6 |  │ └─MATERIAL                 |    |11      |5           |
+|7 |  │   └─TABLE FULL SCAN        |b   |11      |5           |
+|8 |  └─TABLE FULL SCAN            |a   |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 + c.c1 + d.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 + c.c1 + d.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(a.c1 + b.d2 + c.c1 + d.d2)])
-  1 - output([a.c1], [b.d2], [d.d2], [c.c1]), filter(nil), rowset=256
+  1 - output([a.c1], [b.d2], [d.d2], [c.c1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  2 - output([b.d2], [d.d2], [c.c1]), filter(nil), rowset=256
+  2 - output([b.d2], [d.d2], [c.c1]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  3 - output([d.d2], [c.c1]), filter(nil), rowset=256
+  3 - output([d.d2], [c.c1]), filter(nil), rowset=16
       equal_conds([c.c2 = d.d2]), other_conds(nil)
-  4 - output([d.d2]), filter(nil), rowset=256
+  4 - output([d.d2]), filter(nil), rowset=16
       access([d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([c.c2], [c.c1]), filter(nil), rowset=256
+  5 - output([c.c2], [c.c1]), filter(nil), rowset=16
       access([c.c2], [c.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([b.d2]), filter(nil), rowset=256
-  7 - output([b.d2]), filter(nil), rowset=256
+  6 - output([b.d2]), filter(nil), rowset=16
+  7 - output([b.d2]), filter(nil), rowset=16
       access([b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([a.c1]), filter(nil), rowset=256
+  8 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
@@ -1485,40 +1485,40 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |62          |
-|1 |└─HASH JOIN                    |    |239     |54          |
-|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |15          |
-|3 |  │ ├─TABLE FULL SCAN          |b   |11      |3           |
-|4 |  │ └─MATERIAL                 |    |17      |8           |
-|5 |  │   └─HASH JOIN              |    |17      |8           |
-|6 |  │     ├─TABLE FULL SCAN      |c   |11      |3           |
-|7 |  │     └─TABLE FULL SCAN      |d   |11      |3           |
-|8 |  └─TABLE FULL SCAN            |a   |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |78          |
+|1 |└─HASH JOIN                    |    |239     |70          |
+|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |184     |22          |
+|3 |  │ ├─TABLE FULL SCAN          |b   |11      |5           |
+|4 |  │ └─MATERIAL                 |    |17      |13          |
+|5 |  │   └─HASH JOIN              |    |17      |12          |
+|6 |  │     ├─TABLE FULL SCAN      |c   |11      |5           |
+|7 |  │     └─TABLE FULL SCAN      |d   |11      |5           |
+|8 |  └─TABLE FULL SCAN            |a   |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(b.d1 + d.d2)])
-  1 - output([b.d1], [d.d2]), filter(nil), rowset=256
+  1 - output([b.d1], [d.d2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds(nil)
-  2 - output([b.d1], [d.d2]), filter(nil), rowset=256
+  2 - output([b.d1], [d.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  3 - output([b.d1]), filter(nil), rowset=256
+  3 - output([b.d1]), filter(nil), rowset=16
       access([b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([d.d2]), filter(nil), rowset=256
-  5 - output([d.d2]), filter(nil), rowset=256
+  4 - output([d.d2]), filter(nil), rowset=16
+  5 - output([d.d2]), filter(nil), rowset=16
       equal_conds([c.c2 = d.d1]), other_conds(nil)
-  6 - output([c.c2]), filter(nil), rowset=256
+  6 - output([c.c2]), filter(nil), rowset=16
       access([c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([d.d1], [d.d2]), filter(nil), rowset=256
+  7 - output([d.d1], [d.d2]), filter(nil), rowset=16
       access([d.d1], [d.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([a.c1]), filter(nil), rowset=256
+  8 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
@@ -1536,40 +1536,40 @@ Query Plan
 =============================================================
 |ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------
-|0 |SCALAR GROUP BY              |    |1       |30          |
-|1 |└─NESTED-LOOP JOIN CARTESIAN |    |239     |22          |
-|2 |  ├─HASH JOIN                |    |17      |8           |
-|3 |  │ ├─TABLE FULL SCAN        |d   |11      |3           |
-|4 |  │ └─TABLE FULL SCAN        |c   |11      |3           |
-|5 |  └─MATERIAL                 |    |15      |9           |
-|6 |    └─HASH JOIN              |    |15      |8           |
-|7 |      ├─TABLE FULL SCAN      |a   |11      |3           |
-|8 |      └─TABLE FULL SCAN      |b   |11      |3           |
+|0 |SCALAR GROUP BY              |    |1       |39          |
+|1 |└─NESTED-LOOP JOIN CARTESIAN |    |239     |31          |
+|2 |  ├─HASH JOIN                |    |17      |12          |
+|3 |  │ ├─TABLE FULL SCAN        |d   |11      |5           |
+|4 |  │ └─TABLE FULL SCAN        |c   |11      |5           |
+|5 |  └─MATERIAL                 |    |15      |13          |
+|6 |    └─HASH JOIN              |    |15      |12          |
+|7 |      ├─TABLE FULL SCAN      |a   |11      |5           |
+|8 |      └─TABLE FULL SCAN      |b   |11      |5           |
 =============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2 + d.d1 * c.c1 - a.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2 + d.d1 * c.c1 - a.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(b.d2 + d.d1 * c.c1 - a.c1)])
-  1 - output([d.d1], [c.c1], [a.c1], [b.d2]), filter(nil), rowset=256
+  1 - output([d.d1], [c.c1], [a.c1], [b.d2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  2 - output([d.d1], [c.c1]), filter(nil), rowset=256
+  2 - output([d.d1], [c.c1]), filter(nil), rowset=16
       equal_conds([c.c2 = d.d1]), other_conds(nil)
-  3 - output([d.d1]), filter(nil), rowset=256
+  3 - output([d.d1]), filter(nil), rowset=16
       access([d.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([c.c2], [c.c1]), filter(nil), rowset=256
+  4 - output([c.c2], [c.c1]), filter(nil), rowset=16
       access([c.c2], [c.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([a.c1], [b.d2]), filter(nil), rowset=256
-  6 - output([a.c1], [b.d2]), filter(nil), rowset=256
+  5 - output([a.c1], [b.d2]), filter(nil), rowset=16
+  6 - output([a.c1], [b.d2]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d1]), other_conds(nil)
-  7 - output([a.c1]), filter(nil), rowset=256
+  7 - output([a.c1]), filter(nil), rowset=16
       access([a.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([b.d1], [b.d2]), filter(nil), rowset=256
+  8 - output([b.d1], [b.d2]), filter(nil), rowset=16
       access([b.d1], [b.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -1589,62 +1589,62 @@ Query Plan
 =============================================================
 |ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------
-|0 |SCALAR GROUP BY              |    |1       |35          |
-|1 |└─HASH JOIN                  |    |10      |35          |
-|2 |  ├─HASH JOIN                |    |7       |29          |
-|3 |  │ ├─HASH JOIN              |    |5       |25          |
-|4 |  │ │ ├─HASH JOIN            |    |4       |21          |
-|5 |  │ │ │ ├─HASH JOIN          |    |19      |13          |
-|6 |  │ │ │ │ ├─HASH JOIN        |    |15      |7           |
-|7 |  │ │ │ │ │ ├─TABLE FULL SCAN|t2  |11      |3           |
-|8 |  │ │ │ │ │ └─TABLE FULL SCAN|t1  |11      |3           |
-|9 |  │ │ │ │ └─TABLE FULL SCAN  |t4  |11      |3           |
-|10|  │ │ │ └─TABLE FULL SCAN    |t3  |2       |3           |
-|11|  │ │ └─TABLE FULL SCAN      |t5  |11      |3           |
-|12|  │ └─TABLE FULL SCAN        |t6  |11      |3           |
-|13|  └─TABLE FULL SCAN          |t7  |11      |3           |
+|0 |SCALAR GROUP BY              |    |1       |52          |
+|1 |└─HASH JOIN                  |    |10      |51          |
+|2 |  ├─HASH JOIN                |    |7       |43          |
+|3 |  │ ├─HASH JOIN              |    |5       |37          |
+|4 |  │ │ ├─HASH JOIN            |    |4       |30          |
+|5 |  │ │ │ ├─HASH JOIN          |    |19      |21          |
+|6 |  │ │ │ │ ├─HASH JOIN        |    |15      |12          |
+|7 |  │ │ │ │ │ ├─TABLE FULL SCAN|t2  |11      |5           |
+|8 |  │ │ │ │ │ └─TABLE FULL SCAN|t1  |11      |5           |
+|9 |  │ │ │ │ └─TABLE FULL SCAN  |t4  |11      |5           |
+|10|  │ │ │ └─TABLE FULL SCAN    |t3  |2       |5           |
+|11|  │ │ └─TABLE FULL SCAN      |t5  |11      |5           |
+|12|  │ └─TABLE FULL SCAN        |t6  |11      |5           |
+|13|  └─TABLE FULL SCAN          |t7  |11      |5           |
 =============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t6.c1 + t7.c1 + t4.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t6.c1 + t7.c1 + t4.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t6.c1 + t7.c1 + t4.c2)])
-  1 - output([t7.c1], [t6.c1], [t4.c2]), filter(nil), rowset=256
+  1 - output([t7.c1], [t6.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  2 - output([t1.c1], [t6.c1], [t4.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t6.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t6.c1]), other_conds(nil)
-  3 - output([t1.c1], [t4.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t5.c1]), other_conds(nil)
-  4 - output([t1.c1], [t4.c2]), filter(nil), rowset=256
+  4 - output([t1.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  5 - output([t1.c1], [t4.c2]), filter(nil), rowset=256
+  5 - output([t1.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  6 - output([t1.c1]), filter(nil), rowset=256
+  6 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  7 - output([t2.c1]), filter(nil), rowset=256
+  7 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t1.c1]), filter(nil), rowset=256
+  8 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+  9 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=256
+ 10 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t5.c1]), filter(nil), rowset=256
+ 11 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t6.c1]), filter(nil), rowset=256
+ 12 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t7.c1]), filter(nil), rowset=256
+ 13 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
@@ -1666,66 +1666,66 @@ Query Plan
 =====================================================================
 |ID|OPERATOR                             |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------------
-|0 |SCALAR GROUP BY                      |    |1       |230         |
-|1 |└─HASH JOIN                          |    |475     |214         |
-|2 |  ├─HASH OUTER JOIN                  |    |402     |131         |
-|3 |  │ ├─NESTED-LOOP JOIN CARTESIAN     |    |310     |56          |
-|4 |  │ │ ├─HASH JOIN                    |    |22      |40          |
-|5 |  │ │ │ ├─NESTED-LOOP JOIN CARTESIAN |    |121     |8           |
-|6 |  │ │ │ │ ├─TABLE FULL SCAN          |t4  |11      |3           |
-|7 |  │ │ │ │ └─MATERIAL                 |    |11      |3           |
-|8 |  │ │ │ │   └─TABLE FULL SCAN        |t6  |11      |3           |
-|9 |  │ │ │ └─TABLE FULL SCAN            |t5  |11      |3           |
-|10|  │ │ └─MATERIAL                     |    |15      |9           |
-|11|  │ │   └─HASH OUTER JOIN            |    |15      |8           |
-|12|  │ │     ├─TABLE FULL SCAN          |t1  |11      |3           |
-|13|  │ │     └─TABLE FULL SCAN          |t2  |11      |3           |
-|14|  │ └─TABLE FULL SCAN                |t7  |11      |3           |
-|15|  └─TABLE FULL SCAN                  |t3  |10      |3           |
+|0 |SCALAR GROUP BY                      |    |1       |272         |
+|1 |└─HASH JOIN                          |    |475     |256         |
+|2 |  ├─HASH OUTER JOIN                  |    |402     |157         |
+|3 |  │ ├─NESTED-LOOP JOIN CARTESIAN     |    |310     |68          |
+|4 |  │ │ ├─HASH JOIN                    |    |22      |47          |
+|5 |  │ │ │ ├─NESTED-LOOP JOIN CARTESIAN |    |121     |12          |
+|6 |  │ │ │ │ ├─TABLE FULL SCAN          |t4  |11      |5           |
+|7 |  │ │ │ │ └─MATERIAL                 |    |11      |5           |
+|8 |  │ │ │ │   └─TABLE FULL SCAN        |t6  |11      |5           |
+|9 |  │ │ │ └─TABLE FULL SCAN            |t5  |11      |5           |
+|10|  │ │ └─MATERIAL                     |    |15      |13          |
+|11|  │ │   └─HASH OUTER JOIN            |    |15      |12          |
+|12|  │ │     ├─TABLE FULL SCAN          |t1  |11      |5           |
+|13|  │ │     └─TABLE FULL SCAN          |t2  |11      |5           |
+|14|  │ └─TABLE FULL SCAN                |t7  |11      |5           |
+|15|  └─TABLE FULL SCAN                  |t3  |10      |5           |
 =====================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.c2 + t3.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t2.c2 + t3.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t2.c2 + t3.c1)])
-  1 - output([t3.c1], [t2.c2]), filter(nil), rowset=256
+  1 - output([t3.c1], [t2.c2]), filter(nil), rowset=16
       equal_conds([t3.c1 = t4.c1]), other_conds(nil)
-  2 - output([t4.c1], [t2.c2]), filter(nil), rowset=256
+  2 - output([t4.c1], [t2.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  3 - output([t4.c1], [t1.c1], [t2.c2]), filter(nil), rowset=256
+  3 - output([t4.c1], [t1.c1], [t2.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  4 - output([t4.c1]), filter(nil), rowset=256
+  4 - output([t4.c1]), filter(nil), rowset=16
       equal_conds([t5.c1 = t6.c2], [t4.c2 = t5.c2]), other_conds(nil)
-  5 - output([t4.c1], [t4.c2], [t6.c2]), filter(nil), rowset=256
+  5 - output([t4.c1], [t4.c2], [t6.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  6 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+  6 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t6.c2]), filter(nil), rowset=256
-  8 - output([t6.c2]), filter(nil), rowset=256
+  7 - output([t6.c2]), filter(nil), rowset=16
+  8 - output([t6.c2]), filter(nil), rowset=16
       access([t6.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t5.c2], [t5.c1]), filter(nil), rowset=256
+  9 - output([t5.c2], [t5.c1]), filter(nil), rowset=16
       access([t5.c2], [t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t1.c1], [t2.c2]), filter(nil), rowset=256
- 11 - output([t1.c1], [t2.c2]), filter(nil), rowset=256
+ 10 - output([t1.c1], [t2.c2]), filter(nil), rowset=16
+ 11 - output([t1.c1], [t2.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
- 12 - output([t1.c1]), filter(nil), rowset=256
+ 12 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t2.c1], [t2.c2]), filter(nil), rowset=256
+ 13 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
       access([t2.c1], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
- 14 - output([t7.c1]), filter(nil), rowset=256
+ 14 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t3.c1]), filter([t3.c2 IN (1, 23, 4, 2, 5, 6)]), rowset=256
+ 15 - output([t3.c1]), filter([t3.c2 IN (1, 23, 4, 2, 5, 6)]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -1747,38 +1747,38 @@ Query Plan
 =======================================================
 |ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------
-|0 |SCALAR GROUP BY        |    |1       |14          |
-|1 |└─HASH JOIN            |    |3       |14          |
-|2 |  ├─TABLE FULL SCAN    |c   |11      |3           |
-|3 |  └─HASH JOIN          |    |4       |9           |
-|4 |    ├─TABLE FULL SCAN  |a   |2       |3           |
-|5 |    └─HASH JOIN        |    |5       |6           |
-|6 |      ├─TABLE FULL SCAN|d   |2       |3           |
-|7 |      └─TABLE FULL SCAN|b   |11      |3           |
+|0 |SCALAR GROUP BY        |    |1       |23          |
+|1 |└─HASH JOIN            |    |3       |23          |
+|2 |  ├─TABLE FULL SCAN    |c   |11      |5           |
+|3 |  └─HASH JOIN          |    |4       |16          |
+|4 |    ├─TABLE FULL SCAN  |a   |2       |5           |
+|5 |    └─HASH JOIN        |    |5       |11          |
+|6 |      ├─TABLE FULL SCAN|d   |2       |5           |
+|7 |      └─TABLE FULL SCAN|b   |11      |5           |
 =======================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(a.c1 + b.d2)], [T_FUN_SUM(b.d2 + b.d2 * a.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(a.c1 + b.d2)], [T_FUN_SUM(b.d2 + b.d2 * a.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(a.c1 + b.d2)], [T_FUN_SUM(b.d2 + b.d2 * a.c1)])
-  1 - output([b.d2], [a.c1]), filter(nil), rowset=256
+  1 - output([b.d2], [a.c1]), filter(nil), rowset=16
       equal_conds([b.d1 = c.c1], [b.d2 = c.c2]), other_conds(nil)
-  2 - output([c.c1], [c.c2]), filter(nil), rowset=256
+  2 - output([c.c1], [c.c2]), filter(nil), rowset=16
       access([c.c1], [c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([c.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([b.d2], [a.c1], [b.d1]), filter(nil), rowset=256
+  3 - output([b.d2], [a.c1], [b.d1]), filter(nil), rowset=16
       equal_conds([a.c1 = b.d2]), other_conds(nil)
-  4 - output([a.c1]), filter([a.c2 < 5]), rowset=256
+  4 - output([a.c1]), filter([a.c2 < 5]), rowset=16
       access([a.c1], [a.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([a.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  5 - output([b.d2], [b.d1]), filter(nil), rowset=16
       equal_conds([d.c1 = b.d2]), other_conds(nil)
-  6 - output([d.c1]), filter([d.c1 = d.c2]), rowset=256
+  6 - output([d.c1]), filter([d.c1 = d.c2]), rowset=16
       access([d.c2], [d.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([d.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([b.d2], [b.d1]), filter(nil), rowset=256
+  7 - output([b.d2], [b.d1]), filter(nil), rowset=16
       access([b.d2], [b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
@@ -1822,78 +1822,78 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |SCALAR GROUP BY          |    |1       |43          |
-|1 |└─HASH JOIN              |    |16      |42          |
-|2 |  ├─HASH JOIN            |    |7       |25          |
-|3 |  │ ├─HASH JOIN          |    |3       |11          |
-|4 |  │ │ ├─TABLE FULL SCAN  |t2  |11      |3           |
-|5 |  │ │ └─HASH JOIN        |    |2       |7           |
-|6 |  │ │   ├─TABLE FULL SCAN|t1  |11      |3           |
-|7 |  │ │   └─TABLE FULL SCAN|t3  |2       |3           |
-|8 |  │ └─HASH JOIN          |    |19      |12          |
-|9 |  │   ├─TABLE FULL SCAN  |t7  |11      |3           |
-|10|  │   └─HASH JOIN        |    |15      |7           |
-|11|  │     ├─TABLE FULL SCAN|t8  |11      |3           |
-|12|  │     └─TABLE FULL SCAN|t9  |11      |3           |
-|13|  └─HASH JOIN            |    |19      |14          |
-|14|    ├─HASH JOIN          |    |15      |8           |
-|15|    │ ├─TABLE FULL SCAN  |t4  |11      |3           |
-|16|    │ └─TABLE FULL SCAN  |t5  |11      |3           |
-|17|    └─TABLE FULL SCAN    |t6  |11      |3           |
+|0 |SCALAR GROUP BY          |    |1       |65          |
+|1 |└─HASH JOIN              |    |16      |64          |
+|2 |  ├─HASH JOIN            |    |7       |39          |
+|3 |  │ ├─HASH JOIN          |    |3       |17          |
+|4 |  │ │ ├─TABLE FULL SCAN  |t2  |11      |5           |
+|5 |  │ │ └─HASH JOIN        |    |2       |11          |
+|6 |  │ │   ├─TABLE FULL SCAN|t1  |11      |5           |
+|7 |  │ │   └─TABLE FULL SCAN|t3  |2       |5           |
+|8 |  │ └─HASH JOIN          |    |19      |20          |
+|9 |  │   ├─TABLE FULL SCAN  |t7  |11      |5           |
+|10|  │   └─HASH JOIN        |    |15      |12          |
+|11|  │     ├─TABLE FULL SCAN|t8  |11      |5           |
+|12|  │     └─TABLE FULL SCAN|t9  |11      |5           |
+|13|  └─HASH JOIN            |    |19      |21          |
+|14|    ├─HASH JOIN          |    |15      |12          |
+|15|    │ ├─TABLE FULL SCAN  |t4  |11      |5           |
+|16|    │ └─TABLE FULL SCAN  |t5  |11      |5           |
+|17|    └─TABLE FULL SCAN    |t6  |11      |5           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t3.c2 - t5.c2 * 4)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t3.c2 - t5.c2 * 4)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t3.c2 - t5.c2 * 4)])
-  1 - output([t1.c1], [t3.c2], [t5.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t3.c2], [t5.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  2 - output([t1.c1], [t3.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t3.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  3 - output([t1.c1], [t3.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t3.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  4 - output([t2.c1]), filter(nil), rowset=256
+  4 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t1.c1], [t3.c2]), filter(nil), rowset=256
+  5 - output([t1.c1], [t3.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  6 - output([t1.c1]), filter(nil), rowset=256
+  6 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=256
+  7 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t7.c1]), filter(nil), rowset=256
+  8 - output([t7.c1]), filter(nil), rowset=16
       equal_conds([t7.c1 = t8.c1]), other_conds(nil)
-  9 - output([t7.c1]), filter(nil), rowset=256
+  9 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t8.c1]), filter(nil), rowset=256
+ 10 - output([t8.c1]), filter(nil), rowset=16
       equal_conds([t8.c1 = t9.c1]), other_conds(nil)
- 11 - output([t8.c1]), filter(nil), rowset=256
+ 11 - output([t8.c1]), filter(nil), rowset=16
       access([t8.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t9.c1]), filter(nil), rowset=256
+ 12 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t4.c1], [t5.c2]), filter(nil), rowset=256
+ 13 - output([t4.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t6.c1]), other_conds(nil)
- 14 - output([t4.c1], [t5.c2]), filter(nil), rowset=256
+ 14 - output([t4.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
- 15 - output([t4.c1]), filter(nil), rowset=256
+ 15 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t5.c1], [t5.c2]), filter(nil), rowset=256
+ 16 - output([t5.c1], [t5.c2]), filter(nil), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t6.c1]), filter(nil), rowset=256
+ 17 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -1912,78 +1912,78 @@ Query Plan
 =============================================================
 |ID|OPERATOR                     |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------
-|0 |SCALAR GROUP BY              |    |1       |47          |
-|1 |└─HASH JOIN                  |    |19      |46          |
-|2 |  ├─HASH JOIN                |    |14      |37          |
-|3 |  │ ├─HASH JOIN              |    |10      |30          |
-|4 |  │ │ ├─HASH JOIN            |    |7       |25          |
-|5 |  │ │ │ ├─HASH JOIN          |    |3       |11          |
-|6 |  │ │ │ │ ├─TABLE FULL SCAN  |t2  |11      |3           |
-|7 |  │ │ │ │ └─HASH JOIN        |    |2       |7           |
-|8 |  │ │ │ │   ├─TABLE FULL SCAN|t1  |11      |3           |
-|9 |  │ │ │ │   └─TABLE FULL SCAN|t3  |2       |3           |
-|10|  │ │ │ └─HASH JOIN          |    |19      |12          |
-|11|  │ │ │   ├─TABLE FULL SCAN  |t7  |11      |3           |
-|12|  │ │ │   └─HASH JOIN        |    |15      |7           |
-|13|  │ │ │     ├─TABLE FULL SCAN|t8  |11      |3           |
-|14|  │ │ │     └─TABLE FULL SCAN|t9  |11      |3           |
-|15|  │ │ └─TABLE FULL SCAN      |t6  |11      |3           |
-|16|  │ └─TABLE FULL SCAN        |t4  |11      |3           |
-|17|  └─TABLE FULL SCAN          |t5  |11      |3           |
+|0 |SCALAR GROUP BY              |    |1       |68          |
+|1 |└─HASH JOIN                  |    |19      |68          |
+|2 |  ├─HASH JOIN                |    |14      |56          |
+|3 |  │ ├─HASH JOIN              |    |10      |47          |
+|4 |  │ │ ├─HASH JOIN            |    |7       |39          |
+|5 |  │ │ │ ├─HASH JOIN          |    |3       |17          |
+|6 |  │ │ │ │ ├─TABLE FULL SCAN  |t2  |11      |5           |
+|7 |  │ │ │ │ └─HASH JOIN        |    |2       |11          |
+|8 |  │ │ │ │   ├─TABLE FULL SCAN|t1  |11      |5           |
+|9 |  │ │ │ │   └─TABLE FULL SCAN|t3  |2       |5           |
+|10|  │ │ │ └─HASH JOIN          |    |19      |20          |
+|11|  │ │ │   ├─TABLE FULL SCAN  |t7  |11      |5           |
+|12|  │ │ │   └─HASH JOIN        |    |15      |12          |
+|13|  │ │ │     ├─TABLE FULL SCAN|t8  |11      |5           |
+|14|  │ │ │     └─TABLE FULL SCAN|t9  |11      |5           |
+|15|  │ │ └─TABLE FULL SCAN      |t6  |11      |5           |
+|16|  │ └─TABLE FULL SCAN        |t4  |11      |5           |
+|17|  └─TABLE FULL SCAN          |t5  |11      |5           |
 =============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(T_FUN_COUNT(*), DECIMAL(20, 0)) + T_FUN_SUM(t1.c1 + t4.c2 + t5.c1 + t5.c2 - 5 * t9.c1)]), filter(nil), rowset=256
+  0 - output([cast(T_FUN_COUNT(*), DECIMAL(20, 0)) + T_FUN_SUM(t1.c1 + t4.c2 + t5.c1 + t5.c2 - 5 * t9.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t4.c2 + t5.c1 + t5.c2 - 5 * t9.c1)])
-  1 - output([t1.c1], [t5.c1], [t9.c1], [t4.c2], [t5.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t5.c1], [t9.c1], [t4.c2], [t5.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t5.c1]), other_conds(nil)
-  2 - output([t1.c1], [t9.c1], [t4.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t9.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  3 - output([t1.c1], [t9.c1]), filter(nil), rowset=256
+  3 - output([t1.c1], [t9.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t6.c1]), other_conds(nil)
-  4 - output([t1.c1], [t9.c1]), filter(nil), rowset=256
+  4 - output([t1.c1], [t9.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  5 - output([t1.c1]), filter(nil), rowset=256
+  5 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  6 - output([t2.c1]), filter(nil), rowset=256
+  6 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t1.c1]), filter(nil), rowset=256
+  7 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  8 - output([t1.c1]), filter(nil), rowset=256
+  8 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=256
+  9 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t7.c1], [t9.c1]), filter(nil), rowset=256
+ 10 - output([t7.c1], [t9.c1]), filter(nil), rowset=16
       equal_conds([t7.c1 = t8.c1]), other_conds(nil)
- 11 - output([t7.c1]), filter(nil), rowset=256
+ 11 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t8.c1], [t9.c1]), filter(nil), rowset=256
+ 12 - output([t8.c1], [t9.c1]), filter(nil), rowset=16
       equal_conds([t8.c1 = t9.c1]), other_conds(nil)
- 13 - output([t8.c1]), filter(nil), rowset=256
+ 13 - output([t8.c1]), filter(nil), rowset=16
       access([t8.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 14 - output([t9.c1]), filter(nil), rowset=256
+ 14 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t6.c1]), filter(nil), rowset=256
+ 15 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+ 16 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t5.c1], [t5.c2]), filter(nil), rowset=256
+ 17 - output([t5.c1], [t5.c2]), filter(nil), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
@@ -2005,78 +2005,78 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |SCALAR GROUP BY          |    |1       |39          |
-|1 |└─HASH JOIN              |    |5       |39          |
-|2 |  ├─HASH JOIN            |    |2       |26          |
-|3 |  │ ├─HASH JOIN          |    |1       |13          |
-|4 |  │ │ ├─HASH JOIN        |    |15      |7           |
-|5 |  │ │ │ ├─TABLE FULL SCAN|t2  |11      |3           |
-|6 |  │ │ │ └─TABLE FULL SCAN|t1  |11      |3           |
-|7 |  │ │ └─TABLE FULL SCAN  |t3  |1       |3           |
-|8 |  │ └─HASH JOIN          |    |19      |12          |
-|9 |  │   ├─TABLE FULL SCAN  |t4  |11      |3           |
-|10|  │   └─HASH JOIN        |    |15      |7           |
-|11|  │     ├─TABLE FULL SCAN|t5  |11      |3           |
-|12|  │     └─TABLE FULL SCAN|t6  |11      |3           |
-|13|  └─HASH JOIN            |    |7       |12          |
-|14|    ├─TABLE FULL SCAN    |t8  |4       |3           |
-|15|    └─HASH JOIN          |    |15      |7           |
-|16|      ├─TABLE FULL SCAN  |t9  |11      |3           |
-|17|      └─TABLE FULL SCAN  |t7  |11      |3           |
+|0 |SCALAR GROUP BY          |    |1       |60          |
+|1 |└─HASH JOIN              |    |5       |60          |
+|2 |  ├─HASH JOIN            |    |2       |40          |
+|3 |  │ ├─HASH JOIN          |    |1       |19          |
+|4 |  │ │ ├─HASH JOIN        |    |15      |12          |
+|5 |  │ │ │ ├─TABLE FULL SCAN|t2  |11      |5           |
+|6 |  │ │ │ └─TABLE FULL SCAN|t1  |11      |5           |
+|7 |  │ │ └─TABLE FULL SCAN  |t3  |1       |5           |
+|8 |  │ └─HASH JOIN          |    |19      |20          |
+|9 |  │   ├─TABLE FULL SCAN  |t4  |11      |5           |
+|10|  │   └─HASH JOIN        |    |15      |12          |
+|11|  │     ├─TABLE FULL SCAN|t5  |11      |5           |
+|12|  │     └─TABLE FULL SCAN|t6  |11      |5           |
+|13|  └─HASH JOIN            |    |7       |19          |
+|14|    ├─TABLE FULL SCAN    |t8  |4       |5           |
+|15|    └─HASH JOIN          |    |15      |12          |
+|16|      ├─TABLE FULL SCAN  |t9  |11      |5           |
+|17|      └─TABLE FULL SCAN  |t7  |11      |5           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t6.c1 - t7.c1 - t8.c2 * t9.c1)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t6.c1 - t7.c1 - t8.c2 * t9.c1)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t6.c1 - t7.c1 - t8.c2 * t9.c1)])
-  1 - output([t1.c1], [t7.c1], [t5.c1], [t6.c1], [t8.c2], [t9.c1]), filter(nil), rowset=256
+  1 - output([t1.c1], [t7.c1], [t5.c1], [t6.c1], [t8.c2], [t9.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  2 - output([t1.c1], [t5.c1], [t6.c1]), filter(nil), rowset=256
+  2 - output([t1.c1], [t5.c1], [t6.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  3 - output([t1.c1]), filter(nil), rowset=256
+  3 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  4 - output([t1.c1]), filter(nil), rowset=256
+  4 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  5 - output([t2.c1]), filter(nil), rowset=256
+  5 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t1.c1]), filter(nil), rowset=256
+  6 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t3.c2]), filter([t3.c2 = t3.c1], [t3.c2 >= t3.c1]), rowset=256
+  7 - output([t3.c2]), filter([t3.c2 = t3.c1], [t3.c2 >= t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false,false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t4.c1], [t5.c1], [t6.c1]), filter(nil), rowset=256
+  8 - output([t4.c1], [t5.c1], [t6.c1]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
-  9 - output([t4.c1]), filter(nil), rowset=256
+  9 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t5.c1], [t6.c1]), filter(nil), rowset=256
+ 10 - output([t5.c1], [t6.c1]), filter(nil), rowset=16
       equal_conds([t5.c1 = t6.c1]), other_conds(nil)
- 11 - output([t5.c1]), filter(nil), rowset=256
+ 11 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t6.c1]), filter(nil), rowset=256
+ 12 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t7.c1], [t8.c2], [t9.c1]), filter(nil), rowset=256
+ 13 - output([t7.c1], [t8.c2], [t9.c1]), filter(nil), rowset=16
       equal_conds([t7.c1 = t8.c2]), other_conds(nil)
- 14 - output([t8.c2]), filter([t8.c2 >= t8.c1]), rowset=256
+ 14 - output([t8.c2]), filter([t8.c2 >= t8.c1]), rowset=16
       access([t8.c2], [t8.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t7.c1], [t9.c1]), filter(nil), rowset=256
+ 15 - output([t7.c1], [t9.c1]), filter(nil), rowset=16
       equal_conds([t7.c1 = t9.c1]), other_conds(nil)
- 16 - output([t9.c1]), filter(nil), rowset=256
+ 16 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t7.c1]), filter(nil), rowset=256
+ 17 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
@@ -2098,78 +2098,78 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |SCALAR GROUP BY          |    |1       |45          |
-|1 |└─HASH JOIN              |    |16      |44          |
-|2 |  ├─HASH JOIN            |    |7       |27          |
-|3 |  │ ├─HASH JOIN          |    |3       |11          |
-|4 |  │ │ ├─TABLE FULL SCAN  |t2  |11      |3           |
-|5 |  │ │ └─HASH JOIN        |    |2       |7           |
-|6 |  │ │   ├─TABLE FULL SCAN|t1  |11      |3           |
-|7 |  │ │   └─TABLE FULL SCAN|t3  |2       |3           |
-|8 |  │ └─HASH JOIN          |    |19      |14          |
-|9 |  │   ├─HASH JOIN        |    |15      |8           |
-|10|  │   │ ├─TABLE FULL SCAN|t7  |11      |3           |
-|11|  │   │ └─TABLE FULL SCAN|t8  |11      |3           |
-|12|  │   └─TABLE FULL SCAN  |t9  |11      |3           |
-|13|  └─HASH JOIN            |    |19      |13          |
-|14|    ├─HASH JOIN          |    |15      |7           |
-|15|    │ ├─TABLE FULL SCAN  |t4  |11      |3           |
-|16|    │ └─TABLE FULL SCAN  |t5  |11      |3           |
-|17|    └─TABLE FULL SCAN    |t6  |11      |3           |
+|0 |SCALAR GROUP BY          |    |1       |66          |
+|1 |└─HASH JOIN              |    |16      |66          |
+|2 |  ├─HASH JOIN            |    |7       |41          |
+|3 |  │ ├─HASH JOIN          |    |3       |17          |
+|4 |  │ │ ├─TABLE FULL SCAN  |t2  |11      |5           |
+|5 |  │ │ └─HASH JOIN        |    |2       |11          |
+|6 |  │ │   ├─TABLE FULL SCAN|t1  |11      |5           |
+|7 |  │ │   └─TABLE FULL SCAN|t3  |2       |5           |
+|8 |  │ └─HASH JOIN          |    |19      |22          |
+|9 |  │   ├─HASH JOIN        |    |15      |13          |
+|10|  │   │ ├─TABLE FULL SCAN|t7  |11      |5           |
+|11|  │   │ └─TABLE FULL SCAN|t8  |11      |5           |
+|12|  │   └─TABLE FULL SCAN  |t9  |11      |5           |
+|13|  └─HASH JOIN            |    |19      |20          |
+|14|    ├─HASH JOIN          |    |15      |12          |
+|15|    │ ├─TABLE FULL SCAN  |t4  |11      |5           |
+|16|    │ └─TABLE FULL SCAN  |t5  |11      |5           |
+|17|    └─TABLE FULL SCAN    |t6  |11      |5           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t7.c2 - t8.c1 - t9.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t7.c2 - t8.c1 - t9.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t7.c2 - t8.c1 - t9.c2)])
-  1 - output([t1.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  2 - output([t1.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  3 - output([t1.c1]), filter(nil), rowset=256
+  3 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  4 - output([t2.c1]), filter(nil), rowset=256
+  4 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t1.c1]), filter(nil), rowset=256
+  5 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  6 - output([t1.c1]), filter(nil), rowset=256
+  6 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=256
+  7 - output([t3.c2]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t7.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=256
+  8 - output([t7.c1], [t8.c1], [t7.c2], [t9.c2]), filter(nil), rowset=16
       equal_conds([t7.c1 = t9.c1]), other_conds(nil)
-  9 - output([t7.c1], [t8.c1], [t7.c2]), filter(nil), rowset=256
+  9 - output([t7.c1], [t8.c1], [t7.c2]), filter(nil), rowset=16
       equal_conds([t7.c1 = t8.c1]), other_conds(nil)
- 10 - output([t7.c1], [t7.c2]), filter(nil), rowset=256
+ 10 - output([t7.c1], [t7.c2]), filter(nil), rowset=16
       access([t7.c1], [t7.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t8.c1]), filter(nil), rowset=256
+ 11 - output([t8.c1]), filter(nil), rowset=16
       access([t8.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t9.c1], [t9.c2]), filter(nil), rowset=256
+ 12 - output([t9.c1], [t9.c2]), filter(nil), rowset=16
       access([t9.c1], [t9.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t4.c1]), filter(nil), rowset=256
+ 13 - output([t4.c1]), filter(nil), rowset=16
       equal_conds([t4.c1 = t6.c1]), other_conds(nil)
- 14 - output([t4.c1]), filter(nil), rowset=256
+ 14 - output([t4.c1]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
- 15 - output([t4.c1]), filter(nil), rowset=256
+ 15 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t5.c1]), filter(nil), rowset=256
+ 16 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t6.c1]), filter(nil), rowset=256
+ 17 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -2191,78 +2191,78 @@ Query Plan
 ===========================================================
 |ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------
-|0 |SCALAR GROUP BY            |    |1       |48          |
-|1 |└─HASH JOIN                |    |17      |47          |
-|2 |  ├─HASH JOIN              |    |12      |39          |
-|3 |  │ ├─HASH JOIN            |    |9       |32          |
-|4 |  │ │ ├─HASH JOIN          |    |3       |11          |
-|5 |  │ │ │ ├─TABLE FULL SCAN  |t1  |11      |3           |
-|6 |  │ │ │ └─HASH JOIN        |    |2       |7           |
-|7 |  │ │ │   ├─TABLE FULL SCAN|t2  |11      |3           |
-|8 |  │ │ │   └─TABLE FULL SCAN|t3  |2       |3           |
-|9 |  │ │ └─HASH JOIN          |    |25      |19          |
-|10|  │ │   ├─HASH JOIN        |    |15      |8           |
-|11|  │ │   │ ├─TABLE FULL SCAN|t4  |11      |3           |
-|12|  │ │   │ └─TABLE FULL SCAN|t5  |11      |3           |
-|13|  │ │   └─HASH JOIN        |    |15      |7           |
-|14|  │ │     ├─TABLE FULL SCAN|t6  |11      |3           |
-|15|  │ │     └─TABLE FULL SCAN|t7  |11      |3           |
-|16|  │ └─TABLE FULL SCAN      |t9  |11      |3           |
-|17|  └─TABLE FULL SCAN        |t8  |11      |3           |
+|0 |SCALAR GROUP BY            |    |1       |70          |
+|1 |└─HASH JOIN                |    |17      |69          |
+|2 |  ├─HASH JOIN              |    |12      |58          |
+|3 |  │ ├─HASH JOIN            |    |9       |49          |
+|4 |  │ │ ├─HASH JOIN          |    |3       |17          |
+|5 |  │ │ │ ├─TABLE FULL SCAN  |t1  |11      |5           |
+|6 |  │ │ │ └─HASH JOIN        |    |2       |11          |
+|7 |  │ │ │   ├─TABLE FULL SCAN|t2  |11      |5           |
+|8 |  │ │ │   └─TABLE FULL SCAN|t3  |2       |5           |
+|9 |  │ │ └─HASH JOIN          |    |25      |29          |
+|10|  │ │   ├─HASH JOIN        |    |15      |12          |
+|11|  │ │   │ ├─TABLE FULL SCAN|t4  |11      |5           |
+|12|  │ │   │ └─TABLE FULL SCAN|t5  |11      |5           |
+|13|  │ │   └─HASH JOIN        |    |15      |12          |
+|14|  │ │     ├─TABLE FULL SCAN|t6  |11      |5           |
+|15|  │ │     └─TABLE FULL SCAN|t7  |11      |5           |
+|16|  │ └─TABLE FULL SCAN      |t9  |11      |5           |
+|17|  └─TABLE FULL SCAN        |t8  |11      |5           |
 ===========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t5.c2 + t6.c1) - cast(T_FUN_MAX(t2.c1 * t8.c2), DECIMAL(22, 0))]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t5.c2 + t6.c1) - cast(T_FUN_MAX(t2.c1 * t8.c2), DECIMAL(22, 0))]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 - t5.c2 + t6.c1)], [T_FUN_MAX(t2.c1 * t8.c2)])
-  1 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2], [t8.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2], [t8.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t8.c1]), other_conds(nil)
-  2 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t9.c1]), other_conds(nil)
-  3 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t2.c1], [t6.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  4 - output([t1.c1], [t2.c1]), filter(nil), rowset=256
+  4 - output([t1.c1], [t2.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  5 - output([t1.c1]), filter(nil), rowset=256
+  5 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t2.c1]), filter(nil), rowset=256
+  6 - output([t2.c1]), filter(nil), rowset=16
       equal_conds([t2.c1 = t3.c1]), other_conds(nil)
-  7 - output([t2.c1]), filter(nil), rowset=256
+  7 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t3.c1]), filter([t3.c2 = t3.c1]), rowset=256
+  8 - output([t3.c1]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([t4.c1], [t6.c1], [t5.c2]), filter(nil), rowset=256
+  9 - output([t4.c1], [t6.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t6.c1]), other_conds(nil)
- 10 - output([t4.c1], [t5.c2]), filter(nil), rowset=256
+ 10 - output([t4.c1], [t5.c2]), filter(nil), rowset=16
       equal_conds([t4.c1 = t5.c1]), other_conds(nil)
- 11 - output([t4.c1]), filter(nil), rowset=256
+ 11 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 12 - output([t5.c1], [t5.c2]), filter(nil), rowset=256
+ 12 - output([t5.c1], [t5.c2]), filter(nil), rowset=16
       access([t5.c1], [t5.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t6.c1]), filter(nil), rowset=256
+ 13 - output([t6.c1]), filter(nil), rowset=16
       equal_conds([t6.c1 = t7.c1]), other_conds(nil)
- 14 - output([t6.c1]), filter(nil), rowset=256
+ 14 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t7.c1]), filter(nil), rowset=256
+ 15 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t9.c1]), filter(nil), rowset=256
+ 16 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t8.c1], [t8.c2]), filter(nil), rowset=256
+ 17 - output([t8.c1], [t8.c2]), filter(nil), rowset=16
       access([t8.c1], [t8.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
@@ -2283,78 +2283,78 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |57          |
-|1 |└─HASH JOIN                    |    |16      |57          |
-|2 |  ├─HASH JOIN                  |    |11      |49          |
-|3 |  │ ├─HASH JOIN                |    |8       |43          |
-|4 |  │ │ ├─HASH JOIN              |    |6       |38          |
-|5 |  │ │ │ ├─HASH JOIN            |    |32      |25          |
-|6 |  │ │ │ │ ├─TABLE FULL SCAN    |t2  |11      |3           |
-|7 |  │ │ │ │ └─HASH JOIN          |    |25      |19          |
-|8 |  │ │ │ │   ├─HASH JOIN        |    |15      |7           |
-|9 |  │ │ │ │   │ ├─TABLE FULL SCAN|t7  |11      |3           |
-|10|  │ │ │ │   │ └─TABLE FULL SCAN|t1  |11      |3           |
-|11|  │ │ │ │   └─HASH JOIN        |    |15      |8           |
-|12|  │ │ │ │     ├─TABLE FULL SCAN|t8  |11      |3           |
-|13|  │ │ │ │     └─TABLE FULL SCAN|t9  |11      |3           |
-|14|  │ │ │ └─TABLE FULL SCAN      |t3  |2       |3           |
-|15|  │ │ └─TABLE FULL SCAN        |t4  |11      |3           |
-|16|  │ └─TABLE FULL SCAN          |t5  |11      |3           |
-|17|  └─TABLE FULL SCAN            |t6  |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |80          |
+|1 |└─HASH JOIN                    |    |16      |79          |
+|2 |  ├─HASH JOIN                  |    |11      |69          |
+|3 |  │ ├─HASH JOIN                |    |8       |60          |
+|4 |  │ │ ├─HASH JOIN              |    |6       |53          |
+|5 |  │ │ │ ├─HASH JOIN            |    |32      |38          |
+|6 |  │ │ │ │ ├─TABLE FULL SCAN    |t2  |11      |5           |
+|7 |  │ │ │ │ └─HASH JOIN          |    |25      |29          |
+|8 |  │ │ │ │   ├─HASH JOIN        |    |15      |12          |
+|9 |  │ │ │ │   │ ├─TABLE FULL SCAN|t7  |11      |5           |
+|10|  │ │ │ │   │ └─TABLE FULL SCAN|t1  |11      |5           |
+|11|  │ │ │ │   └─HASH JOIN        |    |15      |13          |
+|12|  │ │ │ │     ├─TABLE FULL SCAN|t8  |11      |5           |
+|13|  │ │ │ │     └─TABLE FULL SCAN|t9  |11      |5           |
+|14|  │ │ │ └─TABLE FULL SCAN      |t3  |2       |5           |
+|15|  │ │ └─TABLE FULL SCAN        |t4  |11      |5           |
+|16|  │ └─TABLE FULL SCAN          |t5  |11      |5           |
+|17|  └─TABLE FULL SCAN            |t6  |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t8.c2 * t9.c1 - t3.c1 * 4)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t8.c2 * t9.c1 - t3.c1 * 4)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1 + t5.c1 + t8.c2 * t9.c1 - t3.c1 * 4)])
-  1 - output([t1.c1], [t5.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=256
+  1 - output([t1.c1], [t5.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t6.c1]), other_conds(nil)
-  2 - output([t1.c1], [t5.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=256
+  2 - output([t1.c1], [t5.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t5.c1]), other_conds(nil)
-  3 - output([t1.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=256
+  3 - output([t1.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t4.c1]), other_conds(nil)
-  4 - output([t1.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=256
+  4 - output([t1.c1], [t9.c1], [t8.c2], [t3.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t3.c2]), other_conds(nil)
-  5 - output([t1.c1], [t9.c1], [t8.c2]), filter(nil), rowset=256
+  5 - output([t1.c1], [t9.c1], [t8.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  6 - output([t2.c1]), filter(nil), rowset=256
+  6 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t1.c1], [t9.c1], [t8.c2]), filter(nil), rowset=256
+  7 - output([t1.c1], [t9.c1], [t8.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t8.c1]), other_conds(nil)
-  8 - output([t1.c1]), filter(nil), rowset=256
+  8 - output([t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t7.c1]), other_conds(nil)
-  9 - output([t7.c1]), filter(nil), rowset=256
+  9 - output([t7.c1]), filter(nil), rowset=16
       access([t7.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t7.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([t1.c1]), filter(nil), rowset=256
+ 10 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
- 11 - output([t8.c1], [t9.c1], [t8.c2]), filter(nil), rowset=256
+ 11 - output([t8.c1], [t9.c1], [t8.c2]), filter(nil), rowset=16
       equal_conds([t8.c1 = t9.c1]), other_conds(nil)
- 12 - output([t8.c1], [t8.c2]), filter(nil), rowset=256
+ 12 - output([t8.c1], [t8.c2]), filter(nil), rowset=16
       access([t8.c1], [t8.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t8.__pk_increment]), range(MIN ; MAX)always true
- 13 - output([t9.c1]), filter(nil), rowset=256
+ 13 - output([t9.c1]), filter(nil), rowset=16
       access([t9.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t9.__pk_increment]), range(MIN ; MAX)always true
- 14 - output([t3.c2], [t3.c1]), filter([t3.c2 = t3.c1]), rowset=256
+ 14 - output([t3.c2], [t3.c1]), filter([t3.c2 = t3.c1]), rowset=16
       access([t3.c2], [t3.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, filter_before_indexback[false],
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([t4.c1]), filter(nil), rowset=256
+ 15 - output([t4.c1]), filter(nil), rowset=16
       access([t4.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 16 - output([t5.c1]), filter(nil), rowset=256
+ 16 - output([t5.c1]), filter(nil), rowset=16
       access([t5.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
- 17 - output([t6.c1]), filter(nil), rowset=256
+ 17 - output([t6.c1]), filter(nil), rowset=16
       access([t6.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t6.__pk_increment]), range(MIN ; MAX)always true
@@ -2375,42 +2375,42 @@ Query Plan
 ===============================================================
 |ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------
-|0 |SCALAR GROUP BY                |    |1       |64          |
-|1 |└─HASH JOIN                    |    |29      |63          |
-|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |121     |9           |
-|3 |  │ ├─TABLE FULL SCAN          |t1  |11      |3           |
-|4 |  │ └─MATERIAL                 |    |11      |4           |
-|5 |  │   └─TABLE FULL SCAN        |t4  |11      |3           |
-|6 |  └─NESTED-LOOP JOIN CARTESIAN |    |121     |9           |
-|7 |    ├─TABLE FULL SCAN          |t2  |11      |3           |
-|8 |    └─MATERIAL                 |    |11      |4           |
-|9 |      └─TABLE FULL SCAN        |t3  |11      |3           |
+|0 |SCALAR GROUP BY                |    |1       |73          |
+|1 |└─HASH JOIN                    |    |29      |72          |
+|2 |  ├─NESTED-LOOP JOIN CARTESIAN |    |121     |13          |
+|3 |  │ ├─TABLE FULL SCAN          |t1  |11      |5           |
+|4 |  │ └─MATERIAL                 |    |11      |6           |
+|5 |  │   └─TABLE FULL SCAN        |t4  |11      |5           |
+|6 |  └─NESTED-LOOP JOIN CARTESIAN |    |121     |13          |
+|7 |    ├─TABLE FULL SCAN          |t2  |11      |5           |
+|8 |    └─MATERIAL                 |    |11      |6           |
+|9 |      └─TABLE FULL SCAN        |t3  |11      |5           |
 ===============================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1) - T_FUN_SUM(t4.c2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1) - T_FUN_SUM(t4.c2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_SUM(t1.c1)], [T_FUN_SUM(t4.c2)])
-  1 - output([t1.c1], [t4.c2]), filter(nil), rowset=256
+  1 - output([t1.c1], [t4.c2]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1], [t3.c1 = t4.c1], [t1.c2 = t3.c2]), other_conds(nil)
-  2 - output([t1.c1], [t1.c2], [t4.c1], [t4.c2]), filter(nil), rowset=256
+  2 - output([t1.c1], [t1.c2], [t4.c1], [t4.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
-  5 - output([t4.c1], [t4.c2]), filter(nil), rowset=256
+  4 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
+  5 - output([t4.c1], [t4.c2]), filter(nil), rowset=16
       access([t4.c1], [t4.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([t2.c1], [t3.c1], [t3.c2]), filter(nil), rowset=256
+  6 - output([t2.c1], [t3.c1], [t3.c2]), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  7 - output([t2.c1]), filter(nil), rowset=256
+  7 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  8 - output([t3.c1], [t3.c2]), filter(nil), rowset=256
-  9 - output([t3.c1], [t3.c2]), filter(nil), rowset=256
+  8 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  9 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
       access([t3.c1], [t3.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -2433,66 +2433,66 @@ Query Plan
 ==================================================================
 |ID|OPERATOR                         |NAME |EST.ROWS|EST.TIME(us)|
 ------------------------------------------------------------------
-|0 |SORT                             |     |11      |16          |
-|1 |└─SUBPLAN FILTER                 |     |11      |15          |
-|2 |  ├─TABLE FULL SCAN              |x    |11      |3           |
-|3 |  └─LIMIT                        |     |1       |12          |
-|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |12          |
-|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |7           |
-|6 |      │ └─LIMIT                  |     |1       |7           |
-|7 |      │   └─HASH JOIN            |     |1       |7           |
-|8 |      │     ├─TABLE FULL SCAN    |b    |11      |3           |
-|9 |      │     └─TABLE FULL SCAN    |a    |4       |2           |
-|10|      └─MATERIAL                 |     |1       |6           |
-|11|        └─SUBPLAN SCAN           |VIEW2|1       |6           |
-|12|          └─LIMIT                |     |1       |6           |
-|13|            └─HASH JOIN          |     |1       |6           |
-|14|              ├─TABLE FULL SCAN  |b    |11      |3           |
-|15|              └─TABLE FULL SCAN  |a    |3       |2           |
+|0 |SORT                             |     |11      |26          |
+|1 |└─SUBPLAN FILTER                 |     |11      |25          |
+|2 |  ├─TABLE FULL SCAN              |x    |11      |5           |
+|3 |  └─LIMIT                        |     |1       |20          |
+|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |20          |
+|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |10          |
+|6 |      │ └─LIMIT                  |     |1       |10          |
+|7 |      │   └─HASH JOIN            |     |1       |10          |
+|8 |      │     ├─TABLE FULL SCAN    |a    |11      |5           |
+|9 |      │     └─TABLE FULL SCAN    |b    |1       |4           |
+|10|      └─MATERIAL                 |     |1       |10          |
+|11|        └─SUBPLAN SCAN           |VIEW2|1       |10          |
+|12|          └─LIMIT                |     |1       |10          |
+|13|            └─HASH JOIN          |     |1       |10          |
+|14|              ├─TABLE FULL SCAN  |c    |11      |5           |
+|15|              └─TABLE FULL SCAN  |d    |1       |4           |
 ==================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=256
+  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=16
       sort_keys([x.c1, ASC], [x.c2, ASC], [x.c3, DESC])
-  1 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=256
+  1 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=16
       exec_params_(nil), onetime_exprs_([(T_OP_EXISTS, subquery(1))(:0)]), init_plan_idxs_(nil), use_batch=false
-  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=256
+  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=16
       access([x.c1], [x.c2], [x.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([1]), filter(nil), rowset=256
+  3 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  4 - output(nil), filter(nil), rowset=256
+  4 - output(nil), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  5 - output(nil), filter(nil), rowset=256
+  5 - output(nil), filter(nil), rowset=16
       access(nil)
-  6 - output([1]), filter(nil), rowset=256
+  6 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  7 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c1 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
-  8 - output([b.d1]), filter(nil), rowset=256
+  7 - output(nil), filter(nil), rowset=16
+      equal_conds([a.c1 = b.d1]), other_conds(nil)
+  8 - output([a.c1]), filter(nil), rowset=16
+      access([a.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false,
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([b.d1]), filter(nil), rowset=16
       access([b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
- 10 - output(nil), filter(nil), rowset=256
- 11 - output(nil), filter(nil), rowset=256
+ 10 - output(nil), filter(nil), rowset=16
+ 11 - output(nil), filter(nil), rowset=16
       access(nil)
- 12 - output([1]), filter(nil), rowset=256
+ 12 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
- 13 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c2 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
- 14 - output([b.d1]), filter(nil), rowset=256
-      access([b.d1]), partitions(p0)
+ 13 - output(nil), filter(nil), rowset=16
+      equal_conds([c.c2 = d.d1]), other_conds(nil)
+ 14 - output([c.c2]), filter(nil), rowset=16
+      access([c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([b.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+ 15 - output([d.d1]), filter(nil), rowset=16
+      access([d.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+      range_key([d.__pk_increment]), range(MIN ; MAX)always true
 select /*+ LEADING(@x2x (c d), (a b)) */
 * from nn1 x
 where exists (select /*+ qb_name(x2x) */  1 
@@ -2523,66 +2523,66 @@ Query Plan
 ==================================================================
 |ID|OPERATOR                         |NAME |EST.ROWS|EST.TIME(us)|
 ------------------------------------------------------------------
-|0 |SORT                             |     |11      |16          |
-|1 |└─SUBPLAN FILTER                 |     |11      |15          |
-|2 |  ├─TABLE FULL SCAN              |x    |11      |3           |
-|3 |  └─LIMIT                        |     |1       |12          |
-|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |12          |
-|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |7           |
-|6 |      │ └─LIMIT                  |     |1       |7           |
-|7 |      │   └─HASH JOIN            |     |1       |7           |
-|8 |      │     ├─TABLE FULL SCAN    |b    |11      |3           |
-|9 |      │     └─TABLE FULL SCAN    |a    |4       |2           |
-|10|      └─MATERIAL                 |     |1       |6           |
-|11|        └─SUBPLAN SCAN           |VIEW2|1       |6           |
-|12|          └─LIMIT                |     |1       |6           |
-|13|            └─HASH JOIN          |     |1       |6           |
-|14|              ├─TABLE FULL SCAN  |b    |11      |3           |
-|15|              └─TABLE FULL SCAN  |a    |3       |2           |
+|0 |SORT                             |     |11      |26          |
+|1 |└─SUBPLAN FILTER                 |     |11      |25          |
+|2 |  ├─TABLE FULL SCAN              |x    |11      |5           |
+|3 |  └─LIMIT                        |     |1       |20          |
+|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |20          |
+|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |10          |
+|6 |      │ └─LIMIT                  |     |1       |10          |
+|7 |      │   └─HASH JOIN            |     |1       |10          |
+|8 |      │     ├─TABLE FULL SCAN    |a    |11      |5           |
+|9 |      │     └─TABLE FULL SCAN    |b    |1       |4           |
+|10|      └─MATERIAL                 |     |1       |10          |
+|11|        └─SUBPLAN SCAN           |VIEW2|1       |10          |
+|12|          └─LIMIT                |     |1       |10          |
+|13|            └─HASH JOIN          |     |1       |10          |
+|14|              ├─TABLE FULL SCAN  |c    |11      |5           |
+|15|              └─TABLE FULL SCAN  |d    |1       |4           |
 ==================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=256
+  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=16
       sort_keys([x.c1, DESC], [x.c2, ASC], [x.c3, DESC])
-  1 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=256
+  1 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=16
       exec_params_(nil), onetime_exprs_([(T_OP_EXISTS, subquery(1))(:0)]), init_plan_idxs_(nil), use_batch=false
-  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=256
+  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=16
       access([x.c1], [x.c2], [x.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([1]), filter(nil), rowset=256
+  3 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  4 - output(nil), filter(nil), rowset=256
+  4 - output(nil), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  5 - output(nil), filter(nil), rowset=256
+  5 - output(nil), filter(nil), rowset=16
       access(nil)
-  6 - output([1]), filter(nil), rowset=256
+  6 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  7 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c1 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
-  8 - output([b.d1]), filter(nil), rowset=256
+  7 - output(nil), filter(nil), rowset=16
+      equal_conds([a.c1 = b.d1]), other_conds(nil)
+  8 - output([a.c1]), filter(nil), rowset=16
+      access([a.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false,
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([b.d1]), filter(nil), rowset=16
       access([b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
- 10 - output(nil), filter(nil), rowset=256
- 11 - output(nil), filter(nil), rowset=256
+ 10 - output(nil), filter(nil), rowset=16
+ 11 - output(nil), filter(nil), rowset=16
       access(nil)
- 12 - output([1]), filter(nil), rowset=256
+ 12 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
- 13 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c2 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
- 14 - output([b.d1]), filter(nil), rowset=256
-      access([b.d1]), partitions(p0)
+ 13 - output(nil), filter(nil), rowset=16
+      equal_conds([c.c2 = d.d1]), other_conds(nil)
+ 14 - output([c.c2]), filter(nil), rowset=16
+      access([c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([b.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+ 15 - output([d.d1]), filter(nil), rowset=16
+      access([d.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+      range_key([d.__pk_increment]), range(MIN ; MAX)always true
 select /*+ LEADING(@x2x (c d), (a b)) */
 * from nn1 x
 where exists (select /*+ qb_name(x2x)  LEADING(a c b d)*/  1 
@@ -2613,66 +2613,66 @@ Query Plan
 ==================================================================
 |ID|OPERATOR                         |NAME |EST.ROWS|EST.TIME(us)|
 ------------------------------------------------------------------
-|0 |SORT                             |     |11      |17          |
-|1 |└─SUBPLAN FILTER                 |     |11      |15          |
-|2 |  ├─TABLE FULL SCAN              |x    |11      |3           |
-|3 |  └─LIMIT                        |     |1       |12          |
-|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |12          |
-|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |7           |
-|6 |      │ └─LIMIT                  |     |1       |7           |
-|7 |      │   └─HASH JOIN            |     |1       |7           |
-|8 |      │     ├─TABLE FULL SCAN    |b    |11      |3           |
-|9 |      │     └─TABLE FULL SCAN    |a    |4       |2           |
-|10|      └─MATERIAL                 |     |1       |6           |
-|11|        └─SUBPLAN SCAN           |VIEW2|1       |6           |
-|12|          └─LIMIT                |     |1       |6           |
-|13|            └─HASH JOIN          |     |1       |6           |
-|14|              ├─TABLE FULL SCAN  |b    |11      |3           |
-|15|              └─TABLE FULL SCAN  |a    |3       |2           |
+|0 |SORT                             |     |11      |26          |
+|1 |└─SUBPLAN FILTER                 |     |11      |25          |
+|2 |  ├─TABLE FULL SCAN              |x    |11      |5           |
+|3 |  └─LIMIT                        |     |1       |20          |
+|4 |    └─NESTED-LOOP JOIN CARTESIAN |     |1       |20          |
+|5 |      ├─SUBPLAN SCAN             |VIEW1|1       |10          |
+|6 |      │ └─LIMIT                  |     |1       |10          |
+|7 |      │   └─HASH JOIN            |     |1       |10          |
+|8 |      │     ├─TABLE FULL SCAN    |a    |11      |5           |
+|9 |      │     └─TABLE FULL SCAN    |b    |1       |4           |
+|10|      └─MATERIAL                 |     |1       |10          |
+|11|        └─SUBPLAN SCAN           |VIEW2|1       |10          |
+|12|          └─LIMIT                |     |1       |10          |
+|13|            └─HASH JOIN          |     |1       |10          |
+|14|              ├─TABLE FULL SCAN  |c    |11      |5           |
+|15|              └─TABLE FULL SCAN  |d    |1       |4           |
 ==================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=256
+  0 - output([x.c1], [x.c2], [x.c3]), filter(nil), rowset=16
       sort_keys([x.c1, DESC], [x.c3, DESC], [x.c2, ASC])
-  1 - output([x.c1], [x.c3], [x.c2]), filter(nil), rowset=256
+  1 - output([x.c1], [x.c3], [x.c2]), filter(nil), rowset=16
       exec_params_(nil), onetime_exprs_([(T_OP_EXISTS, subquery(1))(:0)]), init_plan_idxs_(nil), use_batch=false
-  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=256
+  2 - output([x.c1], [x.c2], [x.c3]), filter(nil), startup_filter([:0]), rowset=16
       access([x.c1], [x.c2], [x.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([x.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([1]), filter(nil), rowset=256
+  3 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  4 - output(nil), filter(nil), rowset=256
+  4 - output(nil), filter(nil), rowset=16
       conds(nil), nl_params_(nil), use_batch=false
-  5 - output(nil), filter(nil), rowset=256
+  5 - output(nil), filter(nil), rowset=16
       access(nil)
-  6 - output([1]), filter(nil), rowset=256
+  6 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
-  7 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c1 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
-  8 - output([b.d1]), filter(nil), rowset=256
+  7 - output(nil), filter(nil), rowset=16
+      equal_conds([a.c1 = b.d1]), other_conds(nil)
+  8 - output([a.c1]), filter(nil), rowset=16
+      access([a.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false,
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([b.d1]), filter(nil), rowset=16
       access([b.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([b.__pk_increment]), range(MIN ; MAX)always true
-  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
- 10 - output(nil), filter(nil), rowset=256
- 11 - output(nil), filter(nil), rowset=256
+ 10 - output(nil), filter(nil), rowset=16
+ 11 - output(nil), filter(nil), rowset=16
       access(nil)
- 12 - output([1]), filter(nil), rowset=256
+ 12 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
- 13 - output(nil), filter(nil), rowset=256
-      equal_conds([a.c2 = b.d1]), other_conds([a.c1 = b.d1 OR a.c2 = b.d1])
- 14 - output([b.d1]), filter(nil), rowset=256
-      access([b.d1]), partitions(p0)
+ 13 - output(nil), filter(nil), rowset=16
+      equal_conds([c.c2 = d.d1]), other_conds(nil)
+ 14 - output([c.c2]), filter(nil), rowset=16
+      access([c.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([b.__pk_increment]), range(MIN ; MAX)always true
- 15 - output([a.c1], [a.c2]), filter(nil), rowset=256
-      access([a.c1], [a.c2]), partitions(p0)
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+ 15 - output([d.d1]), filter(nil), rowset=16
+      access([d.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
-      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+      range_key([d.__pk_increment]), range(MIN ; MAX)always true
 select /*+ LEADING(@x3x b d (a c)) */
 * from nn1 x
 where exists (select /*+ qb_name(x3x) */  1 
@@ -2703,38 +2703,38 @@ Query Plan
 =====================================================
 |ID|OPERATOR             |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------
-|0 |SCALAR GROUP BY      |    |1       |19          |
-|1 |└─HASH JOIN          |    |2       |19          |
-|2 |  ├─HASH JOIN        |    |15      |7           |
-|3 |  │ ├─TABLE FULL SCAN|t1  |11      |3           |
-|4 |  │ └─TABLE FULL SCAN|t2  |11      |3           |
-|5 |  └─HASH JOIN        |    |20      |8           |
-|6 |    ├─TABLE FULL SCAN|t4  |11      |3           |
-|7 |    └─TABLE FULL SCAN|t5  |11      |3           |
+|0 |SCALAR GROUP BY      |    |1       |29          |
+|1 |└─HASH JOIN          |    |2       |28          |
+|2 |  ├─HASH JOIN        |    |15      |12          |
+|3 |  │ ├─TABLE FULL SCAN|t1  |11      |5           |
+|4 |  │ └─TABLE FULL SCAN|t2  |11      |5           |
+|5 |  └─HASH JOIN        |    |20      |12          |
+|6 |    ├─TABLE FULL SCAN|t4  |11      |5           |
+|7 |    └─TABLE FULL SCAN|t5  |11      |5           |
 =====================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([T_FUN_COUNT(*)], [T_FUN_MIN(t2.c1) + T_FUN_MAX(t5.d2)]), filter(nil), rowset=256
+  0 - output([T_FUN_COUNT(*)], [T_FUN_MIN(t2.c1) + T_FUN_MAX(t5.d2)]), filter(nil), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)], [T_FUN_MIN(t2.c1)], [T_FUN_MAX(t5.d2)])
-  1 - output([t2.c1], [t5.d2]), filter(nil), rowset=256
+  1 - output([t2.c1], [t5.d2]), filter(nil), rowset=16
       equal_conds([t1.c1 + t2.c1 = t4.d1 + t5.d2]), other_conds(nil)
-  2 - output([t2.c1], [t1.c1]), filter(nil), rowset=256
+  2 - output([t2.c1], [t1.c1]), filter(nil), rowset=16
       equal_conds([t1.c1 = t2.c1]), other_conds(nil)
-  3 - output([t1.c1]), filter(nil), rowset=256
+  3 - output([t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t2.c1]), filter(nil), rowset=256
+  4 - output([t2.c1]), filter(nil), rowset=16
       access([t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  5 - output([t5.d2], [t4.d1]), filter(nil), rowset=256
+  5 - output([t5.d2], [t4.d1]), filter(nil), rowset=16
       equal_conds([t4.d1 = t5.d1]), other_conds(nil)
-  6 - output([t4.d1]), filter(nil), rowset=256
+  6 - output([t4.d1]), filter(nil), rowset=16
       access([t4.d1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([t5.d1], [t5.d2]), filter(nil), rowset=256
+  7 - output([t5.d1], [t5.d2]), filter(nil), rowset=16
       access([t5.d1], [t5.d2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t5.__pk_increment]), range(MIN ; MAX)always true
@@ -2754,27 +2754,27 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |HASH JOIN                |    |1       |6           |
-|1 |├─HASH RIGHT ANTI JOIN NA|    |1       |4           |
-|2 |│ ├─TABLE FULL SCAN      |t2  |1       |2           |
-|3 |│ └─TABLE FULL SCAN      |t1  |1       |2           |
-|4 |└─TABLE FULL SCAN        |t3  |1       |2           |
+|0 |HASH JOIN                |    |1       |12          |
+|1 |├─HASH RIGHT ANTI JOIN NA|    |1       |8           |
+|2 |│ ├─TABLE FULL SCAN      |t2  |1       |4           |
+|3 |│ └─TABLE FULL SCAN      |t1  |1       |4           |
+|4 |└─TABLE FULL SCAN        |t3  |1       |4           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       equal_conds([t1.a = t3.a]), other_conds(nil)
-  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       equal_conds([t1.b = t2.b]), other_conds(nil)
-  2 - output([t2.b]), filter(nil), rowset=256
+  2 - output([t2.b]), filter(nil), rowset=16
       access([t2.b]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       access([t1.a], [t1.b], [t1.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       access([t3.a], [t3.b], [t3.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -2783,27 +2783,27 @@ Query Plan
 =========================================================
 |ID|OPERATOR                 |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------
-|0 |HASH JOIN                |    |1       |6           |
-|1 |├─HASH RIGHT ANTI JOIN NA|    |1       |4           |
-|2 |│ ├─TABLE FULL SCAN      |t2  |1       |2           |
-|3 |│ └─TABLE FULL SCAN      |t1  |1       |2           |
-|4 |└─TABLE FULL SCAN        |t3  |1       |2           |
+|0 |HASH JOIN                |    |1       |12          |
+|1 |├─HASH RIGHT ANTI JOIN NA|    |1       |8           |
+|2 |│ ├─TABLE FULL SCAN      |t2  |1       |4           |
+|3 |│ └─TABLE FULL SCAN      |t1  |1       |4           |
+|4 |└─TABLE FULL SCAN        |t3  |1       |4           |
 =========================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       equal_conds([t1.a = t3.a]), other_conds(nil)
-  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       equal_conds([t1.b = t2.b]), other_conds(nil)
-  2 - output([t2.b]), filter(nil), rowset=256
+  2 - output([t2.b]), filter(nil), rowset=16
       access([t2.b]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       access([t1.a], [t1.b], [t1.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       access([t3.a], [t3.b], [t3.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
@@ -2812,27 +2812,27 @@ Query Plan
 ===================================================
 |ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------
-|0 |HASH ANTI JOIN NA  |    |1       |6           |
-|1 |├─HASH JOIN        |    |1       |4           |
-|2 |│ ├─TABLE FULL SCAN|t3  |1       |2           |
-|3 |│ └─TABLE FULL SCAN|t1  |1       |2           |
-|4 |└─TABLE FULL SCAN  |t2  |1       |2           |
+|0 |HASH ANTI JOIN NA  |    |1       |13          |
+|1 |├─HASH JOIN        |    |1       |9           |
+|2 |│ ├─TABLE FULL SCAN|t3  |1       |4           |
+|3 |│ └─TABLE FULL SCAN|t1  |1       |4           |
+|4 |└─TABLE FULL SCAN  |t2  |1       |4           |
 ===================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       equal_conds([t1.b = t2.b]), other_conds(nil)
-  1 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  1 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       equal_conds([t1.a = t3.a]), other_conds(nil)
-  2 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  2 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       access([t3.a], [t3.b], [t3.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  3 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       access([t1.a], [t1.b], [t1.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t2.b]), filter(nil), rowset=256
+  4 - output([t2.b]), filter(nil), rowset=16
       access([t2.b]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
@@ -2841,27 +2841,27 @@ Query Plan
 ===================================================
 |ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------
-|0 |HASH JOIN          |    |1       |6           |
-|1 |├─HASH ANTI JOIN NA|    |1       |4           |
-|2 |│ ├─TABLE FULL SCAN|t1  |1       |2           |
-|3 |│ └─TABLE FULL SCAN|t2  |1       |2           |
-|4 |└─TABLE FULL SCAN  |t3  |1       |2           |
+|0 |HASH JOIN          |    |1       |12          |
+|1 |├─HASH ANTI JOIN NA|    |1       |8           |
+|2 |│ ├─TABLE FULL SCAN|t1  |1       |4           |
+|3 |│ └─TABLE FULL SCAN|t2  |1       |4           |
+|4 |└─TABLE FULL SCAN  |t3  |1       |4           |
 ===================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  0 - output([t1.a], [t1.b], [t1.c], [t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       equal_conds([t1.a = t3.a]), other_conds(nil)
-  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  1 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       equal_conds([t1.b = t2.b]), other_conds(nil)
-  2 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=256
+  2 - output([t1.a], [t1.b], [t1.c]), filter(nil), rowset=16
       access([t1.a], [t1.b], [t1.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  3 - output([t2.b]), filter(nil), rowset=256
+  3 - output([t2.b]), filter(nil), rowset=16
       access([t2.b]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=256
+  4 - output([t3.a], [t3.b], [t3.c]), filter(nil), rowset=16
       access([t3.a], [t3.b], [t3.c]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true

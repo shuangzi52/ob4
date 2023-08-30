@@ -528,6 +528,10 @@ ObOperator::ObOperator(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOpInput 
     batch_reach_end_(false),
     row_reach_end_(false),
     output_batches_b4_rescan_(0),
+    #ifdef ENABLE_DEBUG_LOG
+    dummy_mem_context_(nullptr),
+    dummy_ptr_(nullptr),
+    #endif
     check_stack_overflow_(false)
 {
   eval_ctx_.max_batch_size_ = spec.max_batch_size_;
@@ -695,7 +699,17 @@ int ObOperator::open()
           LOG_WARN("init evaluate flags failed", K(ret));
         } else if (OB_FAIL(init_skip_vector())) {
           LOG_WARN("init skip vector failed", K(ret));
-        } else if (OB_FAIL(inner_open())) {
+        }
+        #ifdef ENABLE_DEBUG_LOG
+        else if (OB_FAIL(init_dummy_mem_context(ctx_.get_my_session()->get_effective_tenant_id()))) {
+          LOG_WARN("failed to get mem context", K(ret));
+        } else if (OB_LIKELY(nullptr == dummy_ptr_)
+                && OB_ISNULL(dummy_ptr_ = static_cast<char *>(dummy_mem_context_->get_malloc_allocator().alloc(sizeof(char))))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("failed to alloc memory", K(ret));
+        }
+        #endif
+        else if (OB_FAIL(inner_open())) {
           if (OB_TRY_LOCK_ROW_CONFLICT != ret && OB_TRANSACTION_SET_VIOLATION != ret) {
             LOG_WARN("Open this operator failed", K(ret), "op_type", op_name());
           }
@@ -955,6 +969,14 @@ int ObOperator::close()
     }
     IGNORE_RETURN submit_op_monitor_node();
     IGNORE_RETURN setup_op_feedback_info();
+    #ifdef ENABLE_DEBUG_LOG
+    if (nullptr != dummy_mem_context_) {
+      if (nullptr != dummy_ptr_) {
+        dummy_mem_context_->get_malloc_allocator().free(dummy_ptr_);
+        dummy_ptr_ = nullptr;
+      }
+    }
+    #endif
   }
   return ret;
 }
@@ -1095,7 +1117,7 @@ int ObOperator::get_next_row()
         }
       } else if (OB_ITER_END == ret) {
         row_reach_end_ = true;
-        int tmp_ret = drain_exch();
+        int tmp_ret = do_drain_exch();
         if (OB_SUCCESS != tmp_ret) {
           LOG_WARN("drain exchange data failed", K(tmp_ret));
         }
@@ -1235,7 +1257,7 @@ int ObOperator::get_next_batch(const int64_t max_row_cnt, const ObBatchRows *&ba
           got_first_row_ = true;
         }
         if (brs_.end_) {
-          int tmp_ret = drain_exch();
+          int tmp_ret = do_drain_exch();
           if (OB_SUCCESS != tmp_ret) {
             LOG_WARN("drain exchange data failed", K(tmp_ret));
           }
@@ -1329,7 +1351,15 @@ int ObOperator::filter_batch_rows(const ObExprPtrIArray &exprs,
 // copy ObPhyOperator::drain_exch
 int ObOperator::drain_exch()
 {
+  int ret = OB_SUCCESS;
   uint64_t cpu_begin_time = rdtsc();
+  ret = do_drain_exch();
+  total_time_ += (rdtsc() - cpu_begin_time);
+  return ret;
+}
+
+int ObOperator::do_drain_exch()
+{
   int ret = OB_SUCCESS;
   /**
    * 1. try to open this operator
@@ -1338,20 +1368,24 @@ int ObOperator::drain_exch()
   if (OB_FAIL(try_open())) {
     LOG_WARN("fail to open operator", K(ret));
   } else if (!exch_drained_) {
+    int tmp_ret = inner_drain_exch();
     exch_drained_ = true;
-    for (int64_t i = 0; i < child_cnt_ && OB_SUCC(ret); i++) {
-      if (OB_ISNULL(children_[i])) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("NULL child found", K(ret), K(i));
-      } else if (OB_FAIL(children_[i]->drain_exch())) {
-        LOG_WARN("drain exch failed", K(ret));
+    if (!spec_.is_receive()) {
+      for (int64_t i = 0; i < child_cnt_ && OB_SUCC(ret); i++) {
+        if (OB_ISNULL(children_[i])) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("NULL child found", K(ret), K(i));
+        } else if (OB_FAIL(children_[i]->drain_exch())) {
+          LOG_WARN("drain exch failed", K(ret));
+        }
       }
     }
+    if (OB_SUCC(ret)) {
+      ret = tmp_ret;
+    }
   }
-  total_time_ += (rdtsc() - cpu_begin_time);
   return ret;
 }
-
 
 int ObOperator::get_real_child(ObOperator *&child, const int32_t child_idx)
 {
@@ -1433,6 +1467,26 @@ inline int ObOperator::get_next_row_vectorizely()
   eval_ctx_.set_batch_idx(0);
   return ret;
 }
+
+#ifdef ENABLE_DEBUG_LOG
+inline int ObOperator::init_dummy_mem_context(uint64_t tenant_id)
+{
+  int ret = common::OB_SUCCESS;
+  if (OB_LIKELY(NULL == dummy_mem_context_)) {
+    lib::ContextParam param;
+    param.set_properties(lib::USE_TL_PAGE_OPTIONAL)
+      .set_mem_attr(tenant_id, "ObSqlOp",
+                     common::ObCtxIds::DEFAULT_CTX_ID);
+    if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(dummy_mem_context_, param))) {
+      SQL_ENG_LOG(WARN, "create entity failed", K(ret));
+    } else if (OB_ISNULL(dummy_mem_context_)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      SQL_ENG_LOG(WARN, "mem entity is null", K(ret));
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObBatchRowIter::get_next_row()
 {
@@ -1561,7 +1615,7 @@ int ObBatchRescanParams::deep_copy_param(const common::ObObjParam &org_param,
 }
 
 int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &param_idxs,
-    const ObSEArray<common::ObObjParam, 8> &res_objs)
+    const ObTMArray<common::ObObjParam> &res_objs)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(params_.push_back(res_objs))) {
@@ -1578,7 +1632,7 @@ int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &para
 }
 
 int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &param_idxs,
-    const ObSEArray<ObObjParam, 8> &res_objs,
+    const ObTMArray<ObObjParam> &res_objs,
     const common::ObIArray<int64_t> &param_expr_idxs)
 {
   int ret = OB_SUCCESS;

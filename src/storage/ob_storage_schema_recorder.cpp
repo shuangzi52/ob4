@@ -47,10 +47,11 @@ ObStorageSchemaRecorder::ObStorageSchemaRecorder()
     allocator_(nullptr),
     ls_id_(),
     tablet_id_(),
-    table_id_(0)
+    table_id_(0),
+    max_column_cnt_(0)
 {
 #if defined(__x86_64__)
-  STATIC_ASSERT(sizeof(ObStorageSchemaRecorder) <= 120, "size of schema recorder is oversize");
+  STATIC_ASSERT(sizeof(ObStorageSchemaRecorder) <= 128, "size of schema recorder is oversize");
 #endif
 }
 
@@ -76,6 +77,7 @@ void ObStorageSchemaRecorder::reset()
 {
   if (is_inited_) {
     ObIStorageClogRecorder::reset();
+    max_column_cnt_ = 0;
   }
 }
 
@@ -143,18 +145,24 @@ int ObStorageSchemaRecorder::inner_replay_clog(
   ObArenaAllocator tmp_allocator;
   ObStorageSchema replay_storage_schema;
   ObTabletHandle tmp_tablet_handle;
+  int64_t stored_col_cnt = 0;
 
   if (OB_FAIL(replay_get_tablet_handle(ls_id_, tablet_id_, scn, tmp_tablet_handle))) {
-    LOG_WARN("failed to get tablet handle", K(ret), K_(tablet_id), K(scn));
+    if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("failed to get tablet handle", K(ret), K_(ls_id), K_(tablet_id), K(scn));
+    }
   } else if (OB_FAIL(replay_storage_schema.deserialize(tmp_allocator, buf, size, pos))) {
-    LOG_WARN("fail to deserialize table schema", K(ret), K_(tablet_id));
-  } else if (FALSE_IT(replay_storage_schema.set_sync_finish(true))) {
-  } else if (OB_FAIL(tmp_tablet_handle.get_obj()->save_multi_source_data_unit(&replay_storage_schema, scn,
-      true/*for_replay*/, memtable::MemtableRefOp::NONE))) {
-    LOG_WARN("failed to save storage schema", K(ret), K_(tablet_id), K(replay_storage_schema));
+    LOG_WARN("fail to deserialize table schema", K(ret), K_(ls_id), K_(tablet_id));
+  } else if (OB_FAIL(replay_storage_schema.get_store_column_count(stored_col_cnt, true/*full_col*/))) {
+    LOG_WARN("failed to get store column count from replay schema", KR(ret),K(replay_storage_schema));
   } else {
-    LOG_INFO("success to replay schema clog", K(ret), K_(ls_id), K_(tablet_id),
-      K(replay_storage_schema.get_schema_version()), K(replay_storage_schema.compat_mode_));
+    // replay schema clog and update to ObStorageSchemaRecorder
+    // need get column_cnt on schema_recorder to mini merge
+    max_column_cnt_ = MAX(max_column_cnt_, stored_col_cnt);
+    FLOG_INFO("success to replay schema clog", K(ret), K_(ls_id), K_(tablet_id), K(replay_storage_schema),
+      K(stored_col_cnt), K(max_column_cnt_));
   }
   replay_storage_schema.reset();
   tmp_tablet_handle.reset();
@@ -168,6 +176,7 @@ int ObStorageSchemaRecorder::try_update_storage_schema(
     const int64_t timeout_ts)
 {
   int ret = OB_SUCCESS;
+  uint64_t compat_version = 0;
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -178,6 +187,10 @@ int ObStorageSchemaRecorder::try_update_storage_schema(
   } else if (ignore_storage_schema_) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not supported to update storage schema", K(ret), K_(tablet_id));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(MTL_ID(), compat_version))) {
+    LOG_WARN("fail to get data version", K(ret));
+  } else if (compat_version >= DATA_VERSION_4_2_0_0) {
+    // for compat, before all server upgrade to 4.2, need sync storage schema
   } else if (FALSE_IT(table_id_ = table_id)) { // clear in free_allocated_info
   } else if (OB_FAIL(try_update_for_leader(table_version, &allocator, timeout_ts))) {
     LOG_WARN("failed to update for leader", K(ret), K(table_version));
@@ -223,10 +236,10 @@ int ObStorageSchemaRecorder::dec_ref_on_memtable(const bool sync_finish)
         KP_(storage_schema), K_(tablet_handle_ptr));
   } else {
     storage_schema_->set_sync_finish(sync_finish);
-    if (OB_FAIL(tablet_handle_ptr_->get_obj()->save_multi_source_data_unit(storage_schema_, clog_scn_,
-        false/*for_replay*/, memtable::MemtableRefOp::DEC_REF, true/*is_callback*/))) {
-      LOG_WARN("failed to save storage schema", K(ret), K_(tablet_id), K(storage_schema_));
-    }
+    // if (OB_FAIL(tablet_handle_ptr_->get_obj()->save_multi_source_data_unit(storage_schema_, clog_scn_,
+    //     false/*for_replay*/, memtable::MemtableRefOp::DEC_REF, true/*is_callback*/))) {
+    //   LOG_WARN("failed to save storage schema", K(ret), K_(tablet_id), K(storage_schema_));
+    // }
   }
   return ret;
 }
@@ -297,6 +310,7 @@ int ObStorageSchemaRecorder::get_schema(
   int ret = OB_SUCCESS;
   const ObTableSchema *t_schema = NULL;
 
+  int64_t tenant_schema_version = OB_INVALID_VERSION;
   if (OB_UNLIKELY(table_version < 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K_(tablet_id), K(table_version));
@@ -306,18 +320,22 @@ int ObStorageSchemaRecorder::get_schema(
         KP_(storage_schema), KP_(allocator));
   } else if (OB_FAIL(MTL(ObTenantSchemaService*)->get_schema_service()->get_tenant_schema_guard(MTL_ID(), *schema_guard_))) {
     LOG_WARN("failed to get tenant schema guard", K(ret), K(table_id_));
+  } else if (OB_FAIL(schema_guard_->get_schema_version(MTL_ID(), tenant_schema_version))) {
+    LOG_WARN("fail to get schema version", KR(ret), K(tenant_schema_version));
   } else if (OB_FAIL(schema_guard_->get_table_schema(MTL_ID(), table_id_, t_schema))
              || NULL == t_schema
              || table_version > t_schema->get_schema_version()) {
     // The version is checked here, so there is no need to check whether it is full
+    int tmp_ret = ret;
     ret = OB_SCHEMA_ERROR;
-    LOG_WARN("failed to get schema",  K(ret), K_(tablet_id), K(table_version), KPC(t_schema));
+    LOG_WARN("failed to get schema", KR(tmp_ret), KR(ret), K(table_id_), K_(tablet_id),
+             K(tenant_schema_version), K(table_version), KPC(t_schema));
     if (NULL != t_schema) {
       LOG_WARN("current schema version", K(t_schema->get_schema_version()));
     }
   } else {
     table_version = t_schema->get_schema_version();
-    if (OB_FAIL(storage_schema_->init(*allocator_, *t_schema, compat_mode_))) {
+    if (OB_FAIL(storage_schema_->init(*allocator_, *t_schema, compat_mode_, false/*skip_column_info*/, ObStorageSchema::STORAGE_SCHEMA_VERSION))) {
       LOG_WARN("failed to init storage schema", K(ret), K(t_schema));
     }
   }
@@ -349,11 +367,11 @@ int ObStorageSchemaRecorder::submit_log(
     LOG_WARN("log handler or storage_schema is null", K(ret), KP(storage_schema_),
         KP(clog_buf), K(clog_len), K(tablet_handle_ptr_));
   } else if (FALSE_IT(storage_schema_->set_sync_finish(false))) {
-  } else if (OB_FAIL(tablet_handle_ptr_->get_obj()->save_multi_source_data_unit(storage_schema_,
-      SCN::max_scn(), false/*for_replay*/, memtable::MemtableRefOp::INC_REF))) {
-    if (OB_BLOCK_FROZEN != ret) {
-      LOG_WARN("failed to inc ref for storage schema", K(ret), K_(tablet_id), K(storage_schema_));
-    }
+  //} else if (OB_FAIL(tablet_handle_ptr_->get_obj()->save_multi_source_data_unit(storage_schema_,
+  //    SCN::max_scn(), false/*for_replay*/, memtable::MemtableRefOp::INC_REF))) {
+  //  if (OB_BLOCK_FROZEN != ret) {
+  //    LOG_WARN("failed to inc ref for storage schema", K(ret), K_(tablet_id), K(storage_schema_));
+  //  }
   } else if (OB_FAIL(write_clog(clog_buf, clog_len))) {
     LOG_WARN("fail to submit log", K(ret), K_(tablet_id));
     int tmp_ret = OB_SUCCESS;

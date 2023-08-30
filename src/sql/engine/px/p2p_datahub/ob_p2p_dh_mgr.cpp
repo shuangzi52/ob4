@@ -188,18 +188,6 @@ int ObP2PDatahubManager::P2PMsgMergeCall::operator() (common::hash::HashMapPair<
   return ret;
 }
 
-int ObP2PDatahubManager::P2PRegenerateCall::operator() (common::hash::HashMapPair<ObP2PDhKey,
-    ObP2PDatahubMsgBase *> &entry)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(entry.second->regenerate())) {
-    LOG_WARN("fail to do regenerate", K(ret));
-  }
-  ret_ = ret;
-  return ret;
-}
-
-
 int ObP2PDatahubManager::send_local_msg(ObP2PDatahubMsgBase *msg)
 {
   int ret = OB_SUCCESS;
@@ -212,7 +200,7 @@ int ObP2PDatahubManager::send_local_msg(ObP2PDatahubMsgBase *msg)
         msg->get_task_id(),
         ObTimeUtility::current_time(), msg->get_timeout_ts());
     if (OB_FAIL(map_.set_refactored(dh_key, msg))) {
-      LOG_TRACE("fail to insert p2p dh msg", K(ret));
+      LOG_TRACE("fail to insert p2p dh msg", K(ret), K(dh_key));
     } else {
       msg->set_is_ready(true);
     }
@@ -265,6 +253,12 @@ int ObP2PDatahubManager::erase_msg_if(ObP2PDhKey &dh_key,
           msg->get_register_dm_info().detectable_id_, msg->get_dm_cb_node_seq_id());
     }
     PX_P2P_DH.free_msg(msg);
+  } else {
+    // If erase failed, means other threads still referencing the msg.
+    // If the caller is an RPC thread, the clearing task will be delegated to DM;
+    // If the caller is DM, the retry policy is utilized to ensure that the message is deleted.
+    ret = OB_EAGAIN;
+    LOG_WARN("failed to erase msg, other threads still referencing it", K(dh_key), K(need_unreg_dm));
   }
   return ret;
 }
@@ -365,7 +359,7 @@ void ObP2PDatahubManager::P2PMsgGetCall::operator() (common::hash::HashMapPair<O
   if (OB_NOT_NULL(dh_msg_)) {
     dh_msg_->inc_ref_count();
   } else {
-    int ret = OB_UNEXPECT_INTERNAL_ERROR;
+    int ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dh_msg_ is null", K(ret));
   }
 }
@@ -380,8 +374,52 @@ bool ObP2PDatahubManager::P2PMsgEraseIfCall::operator() (common::hash::HashMapPa
       need_erase = true;
     }
   } else {
-    int ret = OB_UNEXPECT_INTERNAL_ERROR;
+    int ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dh_msg_ is null", K(ret));
   }
   return need_erase;
+}
+
+int ObP2PDatahubManager::P2PMsgSetCall::operator() (const common::hash::HashMapPair<ObP2PDhKey,
+    ObP2PDatahubMsgBase *> &entry)
+{
+  // entry.second == &dh_msg_
+  // 1. register into dm
+  // 2. do dh_msg_.regenerate()
+  UNUSED(entry);
+  int ret = OB_SUCCESS;
+
+#ifdef ERRSIM
+  if (OB_FAIL(OB_E(EventTable::EN_PX_P2P_MSG_REG_DM_FAILED) OB_SUCCESS)) {
+    LOG_WARN("p2p msg reg dm failed by design", K(ret));
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    ret_ = ret;
+    return ret;
+  }
+#endif
+  if (OB_FAIL(ObDetectManagerUtils::p2p_datahub_register_check_item_into_dm(
+      dh_msg_.get_register_dm_info(), dh_key_, dh_msg_.get_dm_cb_node_seq_id()))) {
+    LOG_WARN("[DM] failed to register check item to dm", K(dh_msg_.get_register_dm_info()),
+        K(dh_key_), K(dh_msg_.get_dm_cb_node_seq_id()));
+  } else {
+    succ_reg_dm_ = true;
+    LOG_TRACE("[DM] rf register check item to dm", K(dh_msg_.get_register_dm_info()),
+        K(dh_key_), K(dh_msg_.get_dm_cb_node_seq_id()));
+    if (OB_FAIL(dh_msg_.regenerate())) {
+      LOG_WARN("failed to do regen_call", K(dh_key_));
+    }
+  }
+  if (OB_FAIL(ret)) {
+    (void) revert();
+  }
+  ret_ = ret;
+  return ret;
+}
+
+void ObP2PDatahubManager::P2PMsgSetCall::revert()
+{
+  if (succ_reg_dm_) {
+    (void) ObDetectManagerUtils::p2p_datahub_unregister_check_item_from_dm(
+        dh_msg_.get_register_dm_info().detectable_id_, dh_msg_.get_dm_cb_node_seq_id());
+  }
 }

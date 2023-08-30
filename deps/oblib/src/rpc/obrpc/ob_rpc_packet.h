@@ -20,6 +20,7 @@
 #include "lib/compress/ob_compressor_pool.h"
 #include "rpc/obrpc/ob_rpc_time.h"
 #include "rpc/ob_packet.h"
+#include "common/errsim_module/ob_errsim_module_type.h"
 
 namespace oceanbase
 {
@@ -74,6 +75,7 @@ class ObRpcPacketSet
   {
 #define PCODE_DEF(name, id)                     \
   names_[name] = #name;                         \
+  labels_[name] = "[L]"#name;                   \
   pcode_[name] = obrpc::name;                   \
   index_[obrpc::name] = name;
 #include "rpc/obrpc/ob_rpc_packet_list.h"
@@ -99,6 +101,15 @@ public:
     return name;
   }
 
+  const char *label_of_idx(int64_t idx) const
+  {
+    const char *name = "Unknown";
+    if (idx >= 0 && idx < PCODE_COUNT) {
+      name = labels_[idx];
+    }
+    return name;
+  }
+
   ObRpcPacketCode pcode_of_idx(int64_t idx) const
   {
     ObRpcPacketCode pcode = OB_INVALID_RPC_CODE;
@@ -120,6 +131,7 @@ private:
   static ObRpcPacketSet instance_;
 
   const char *names_[PCODE_COUNT];
+  const char *labels_[PCODE_COUNT];
   ObRpcPacketCode pcode_[PCODE_COUNT];
   int64_t index_[OB_PACKET_NUM];
 };
@@ -127,7 +139,11 @@ private:
 class ObRpcPacketHeader
 {
 public:
+#ifdef ERRSIM
+  static const uint8_t  HEADER_SIZE = 144; // add 8 bit for errsim module
+#else
   static const uint8_t  HEADER_SIZE = 136; // 112 -> 128: add 16 bytes for trace_id ipv6 extension. (Note yanyuan.cxf: but you should never change it)
+#endif
   static const uint16_t RESP_FLAG              = 1 << 15;
   static const uint16_t STREAM_FLAG            = 1 << 14;
   static const uint16_t STREAM_LAST_FLAG       = 1 << 13;
@@ -161,6 +177,10 @@ public:
   int64_t seq_no_;
   int32_t group_id_;
   uint64_t cluster_name_hash_;
+
+#ifdef ERRSIM
+  ObErrsimModuleType module_type_;
+#endif
 
   int serialize(char* buf, const int64_t buf_len, int64_t& pos);
   int deserialize(const char* buf, const int64_t data_len, int64_t& pos);
@@ -323,6 +343,11 @@ public:
     return ObRpcPacketHeader::get_encoded_size();
   }
   static uint64_t get_self_cluster_name_hash();
+
+#ifdef ERRSIM
+  inline void set_module_type(const ObErrsimModuleType &module_type);
+  inline const ObErrsimModuleType get_module_type() const;
+#endif
 
 private:
   ObRpcPacketHeader hdr_;
@@ -843,6 +868,18 @@ inline ObRpcCheckSumCheckLevel get_rpc_checksum_check_level_from_string(
   }
   return ret_type;
 }
+
+#ifdef ERRSIM
+void ObRpcPacket::set_module_type(const ObErrsimModuleType &module_type)
+{
+  hdr_.module_type_ = module_type;
+}
+
+const ObErrsimModuleType ObRpcPacket::get_module_type() const
+{
+  return hdr_.module_type_;
+}
+#endif
 
 } // end of namespace rpc
 } // end of namespace oceanbase

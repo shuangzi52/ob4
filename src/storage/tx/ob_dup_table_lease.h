@@ -30,6 +30,7 @@ namespace transaction
 
 class ObDupTableLSHandler;
 class ObDupTableLeaseRequest;
+class ObLSDupTableMeta;
 
 class ObDupTableLSLeaseMgr
 {
@@ -47,6 +48,7 @@ public:
   ObDupTableLSLeaseMgr() : lease_diag_info_log_buf_(nullptr) { reset(); }
 
   int init(ObDupTableLSHandler *dup_ls_handle);
+  int offline();
   void destroy() { reset(); };
   void reset();
   bool is_master() { return ATOMIC_LOAD(&is_master_); }
@@ -87,6 +89,8 @@ public:
 
   int get_lease_valid_array(LeaseAddrArray &lease_array);
 
+  bool is_follower_lease_valid();
+
   bool check_follower_lease_serving(const bool election_is_leader,
                                     const share::SCN &max_replayed_scn);
 
@@ -94,6 +98,7 @@ public:
 
   int get_lease_mgr_stat(FollowerLeaseMgrStatArr &collect_arr);
 
+  int recover_lease_from_ckpt(const ObDupTableLSCheckpoint::ObLSDupTableMeta &dup_ls_meta);
 private:
   bool can_grant_lease_(const common::ObAddr &addr,
                         const share::SCN &local_max_applyed_scn,

@@ -135,15 +135,16 @@ private:
   int get_max_lsn_scn_(const ObLSID &id, palf::LSN &lsn, share::SCN &scn);
 
   // 1.1 检查任务是否delay处理
-  int check_need_delay_(const ObLSID &id, const ArchiveWorkStation &station, const LSN &cur_lsn,
-      const LSN &end_lsn, const LSN &commit_lsn, const share::SCN &commit_scn, bool &need_delay);
+  int check_need_delay_(const ObArchiveLogFetchTask &task, const LSN &commit_lsn, bool &need_delay);
 
   // 1.1.1 检查ob日志是否有产生满足处理单元大小的数据
   void check_capacity_enough_(const LSN &commit_lsn, const LSN &cur_lsn,
-      const LSN &end_offset, bool &data_enough, bool &data_full);
+      const LSN &end_offset, bool &data_full);
 
   // 1.1.2 检查日志流落后程度是否需要触发归档
-  bool check_scn_enough_(const share::SCN &fetch_scn, const share::SCN &end_scn) const;
+  bool check_scn_enough_(const share::ObLSID &id, const bool new_block, const palf::LSN &lsn,
+      const palf::LSN &max_no_limit_lsn, const share::SCN &base_scn, const share::SCN &fetch_scn,
+      const int64_t last_fetch_timestamp);
 
   // 1.2 初始化TmpMemoryHelper
   int init_helper_(ObArchiveLogFetchTask &task, const LSN &commit_lsn, TmpMemoryHelper &helper);
@@ -227,6 +228,8 @@ private:
   bool in_doing_status_(const ArchiveKey &key) const;
 
   void statistic(const int64_t log_size, const int64_t ts);
+
+  bool iterator_need_retry_(const int ret) const;
 private:
   class TmpMemoryHelper
   {
@@ -248,6 +251,7 @@ private:
     const LSN &get_cur_offset() const { return cur_offset_; }
     const share::SCN &get_unitized_scn() const { return unitized_scn_; }
     int64_t get_capaicity() const { return end_offset_ - cur_offset_; }
+    bool is_log_out_of_range(const int64_t size) const;
     bool original_buffer_enough(const int64_t size);
     int get_original_buf(const char *&buf, int64_t &buf_size);
     int append_handled_buf(char *buf, const int64_t buf_size);
@@ -277,7 +281,6 @@ private:
                  K_(next_piece),
                  K_(unit_size));
   private:
-    int reserve_(const int64_t size);
     int get_send_buffer_(const int64_t size);
     void inner_free_send_buffer_();
     int64_t get_reserved_buf_size_() const;

@@ -23,6 +23,7 @@
 #include "common/ob_zerofill_info.h"
 #include "lib/timezone/ob_timezone_info.h"
 #include "lib/string/ob_hex_utils_base.h"
+#include "lib/mysqlclient/ob_dblink_error_trans.h"
 
 namespace oceanbase
 {
@@ -143,7 +144,35 @@ int ObMySQLResultImpl::next()
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("result must not be null", K(ret));
   } else if (OB_ISNULL(cur_row_ = mysql_fetch_row(result_))) {
-    ret = OB_ITER_END;
+    MYSQL *stmt_handler = stmt_.get_stmt_handler();
+    if (OB_ISNULL(stmt_handler)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null ptr", K(ret));
+    } else {
+      ret = -mysql_errno(stmt_handler);
+      char errmsg[256] = {0};
+      const char *srcmsg = mysql_error(stmt_handler);
+      MEMCPY(errmsg, srcmsg, MIN(255, STRLEN(srcmsg)));
+      ObMySQLConnection *conn = stmt_.get_connection();
+      if (0 == ret) {
+        ret = OB_ITER_END;
+      } else if (OB_ISNULL(conn)) {
+        int tmp_ret = ret;
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null ptr", K(errmsg), K(tmp_ret), K(ret));
+      } else if (OB_INVALID_ID != conn->get_dblink_id()) {
+        LOG_WARN("dblink connection error", K(ret),
+                                            KP(conn),
+                                            K(conn->get_dblink_id()),
+                                            K(conn->get_sessid()),
+                                            K(conn->usable()),
+                                            K(conn->ping()));
+        TRANSLATE_CLIENT_ERR(ret, errmsg);
+        if (ObMySQLStatement::is_need_disconnect_error(ret)) {
+          conn->set_usable(false);
+        }
+      }
+    }
   } else if (OB_ISNULL(cur_row_result_lengths_ = mysql_fetch_lengths(result_))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("calling is out of sync", K(ret));
@@ -614,7 +643,7 @@ int ObMySQLResultImpl::get_timestamp_nano(const int64_t col_idx, const common::O
   return get_otimestamp_value(col_idx, tz_info, ObTimestampNanoType, otimestamp_val);
 }
 
-int ObMySQLResultImpl::get_ob_type(ObObjType &ob_type, obmysql::EMySQLFieldType mysql_type) const
+int ObMySQLResultImpl::get_ob_type(ObObjType &ob_type, obmysql::EMySQLFieldType mysql_type, bool is_unsigned_type) const
 {
   int ret = OB_SUCCESS;
   switch (mysql_type) {
@@ -622,23 +651,47 @@ int ObMySQLResultImpl::get_ob_type(ObObjType &ob_type, obmysql::EMySQLFieldType 
       ob_type = ObNullType;
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_TINY:
-      ob_type = ObTinyIntType;
+      if (is_unsigned_type) {
+        ob_type = ObUTinyIntType;
+      } else {
+        ob_type = ObTinyIntType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_SHORT:
-      ob_type = ObSmallIntType;
+      if (is_unsigned_type) {
+        ob_type = ObUSmallIntType;
+      } else {
+        ob_type = ObSmallIntType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_LONG:
-      ob_type = ObInt32Type;
+      if (is_unsigned_type) {
+        ob_type = ObUInt32Type;
+      } else {
+        ob_type = ObInt32Type;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_LONGLONG:
     case obmysql::EMySQLFieldType::MYSQL_TYPE_INT24:
-      ob_type = ObIntType;
+      if (is_unsigned_type) {
+        ob_type = ObUInt64Type;
+      } else {
+        ob_type = ObIntType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_FLOAT:
-      ob_type = ObFloatType;
+      if (is_unsigned_type) {
+        ob_type = ObUFloatType;
+      } else {
+        ob_type = ObFloatType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_DOUBLE:
-      ob_type = ObDoubleType;
+      if (is_unsigned_type) {
+        ob_type = ObUDoubleType;
+      } else {
+        ob_type = ObDoubleType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_TIMESTAMP:
       ob_type = ObTimestampType;
@@ -687,7 +740,13 @@ int ObMySQLResultImpl::get_ob_type(ObObjType &ob_type, obmysql::EMySQLFieldType 
       ob_type = ObRawType;
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_NEWDECIMAL:
-      ob_type = ObNumberType;
+      if (is_unsigned_type) {
+        // for decimal type , is_unsigned_type == 1 means signed
+        // is_unsigned_type comes from obmysql::EMySQLFieldType::fields_ UNSIGNED_FLAG
+        ob_type = ObUNumberType;
+      } else {
+        ob_type = ObNumberType;
+      }
       break;
     case obmysql::EMySQLFieldType::MYSQL_TYPE_OB_NUMBER_FLOAT:
       ob_type = ObNumberFloatType;
@@ -742,7 +801,8 @@ int ObMySQLResultImpl::get_type(const int64_t col_idx, ObObjMeta &type) const
   } else if (col_idx < 0 || col_idx >= result_column_count_) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid column idx", K(col_idx), K_(result_column_count));
-  } else if (OB_FAIL(get_ob_type(ob_type, static_cast<obmysql::EMySQLFieldType>(fields_[col_idx].type)))) {
+  } else if (OB_FAIL(get_ob_type(ob_type, static_cast<obmysql::EMySQLFieldType>(fields_[col_idx].type),
+                                 fields_[col_idx].flags & UNSIGNED_FLAG))) {
     LOG_WARN("failed to get ob type", K(ret), "mysql_type", fields_[col_idx].type);
   } else {
     type.set_type(ob_type);
@@ -751,10 +811,41 @@ int ObMySQLResultImpl::get_type(const int64_t col_idx, ObObjMeta &type) const
   return ret;
 }
 int ObMySQLResultImpl::get_col_meta(const int64_t col_idx, bool old_max_length,
-                                    oceanbase::common::ObString &name, ObObjMeta &meta,
-                                    ObAccuracy &acc) const
+                                    oceanbase::common::ObString &name,
+                                    ObDataType &data_type) const
 {
   int ret = OB_SUCCESS;
+  ObObjType ob_type;
+  if (OB_ISNULL(fields_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("check fields_ failed", K(ret));
+  } else if (col_idx < 0 || col_idx >= result_column_count_) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid column idx", K(col_idx), K_(result_column_count));
+  } else if (OB_FAIL(get_ob_type(ob_type, static_cast<obmysql::EMySQLFieldType>(fields_[col_idx].type),
+                     fields_[col_idx].flags & UNSIGNED_FLAG))) {
+    LOG_WARN("failed to get ob type", K(ret), "mysql_type", fields_[col_idx].type);
+  } else {
+#ifdef OB_BUILD_DBLINK
+    int16_t precision = fields_[col_idx].precision;
+#else
+    int16_t precision = -1;
+#endif
+    int16_t scale = fields_[col_idx].decimals;
+    int32_t length = fields_[col_idx].length;
+    name.assign_ptr(fields_[col_idx].name, STRLEN(fields_[col_idx].name));
+    data_type.meta_.set_type(ob_type);
+    data_type.meta_.set_collation_type(static_cast<ObCollationType>(fields_[col_idx].charsetnr));
+    //data_type.meta_.set_autoincrement(fields_[col_idx].flags & AUTO_INCREMENT_FLAG);
+    data_type.set_zero_fill(fields_[col_idx].flags & ZEROFILL_FLAG);
+    format_precision_scale_length(precision, scale, length,
+                                  ob_type, data_type.meta_.get_collation_type(),
+                                  DBLINK_DRV_OB, old_max_length);
+    data_type.set_precision(precision);
+    data_type.set_scale(scale);
+    data_type.set_length(length);
+    LOG_DEBUG("get col type from obclient", K(ob_type), K(data_type), K(ret));
+  }
   return ret;
 }
 

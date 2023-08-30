@@ -14,6 +14,7 @@
 
 #include "storage/ob_storage_table_guard.h"
 #include "share/allocator/ob_memstore_allocator_mgr.h"
+#include "share/throttle/ob_throttle_common.h"
 #include "storage/memtable/ob_memtable.h"
 #include "storage/ob_i_table.h"
 #include "storage/ob_relative_table.h"
@@ -51,11 +52,17 @@ ObStorageTableGuard::ObStorageTableGuard(
 ObStorageTableGuard::~ObStorageTableGuard()
 {
   bool &need_speed_limit = tl_need_speed_limit();
+  ObThrottleStat &stat = get_throttle_stat();
+  int64_t total_expected_wait_us = 0;
+  int64_t user_timeout_skip_us = 0;
+  int64_t frozen_memtable_skip_us = 0;
+  int64_t replay_frozen_skip_us = 0;
+  int64_t from_user_skip_us = 0;  // does not used now
   if (need_control_mem_ && need_speed_limit) {
     bool need_sleep = true;
-    int64_t left_interval = SPEED_LIMIT_MAX_SLEEP_TIME;
+    int64_t left_interval = INT64_MAX;
     if (!for_replay_) {
-      left_interval = min(SPEED_LIMIT_MAX_SLEEP_TIME, store_ctx_.timeout_ - ObTimeUtility::current_time());
+      left_interval = min(left_interval, store_ctx_.timeout_ - ObTimeUtility::current_time());
     }
     if (NULL != memtable_) {
       need_sleep = memtable_->is_active_memtable();
@@ -64,49 +71,63 @@ ObStorageTableGuard::~ObStorageTableGuard()
     common::ObWaitEventGuard wait_guard(common::ObWaitEventIds::MEMSTORE_MEM_PAGE_ALLOC_WAIT, timeout, 0, 0, left_interval);
 
     reset();
+    int ret = OB_SUCCESS;
     int tmp_ret = OB_SUCCESS;
     bool has_sleep = false;
     int64_t sleep_time = 0;
     int time = 0;
-    int64_t &seq = get_seq();
-    if (store_ctx_.mvcc_acc_ctx_.is_write()) {
-      ObGMemstoreAllocator* memstore_allocator = NULL;
-      if (OB_SUCCESS != (tmp_ret = ObMemstoreAllocatorMgr::get_instance().get_tenant_memstore_allocator(
-          MTL_ID(), memstore_allocator))) {
-      } else if (OB_ISNULL(memstore_allocator)) {
-        LOG_WARN_RET(OB_ALLOCATE_MEMORY_FAILED, "get_tenant_mutil_allocator failed", K(store_ctx_.tablet_id_), K(tmp_ret));
-      } else {
-        while (need_sleep &&
-               !memstore_allocator->check_clock_over_seq(seq) &&
-               (left_interval > 0)) {
-          if (for_replay_) {
-            if(MTL(ObTenantFreezer *)->exist_ls_freezing()) {
-              break;
-            }
-          }
-          //because left_interval and SLEEP_INTERVAL_PER_TIME both are greater than
-          //zero, so it's safe to convert to uint32_t, be careful with comparation between int and uint
-          int64_t expected_wait_time = memstore_allocator->expected_wait_time(seq);
-          if (expected_wait_time == 0) {
+    const int64_t &seq = get_seq();
+    int64_t clock = 0;
+    ObGMemstoreAllocator* memstore_allocator = NULL;
+    if (OB_SUCCESS != (tmp_ret = ObMemstoreAllocatorMgr::get_instance().get_tenant_memstore_allocator(
+        MTL_ID(), memstore_allocator))) {
+    } else if (OB_ISNULL(memstore_allocator)) {
+      LOG_WARN_RET(OB_ALLOCATE_MEMORY_FAILED, "get_tenant_mutil_allocator failed", K(store_ctx_.tablet_id_), K(tmp_ret));
+    } else {
+      clock = memstore_allocator->get_clock();
+      total_expected_wait_us = memstore_allocator->expected_wait_time(seq);
+      user_timeout_skip_us = max(0, total_expected_wait_us - left_interval);
+      frozen_memtable_skip_us = need_sleep ? 0 : max(0, total_expected_wait_us - user_timeout_skip_us);
+      while (need_sleep &&
+             !memstore_allocator->check_clock_over_seq(seq) &&
+             (left_interval > 0)) {
+        if (for_replay_) {
+          if(MTL(ObTenantFreezer *)->exist_ls_freezing()) {
+            replay_frozen_skip_us = max(0, total_expected_wait_us - user_timeout_skip_us - sleep_time);
             break;
           }
-          uint32_t sleep_interval =
-            static_cast<uint32_t>(min(min(left_interval, SLEEP_INTERVAL_PER_TIME), expected_wait_time));
-          // don't use ob_usleep, as we are already in the scope of 'wait_guard'
-          ::usleep(sleep_interval);
-          sleep_time += sleep_interval;
-          time++;
-          left_interval -= sleep_interval;
-          has_sleep = true;
-          need_sleep = memstore_allocator->need_do_writing_throttle();
         }
+        int64_t expected_wait_time = memstore_allocator->expected_wait_time(seq);
+        if (expected_wait_time < 0) {
+          LOG_ERROR("expected wait time should not smaller than 0", K(expected_wait_time), K(seq), K(clock), K(left_interval));
+        }
+        if (expected_wait_time <= 0) {
+          break;
+        }
+        int64_t sleep_interval = min(min(left_interval, SLEEP_INTERVAL_PER_TIME), expected_wait_time);
+        // don't use ob_usleep, as we are already in the scope of 'wait_guard'
+        if (sleep_interval < 0) {
+          LOG_ERROR("sleep interval should not smaller than 0", K(expected_wait_time), K(seq), K(clock), K(left_interval));
+        }
+        if (sleep_interval > 10 * 60 * 1000 * 1000L) {
+          LOG_WARN("sleep interval greater than 10 minutes, pay attention", K(expected_wait_time), K(seq), K(clock), K(left_interval));
+        }
+        if (sleep_interval <= 0) {
+          break;
+        }
+        ::usleep(sleep_interval);
+        sleep_time += sleep_interval;
+        time++;
+        left_interval -= sleep_interval;
+        has_sleep = true;
+        need_sleep = memstore_allocator->need_do_writing_throttle();
       }
     }
 
     if (REACH_TIME_INTERVAL(100 * 1000L) &&
         sleep_time > 0) {
       int64_t cost_time = ObTimeUtility::current_time() - init_ts_;
-      LOG_INFO("throttle situation", K(sleep_time), K(time), K(seq), K(for_replay_), K(cost_time));
+      LOG_INFO("throttle situation", K(sleep_time), K(clock), K(time), K(seq), K(for_replay_), K(cost_time));
     }
 
     if (for_replay_ && has_sleep) {
@@ -115,6 +136,19 @@ ObStorageTableGuard::~ObStorageTableGuard()
     }
   }
   reset();
+  stat.update(total_expected_wait_us,
+              from_user_skip_us,
+              user_timeout_skip_us,
+              frozen_memtable_skip_us,
+              replay_frozen_skip_us);
+  const bool last_throttle_status = stat.last_throttle_status;
+  const int64_t last_print_log_time = stat.last_log_timestamp;
+  if (stat.need_log(need_speed_limit)) {
+    LOG_INFO("throttle statics", K(need_speed_limit), K(last_throttle_status), K(last_print_log_time), K(stat));
+    if (!need_speed_limit && last_throttle_status) {
+      stat.reset();
+    }
+  }
 }
 
 int ObStorageTableGuard::refresh_and_protect_table(ObRelativeTable &relative_table)
@@ -128,7 +162,7 @@ int ObStorageTableGuard::refresh_and_protect_table(ObRelativeTable &relative_tab
     LOG_WARN("ls is null", K(ret), K(ls_id));
   }
 
-  while (OB_SUCC(ret) && need_to_refresh_table(iter.table_iter_)) {
+  while (OB_SUCC(ret) && need_to_refresh_table(*iter.table_iter())) {
     if (OB_FAIL(store_ctx_.ls_->get_tablet_svr()->get_read_tables(
         tablet_id,
         store_ctx_.mvcc_acc_ctx_.get_snapshot_version().get_val_for_tx(),
@@ -138,7 +172,7 @@ int ObStorageTableGuard::refresh_and_protect_table(ObRelativeTable &relative_tab
            "table id", relative_table.get_table_id());
     } else {
       // no worry. iter will hold tablet reference and its life cycle is longer than guard
-      tablet_ = iter.tablet_handle_.get_obj();
+      tablet_ = iter.get_tablet();
       // TODO: check if seesion is killed
       if (store_ctx_.timeout_ > 0) {
         const int64_t query_left_time = store_ctx_.timeout_ - ObTimeUtility::current_time();
@@ -367,10 +401,28 @@ bool ObStorageTableGuard::need_to_refresh_table(ObTableStoreIterator &iter)
   bool bool_ret = false;
   bool for_replace_tablet_meta = false;
   int exit_flag = -1;
-
-  ObITable *table = iter.get_boundary_table(true);
+  ObITable *table = iter.get_last_memtable();
+  bool need_create_memtable = false;
   if (NULL == table || !table->is_memtable()) {
-    // TODO: get the newest schema_version from tablet
+    need_create_memtable = true;
+  } else {
+    memtable::ObIMemtable *memtable = static_cast<memtable::ObIMemtable *>(table);
+    ObLSID ls_id = memtable->get_ls_id();
+    if (OB_UNLIKELY(!ls_id.is_valid())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("fail to get memtable ls_id", K(ret), KPC(table));
+    } else if (ls_id != store_ctx_.ls_->get_ls_id()) {
+      if (OB_UNLIKELY(!table->is_data_memtable())) {
+        ret =OB_ERR_UNEXPECTED;
+        ObLSID curr_ls_id = store_ctx_.ls_->get_ls_id();
+        LOG_WARN("table is not data memtable, it does not allow ls_id to be different", K(ret), K(ls_id), K(curr_ls_id), KPC(table));
+      } else {
+        need_create_memtable = true;
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (need_create_memtable) {
     const common::ObTabletID &tablet_id = tablet_->get_tablet_meta().tablet_id_;
     if (OB_FAIL(store_ctx_.ls_->get_tablet_svr()->create_memtable(tablet_id, 0/*schema version*/, for_replay_))) {
       LOG_WARN("fail to create a boundary memtable", K(ret), K(tablet_id));
@@ -392,33 +444,47 @@ bool ObStorageTableGuard::need_to_refresh_table(ObTableStoreIterator &iter)
     exit_flag = 3;
   }
 
-  if (bool_ret && check_if_need_log()) {
-    const share::ObLSID &ls_id = tablet_->get_tablet_meta().ls_id_;
-    const common::ObTabletID &tablet_id = tablet_->get_tablet_meta().tablet_id_;
-    LOG_WARN_RET(OB_ERR_TOO_MUCH_TIME, "refresh table too much times", K(ret), K(exit_flag), K(ls_id), K(tablet_id), KP(table));
-    if (0 == exit_flag) {
-      LOG_WARN("table is null or not memtable", K(ret), K(ls_id), K(tablet_id), KP(table));
-    } else if (1 == exit_flag) {
-      LOG_WARN("iterator store is expired", K(ret), K(ls_id), K(tablet_id), K(iter.check_store_expire()), K(iter.count()), K(iter));
-    } else if (2 == exit_flag) {
-      LOG_WARN("failed to check_freeze_to_inc_write_ref", K(ret), K(ls_id), K(tablet_id), KPC(table));
-    } else if (3 == exit_flag) {
-      LOG_WARN_RET(OB_ERR_TOO_MUCH_TIME, "check_freeze_to_inc_write_ref costs too much time", K(ret), K(ls_id), K(tablet_id), KPC(table));
-    } else {
-      LOG_WARN("unexpect exit_flag", K(exit_flag), K(ret), K(ls_id), K(tablet_id));
+  if (bool_ret) {
+    bool need_log = false;
+    bool need_log_error = false;
+    check_if_need_log_(need_log, need_log_error);
+    if (need_log) {
+      const share::ObLSID &ls_id = tablet_->get_tablet_meta().ls_id_;
+      const common::ObTabletID &tablet_id = tablet_->get_tablet_meta().tablet_id_;
+      if (need_log_error) {
+        LOG_ERROR_RET(OB_ERR_TOO_MUCH_TIME, "refresh table too much times", K(ret), K(exit_flag), K(ls_id), K(tablet_id), KP(table));
+      } else {
+        LOG_WARN_RET(OB_ERR_TOO_MUCH_TIME, "refresh table too much times", K(ret), K(exit_flag), K(ls_id), K(tablet_id), KP(table));
+      }
+      if (0 == exit_flag) {
+        LOG_WARN("table is null or not memtable", K(ret), K(ls_id), K(tablet_id), KP(table));
+      } else if (1 == exit_flag) {
+        LOG_WARN("iterator store is expired", K(ret), K(ls_id), K(tablet_id), K(iter.check_store_expire()), K(iter.count()), K(iter));
+      } else if (2 == exit_flag) {
+        LOG_WARN("failed to check_freeze_to_inc_write_ref", K(ret), K(ls_id), K(tablet_id), KPC(table));
+      } else if (3 == exit_flag) {
+        LOG_WARN_RET(OB_ERR_TOO_MUCH_TIME, "check_freeze_to_inc_write_ref costs too much time", K(ret), K(ls_id), K(tablet_id), KPC(table));
+      } else {
+        LOG_WARN("unexpect exit_flag", K(exit_flag), K(ret), K(ls_id), K(tablet_id));
+      }
     }
   }
-
   return bool_ret;
 }
 
-bool ObStorageTableGuard::check_if_need_log()
+void ObStorageTableGuard::check_if_need_log_(bool &need_log,
+                                             bool &need_log_error)
 {
-  bool need_log = false;
+  need_log = false;
+  need_log_error = false;
   if ((++retry_count_ % GET_TS_INTERVAL) == 0) {
     const int64_t cur_ts = common::ObTimeUtility::current_time();
     if (0 >= last_ts_) {
       last_ts_ = cur_ts;
+    } else if (cur_ts - last_ts_ >= LOG_ERROR_INTERVAL_US) {
+      last_ts_ = cur_ts;
+      need_log = true;
+      need_log_error = true;
     } else if (cur_ts - last_ts_ >= LOG_INTERVAL_US) {
       last_ts_ = cur_ts;
       need_log = true;
@@ -426,7 +492,6 @@ bool ObStorageTableGuard::check_if_need_log()
       // do nothing
     }
   }
-  return need_log;
 }
 } // namespace storage
 } // namespace oceanbase

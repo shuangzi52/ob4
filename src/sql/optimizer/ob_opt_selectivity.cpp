@@ -28,6 +28,7 @@
 #include "sql/optimizer/ob_logical_operator.h"
 #include "sql/optimizer/ob_join_order.h"
 #include "common/ob_smart_call.h"
+#include "share/stat/ob_dbms_stats_utils.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share::schema;
@@ -2357,8 +2358,8 @@ int ObOptSelectivity::calc_column_range_selectivity(const OptTableMetas &table_m
     ObObj *new_start_obj = NULL;
     ObObj *new_end_obj = NULL;
     ObArenaAllocator tmp_alloc("ObOptSel");
-    if (OB_FAIL(ObOptimizerUtil::truncate_string_for_opt_stats(&start_obj, tmp_alloc, new_start_obj)) ||
-        OB_FAIL(ObOptimizerUtil::truncate_string_for_opt_stats(&end_obj, tmp_alloc, new_end_obj))) {
+    if (OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(&start_obj, tmp_alloc, new_start_obj)) ||
+        OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(&end_obj, tmp_alloc, new_end_obj))) {
       LOG_WARN("failed to convert valid obj for opt stats", K(ret), K(start_obj), K(end_obj),
                                                             KPC(new_start_obj), KPC(new_end_obj));
     } else if (OB_ISNULL(new_start_obj) || OB_ISNULL(new_end_obj)) {
@@ -3438,8 +3439,7 @@ int ObOptSelectivity::get_column_basic_from_meta(const OptTableMetas &table_meta
     row_count = table_meta->get_rows();
     const OptColumnMeta *column_meta = table_meta->get_column_meta(column_id);
     if (OB_ISNULL(column_meta)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("column meta not find", K(ret), K(*table_meta), K(column_expr));
+      use_default = true;
     } else {
       ndv = column_meta->get_ndv();
       num_null = column_meta->get_num_null();
@@ -3605,7 +3605,7 @@ int ObOptSelectivity::get_equal_pred_sel(const ObHistogram &histogram,
   bool is_equal = false;
   ObObj *new_value = NULL;
   ObArenaAllocator tmp_alloc("ObOptSel");
-  if (OB_FAIL(ObOptimizerUtil::truncate_string_for_opt_stats(&value, tmp_alloc, new_value))) {
+  if (OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(&value, tmp_alloc, new_value))) {
     LOG_WARN("failed to convert valid obj for opt stats", K(ret), K(value), KPC(new_value));
   } else if (OB_ISNULL(new_value)) {
     ret = OB_ERR_UNEXPECTED;
@@ -3652,8 +3652,8 @@ int ObOptSelectivity::get_range_sel_by_histogram(const ObHistogram &histogram,
         ObObj *new_startobj = NULL;
         ObObj *new_endobj = NULL;
         ObArenaAllocator tmp_alloc("ObOptSel");
-        if (OB_FAIL(ObOptimizerUtil::truncate_string_for_opt_stats(startobj, tmp_alloc, new_startobj)) ||
-            OB_FAIL(ObOptimizerUtil::truncate_string_for_opt_stats(endobj, tmp_alloc, new_endobj))) {
+        if (OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(startobj, tmp_alloc, new_startobj)) ||
+            OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(endobj, tmp_alloc, new_endobj))) {
           LOG_WARN("failed to convert valid obj for opt stats", K(ret), KPC(startobj), KPC(endobj),
                                                                 KPC(new_startobj), KPC(new_endobj));
         } else if (OB_ISNULL(new_startobj) || OB_ISNULL(new_endobj)) {
@@ -3821,19 +3821,27 @@ int ObOptSelectivity::get_column_query_range(const OptSelectivityCtx &ctx,
   ObDataTypeCastParams dtc_params = ObBasicSessionInfo::create_dtc_params(ctx.get_session_info());
   const ColumnItem* column_item = NULL;
   bool dummy_all_single_value_ranges = true;
-
+  bool is_in_range_optimization_enabled = false;
   if (OB_ISNULL(log_plan) || OB_ISNULL(exec_ctx) ||
-      OB_ISNULL(column_item = log_plan->get_column_item_by_id(table_id, column_id))) {
+      OB_ISNULL(column_item = log_plan->get_column_item_by_id(table_id, column_id)) ||
+      OB_ISNULL(ctx.get_stmt()) || OB_ISNULL(ctx.get_stmt()->get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(log_plan), K(exec_ctx), K(column_item));
   } else if (OB_FAIL(column_items.push_back(*column_item))) {
     LOG_WARN("failed to push back column item", K(ret));
+  } else if (OB_FAIL(ObOptimizerUtil::is_in_range_optimization_enabled(ctx.get_stmt()->get_query_ctx()->get_global_hint(),
+                                                                       ctx.get_session_info(),
+                                                                       is_in_range_optimization_enabled))) {
+    LOG_WARN("failed to check in range optimization enabled", K(ret));
   } else if (OB_FAIL(query_range.preliminary_extract_query_range(column_items,
                                                                  quals,
                                                                  dtc_params,
                                                                  ctx.get_opt_ctx().get_exec_ctx(),
                                                                  NULL,
-                                                                 params))) {
+                                                                 params,
+                                                                 false,
+                                                                 true,
+                                                                 is_in_range_optimization_enabled))) {
     LOG_WARN("failed to preliminary extract query range", K(ret));
   } else if (!query_range.need_deep_copy()) {
     if (OB_FAIL(query_range.direct_get_tablet_ranges(allocator, *exec_ctx, ranges,

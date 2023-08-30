@@ -190,13 +190,16 @@ private:
   const AbstractPriority *closest_priority_;
 };
 
-int ElectionPriorityImpl::compare_with(const ElectionPriority &rhs, int &result, ObStringHolder &reason) const
+int ElectionPriorityImpl::compare_with(const ElectionPriority &rhs,
+                                       const uint64_t compare_version,
+                                       const bool decentralized_voting,
+                                       int &result,
+                                       ObStringHolder &reason) const
 {
   LC_TIME_GUARD(1_s);
   int ret = OB_SUCCESS;
   // 这里如果转型失败直接抛异常，但设计上转型不会失败
   const ElectionPriorityImpl &rhs_impl = dynamic_cast<const ElectionPriorityImpl &>(rhs);
-  uint64_t compare_version = GET_MIN_CLUSTER_VERSION();
   GetClosestVersionPriority functor1(compare_version);
   GetClosestVersionPriority functor2(compare_version);
   (void) priority_tuple_.for_each(functor1);
@@ -208,11 +211,11 @@ int ElectionPriorityImpl::compare_with(const ElectionPriority &rhs, int &result,
     result = 0;
     COORDINATOR_LOG(WARN, "compare between invalid priority");
   } else if (functor1.get_closest_priority()->is_valid() && !functor2.get_closest_priority()->is_valid()) {
-    result = 0;
+    result = decentralized_voting ? 1 : 0;
     (void) reason.assign("compare with invalid rhs priority");
     COORDINATOR_LOG(WARN, "rhs priority is invalid", KR(ret), K(MTL_ID()), K(*this), K(rhs), K(compare_version), K(result), K(reason));
   } else if (!functor1.get_closest_priority()->is_valid() && functor2.get_closest_priority()->is_valid()) {
-    result = 0;
+    result = decentralized_voting ? -1 : 0;
     (void) reason.assign("compare with invalid lhs priority");
     COORDINATOR_LOG(WARN, "lhs priority is invalid", KR(ret), K(MTL_ID()), K(*this), K(rhs), K(compare_version), K(result), K(reason));
   } else if (CLICK_FAIL(functor1.get_closest_priority()->compare(*functor2.get_closest_priority(), result, reason))) {
@@ -242,8 +245,12 @@ struct RefeshPriority
     LC_TIME_GUARD(1_s);
     int ret = OB_SUCCESS;
     if (CLICK_FAIL(element.refresh(ls_id_))) {
-      ret_ = ret;
-      COORDINATOR_LOG(WARN, "refresh priority failed", KR(ret), K(MTL_ID()), K(ls_id_), K(element));
+      if (OB_NO_NEED_UPDATE == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        ret_ = ret;
+        COORDINATOR_LOG(WARN, "refresh priority failed", KR(ret), K(MTL_ID()), K(ls_id_), K(element));
+      }
     }
     return ret;
   }

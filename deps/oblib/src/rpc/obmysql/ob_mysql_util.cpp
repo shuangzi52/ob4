@@ -25,6 +25,10 @@
 #include "lib/json_type/ob_json_bin.h"
 #include "lib/json_type/ob_json_base.h"
 #include "lib/geo/ob_geo_bin.h"
+#ifdef OB_BUILD_ORACLE_XML
+#include "lib/xml/ob_xml_util.h"
+#include "lib/xml/ob_xml_bin.h"
+#endif
 using namespace oceanbase::common;
 
 namespace oceanbase
@@ -475,30 +479,44 @@ int ObMySQLUtil::datetime_cell_str(
       if (OB_FAIL(ObTimeConverter::datetime_to_ob_time(val, tz_info, ob_time))) {
         LOG_WARN("convert usec ", K(ret));
       } else {
-        timelen = 11;
+        if (ob_time.parts_[DT_USEC]) {
+          timelen = 11;
+        } else if (ob_time.parts_[DT_HOUR] || ob_time.parts_[DT_MIN] || ob_time.parts_[DT_SEC]) {
+          timelen = 7;
+        } else if (ob_time.parts_[DT_YEAR] || ob_time.parts_[DT_MON] || ob_time.parts_[DT_MDAY]) {
+          timelen = 4;
+        } else {
+          timelen = 0;
+        }
+
         if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, timelen, pos))) {
           LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int2(buf, len, static_cast<int16_t>(ob_time.parts_[DT_YEAR]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MON]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MDAY]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_HOUR]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MIN]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_SEC]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
-        } else if (OB_FAIL(
-            ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time.parts_[DT_USEC]), pos))) {
-          LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+        }
+
+        if(timelen > 0 && OB_SUCC(ret)) {
+          if (OB_FAIL(ObMySQLUtil::store_int2(buf, len, static_cast<int16_t>(ob_time.parts_[DT_YEAR]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MON]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MDAY]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          }
+        }
+
+        if(timelen > 4 && OB_SUCC(ret)) {
+          if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_HOUR]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MIN]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_SEC]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          }
+        }
+
+        if(timelen > 7 && OB_SUCC(ret)) {
+          if (OB_FAIL(ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time.parts_[DT_USEC]), pos))) {
+            LOG_WARN("failed to store int", K(len), K(timelen), K(pos), K(ret));
+          }
         }
       }
     } else {
@@ -673,23 +691,39 @@ int ObMySQLUtil::time_cell_str(
       if (OB_FAIL(ObTimeConverter::time_to_ob_time(val, ob_time))) {
         LOG_WARN("convert usec to timestamp failed", K(ret));
       } else {
-        timelen = 12;
         int ob_time_day = ob_time.parts_[DT_DATE] + ob_time.parts_[DT_HOUR] / 24;
         int ob_time_hour = ob_time.parts_[DT_HOUR] % 24;
+        int8_t is_negative = (DT_MODE_NEG & ob_time.mode_) ? 1 : 0;
+        if (ob_time.parts_[DT_USEC]) {
+          timelen = 12;
+        } else if (ob_time_day || ob_time_hour || ob_time.parts_[DT_MIN] || ob_time.parts_[DT_SEC]) {
+          timelen = 8;
+        } else {
+          timelen = 0;
+        }
+
         if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, timelen, pos))) {//length
           LOG_WARN("fail to store int", K(ret));
-        } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(DT_MODE_NEG & ob_time.mode_), pos))) {//is_negative(1)
-          LOG_WARN("fail to store int", K(ret));
-        } else if (OB_FAIL(ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time_day), pos))) {//days(4)
-          LOG_WARN("fail to store int", K(ret));
-        } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time_hour), pos))) {//hour(1)
-          LOG_WARN("fail to store int", K(ret));
-        } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MIN]), pos))) {//minute(1)
-          LOG_WARN("fail to store int", K(ret));
-        } else if ( OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_SEC]), pos))) {//second(1)
-          LOG_WARN("fail to store int", K(ret));
-        } else if (OB_FAIL(ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time.parts_[DT_USEC]), pos))) {//micro-second(4)
-          LOG_WARN("fail to store int", K(ret));
+        }
+
+        if(timelen > 0 && OB_SUCC(ret)) {
+          if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(is_negative), pos))) {//is_negative(1)
+            LOG_WARN("fail to store int", K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time_day), pos))) {//days(4)
+            LOG_WARN("fail to store int", K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time_hour), pos))) {//hour(1)
+            LOG_WARN("fail to store int", K(ret));
+          } else if (OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_MIN]), pos))) {//minute(1)
+            LOG_WARN("fail to store int", K(ret));
+          } else if ( OB_FAIL(ObMySQLUtil::store_int1(buf, len, static_cast<int8_t>(ob_time.parts_[DT_SEC]), pos))) {//second(1)
+            LOG_WARN("fail to store int", K(ret));
+          }
+        }
+
+        if(timelen > 8 && OB_SUCC(ret)) {
+          if (OB_FAIL(ObMySQLUtil::store_int4(buf, len, static_cast<int32_t>(ob_time.parts_[DT_USEC]), pos))) {//micro-second(4)
+            LOG_WARN("fail to store int", K(ret));
+          }
         }
       }
     } else {
@@ -864,6 +898,9 @@ int ObMySQLUtil::double_cell_str(char *buf, const int64_t len, double val,
     LOG_WARN("invalid input", KP(buf), K(ret));
   } else {
     if (BINARY == type) {
+      if (std::fpclassify(val) == FP_ZERO && std::signbit(val)) {
+        val = val * -1; // if -0.0, change to 0.0
+      }
       if (len - pos > DBL_SIZE) {
         MEMCPY(buf + pos, &val, DBL_SIZE);
         pos += DBL_SIZE;
@@ -1042,17 +1079,57 @@ int ObMySQLUtil::urowid_cell_str(char *buf, const int64_t len, const ObURowIDDat
   return ret;
 }
 
-int ObMySQLUtil::sql_utd_cell_str(char *buf, const int64_t len, const ObString &val, int64_t &pos)
+int ObMySQLUtil::sql_utd_cell_str(uint64_t tenant_id, char *buf, const int64_t len, const ObString &val, int64_t &pos)
 {
   INIT_SUCC(ret);
+#ifdef OB_BUILD_ORACLE_XML
+  lib::ObMemAttr mem_attr(tenant_id, "XMLCodeGen");
+  lib::ObMallocHookAttrGuard malloc_guard(mem_attr);
+  ObArenaAllocator allocator(mem_attr);
+  ObMulModeNodeType node_type = M_MAX_TYPE;
+  ObStringBuffer jbuf(&allocator);
+  ParamPrint param_list;
+  param_list.indent = 2;
+  ObIMulModeBase *node = NULL;
+  ObXmlNode *xml_node = NULL;
+  ObMulModeMemCtx* xml_mem_ctx = nullptr;
+  if (OB_ISNULL(buf)) {
+    ret = OB_INVALID_ARGUMENT;
+    OB_LOG(WARN, "invalid input args", K(ret), KP(buf));
+  } else if (val.length() == 0) {
+    if (OB_FAIL(ObMySQLUtil::store_null(buf, len, pos))) {
+      OB_LOG(WARN, "fail to set null string", K(pos), K(len));
+    }
+  } else {
+    int64_t new_length = val.length();
+    if (OB_LIKELY(new_length < len - pos)) {
+      int64_t pos_bk = pos;
+      if (OB_FAIL(ObMySQLUtil::store_length(buf, len, new_length, pos))) {
+        LOG_WARN("xml_cell_str store length failed", K(ret), K(len), K(new_length), K(pos));
+      } else {
+        if (OB_LIKELY(new_length <= len - pos)) {
+          MEMCPY(buf + pos, val.ptr(), val.length());
+          pos += new_length;
+        } else {
+          pos = pos_bk;
+          ret = OB_SIZE_OVERFLOW;
+        }
+      }
+    } else {
+      ret = OB_SIZE_OVERFLOW;
+    }
+  }
+#else
   ret = OB_NOT_SUPPORTED;
+#endif
   return ret;
 }
 
-int ObMySQLUtil::json_cell_str(char *buf, const int64_t len, const ObString &val, int64_t &pos)
+int ObMySQLUtil::json_cell_str(uint64_t tenant_id, char *buf, const int64_t len, const ObString &val, int64_t &pos)
 {
   int ret = OB_SUCCESS;
-  ObArenaAllocator allocator;
+  lib::ObMemAttr mem_attr(tenant_id, "JsonAlloc");
+  ObArenaAllocator allocator(mem_attr);
   ObJsonBin j_bin(val.ptr(), val.length(), &allocator);
   ObIJsonBase *j_base = &j_bin;
   ObJsonBuffer jbuf(&allocator);

@@ -81,6 +81,8 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     session_id_(0),
     contain_oracle_trx_level_temporary_table_(false),
     contain_oracle_session_level_temporary_table_(false),
+    gtt_session_scope_ids_(allocator_),
+    gtt_trans_scope_ids_(allocator_),
     concurrent_num_(0),
     max_concurrent_num_(ObMaxConcurrentParam::UNLIMITED),
     table_locations_(allocator_),
@@ -179,6 +181,8 @@ void ObPhysicalPlan::reset()
   session_id_ = 0;
   contain_oracle_trx_level_temporary_table_ = false;
   contain_oracle_session_level_temporary_table_ = false;
+  gtt_session_scope_ids_.reset();
+  gtt_trans_scope_ids_.reset();
   concurrent_num_ = 0;
   max_concurrent_num_ = ObMaxConcurrentParam::UNLIMITED;
   is_update_uniq_index_ = false;
@@ -551,6 +555,7 @@ void ObPhysicalPlan::update_plan_stat(const ObAuditRecordData &record,
       //            - (record.exec_timestamp_.run_ts_ - record.exec_timestamp_.receive_ts_));
       ATOMIC_AAF(&(stat_.evolution_stat_.cpu_time_), record.exec_timestamp_.executor_t_);
       ATOMIC_AAF(&(stat_.evolution_stat_.elapsed_time_), record.get_elapsed_time());
+      ATOMIC_STORE(&(stat_.evolution_stat_.last_exec_ts_), record.exec_timestamp_.executor_end_ts_);
     }
     if (stat_.is_bind_sensitive_ && execute_count > 0) {
       int64_t pos = execute_count % ObPlanStat::MAX_SCAN_STAT_SIZE;
@@ -769,7 +774,9 @@ OB_SERIALIZE_MEMBER(ObPhysicalPlan,
                     need_record_plan_info_,
                     enable_append_,
                     append_table_id_,
-                    is_enable_px_fast_reclaim_);
+                    is_enable_px_fast_reclaim_,
+                    gtt_session_scope_ids_,
+                    gtt_trans_scope_ids_);
 
 int ObPhysicalPlan::set_table_locations(const ObTablePartitionInfoArray &infos,
                                         ObSchemaGetterGuard &schema_guard)
@@ -777,9 +784,11 @@ int ObPhysicalPlan::set_table_locations(const ObTablePartitionInfoArray &infos,
   int ret = OB_SUCCESS;
   table_locations_.reset();
   das_table_locations_.reset();
-  if (OB_FAIL(table_locations_.init(infos.count()))) {
+  if (OB_FAIL(table_locations_.prepare_allocate_and_keep_count(infos.count(),
+                                                 allocator_))) {
     LOG_WARN("fail to init table location count", K(ret));
-  } else if (OB_FAIL(das_table_locations_.init(infos.count()))) {
+  } else if (OB_FAIL(das_table_locations_.prepare_allocate_and_keep_count(infos.count(),
+                                                            allocator_))) {
     LOG_WARN("fail to init das table location count", K(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < infos.count(); ++i) {
@@ -1106,8 +1115,7 @@ int ObPhysicalPlan::set_expected_worker_map(const common::hash::ObHashMap<ObAddr
   }
   return ret;
 }
-
-const common::hash::ObHashMap<ObAddr, int64_t>& ObPhysicalPlan:: get_expected_worker_map() const
+const ObPlanStat::AddrMap& ObPhysicalPlan:: get_expected_worker_map() const
 {
   return stat_.expected_worker_map_;
 }
@@ -1121,12 +1129,7 @@ int ObPhysicalPlan::set_minimal_worker_map(const common::hash::ObHashMap<ObAddr,
   return ret;
 }
 
-const common::hash::ObHashMap<ObAddr, int64_t>& ObPhysicalPlan::get_minimal_worker_map() const
-{
-  return stat_.minimal_worker_map_;
-}
-
-int ObPhysicalPlan::assign_worker_map(common::hash::ObHashMap<ObAddr, int64_t> &worker_map, const common::hash::ObHashMap<ObAddr, int64_t> &c)
+int ObPhysicalPlan::assign_worker_map(ObPlanStat::AddrMap &worker_map, const common::hash::ObHashMap<ObAddr, int64_t> &c)
 {
   int ret = OB_SUCCESS;
   ObMemAttr attr(MTL_ID(), "WorkerMap");

@@ -162,6 +162,8 @@ void oceanbase::observer::init_srv_xlator_for_transaction(ObSrvRpcXlator *xlator
   RPC_PROCESSOR(ObTxFreeRouteCheckAliveP);
   RPC_PROCESSOR(ObTxFreeRouteCheckAliveRespP);
   RPC_PROCESSOR(ObTxFreeRoutePushStateP);
+  // for tx state check of 4377
+  RPC_PROCESSOR(ObAskTxStateFor4377P);
 }
 
 void oceanbase::observer::init_srv_xlator_for_clog(ObSrvRpcXlator *xlator) {
@@ -187,7 +189,9 @@ void oceanbase::observer::init_srv_xlator_for_logservice(ObSrvRpcXlator *xlator)
 {
   RPC_PROCESSOR(logservice::LogMembershipChangeP);
   RPC_PROCESSOR(logservice::LogGetPalfStatReqP);
-  RPC_PROCESSOR(logservice::LogGetLeaderMaxScnP);
+#ifdef OB_BUILD_ARBITRATION
+  RPC_PROCESSOR(logservice::LogServerProbeP);
+#endif
   RPC_PROCESSOR(logservice::LogChangeAccessModeP);
   RPC_PROCESSOR(logservice::LogFlashbackMsgP);
 }
@@ -197,6 +201,7 @@ void oceanbase::observer::init_srv_xlator_for_palfenv(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(palf::LogPushReqP);
   RPC_PROCESSOR(palf::LogPushRespP);
   RPC_PROCESSOR(palf::LogFetchReqP);
+  RPC_PROCESSOR(palf::LogBatchFetchRespP);
   RPC_PROCESSOR(palf::LogPrepareReqP);
   RPC_PROCESSOR(palf::LogPrepareRespP);
   RPC_PROCESSOR(palf::LogChangeConfigMetaReqP);
@@ -215,6 +220,7 @@ void oceanbase::observer::init_srv_xlator_for_palfenv(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(palf::ElectionChangeLeaderMsgP);
   RPC_PROCESSOR(palf::LogGetMCStP);
   RPC_PROCESSOR(palf::LogGetStatP);
+  RPC_PROCESSOR(palf::LogNotifyFetchLogReqP);
 }
 
 void oceanbase::observer::init_srv_xlator_for_cdc(ObSrvRpcXlator *xlator)

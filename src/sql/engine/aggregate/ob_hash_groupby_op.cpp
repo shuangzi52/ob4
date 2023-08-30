@@ -659,11 +659,11 @@ int ObHashGroupByOp::init_distinct_info(bool is_part)
       &ctx_, MY_SPEC.px_est_size_factor_, est_rows, est_rows))) {
     LOG_WARN("failed to get px size", K(ret));
   } else if (OB_FAIL(distinct_sql_mem_processor_.init(
-                  &ctx_.get_allocator(),
+                  &mem_context_->get_malloc_allocator(),
                   tenant_id,
                   est_size,
-                  PHY_HASH_DISTINCT, // hardcode to distinct
-                  MY_SPEC.id_ + 1, // for unique, using op_id + 1
+                  MY_SPEC.type_,
+                  MY_SPEC.id_,
                   &ctx_))) {
     LOG_WARN("failed to init sql mem processor", K(ret));
   } else if (is_part) {
@@ -935,10 +935,8 @@ int ObHashGroupByOp::load_data()
   bool check_dump = false;
   ObGbyBloomFilter *bloom_filter = NULL;
   const ObChunkDatumStore::StoredRow *srow = NULL;
-  int64_t last_batch_size = 0;
   for (int64_t loop_cnt = 0; OB_SUCC(ret); ++loop_cnt) {
-    int64_t curr_batch_size = 0;
-    bypass_ctrl_.gby_process_state(last_batch_size,
+    bypass_ctrl_.gby_process_state(local_group_rows_.get_probe_cnt(),
                                    local_group_rows_.size(),
                                    get_actual_mem_used_size());
     if (bypass_ctrl_.processing_ht()) {
@@ -980,7 +978,6 @@ int ObHashGroupByOp::load_data()
 
     int64_t nth_dup_data = 0;
     bool last_group = false;
-    bool has_checked = false;
     bool insert_group_ht = false;
     do {
       // one-dup-data
@@ -1001,8 +998,6 @@ int ObHashGroupByOp::load_data()
           srow, curr_gr_item.hash_))) {
         LOG_WARN("failed to get_groupby_exprs_hash", K(ret));
       }
-      ++curr_batch_size;
-      bypass_ctrl_.inc_processed_cnt(1);
       curr_gr_item.is_expr_row_ = true;
       curr_gr_item.batch_idx_ = 0;
       LOG_DEBUG("finish calc_groupby_exprs_hash", K(curr_gr_item));
@@ -1010,7 +1005,6 @@ int ObHashGroupByOp::load_data()
       } else if ((!start_dump || bloom_filter->exist(curr_gr_item.hash()))
                 && NULL != (exist_curr_gr_item = local_group_rows_.get(curr_gr_item))) {
         ++agged_row_cnt_;
-        bypass_ctrl_.inc_exists_cnt();
         if (OB_ISNULL(exist_curr_gr_item->group_row_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("group_row is null", K(ret));
@@ -1020,7 +1014,6 @@ int ObHashGroupByOp::load_data()
       } else {
         if (!is_dump_enabled
             || local_group_rows_.size() < MIN_INMEM_GROUPS
-            || has_checked
             || (!start_dump && !need_start_dump(input_rows, est_part_cnt, check_dump))) {
           ++agged_row_cnt_;
           ++agged_group_cnt_;
@@ -1063,9 +1056,7 @@ int ObHashGroupByOp::load_data()
           }
         }
       }
-      has_checked = true;
     } while (!last_group && OB_SUCC(ret));
-    last_batch_size = curr_batch_size;
   }
 
   //必须先reset，否则等自动析构时候，内存都被释放了，会有问题
@@ -1621,7 +1612,7 @@ int ObHashGroupByOp::load_data_batch(int64_t max_row_cnt)
   int64_t last_batch_size = 0;
 
   while (OB_SUCC(ret)) {
-    bypass_ctrl_.gby_process_state(last_batch_size,
+    bypass_ctrl_.gby_process_state(local_group_rows_.get_probe_cnt(),
                                    local_group_rows_.size(),
                                    get_actual_mem_used_size());
     if (bypass_ctrl_.processing_ht()) {
@@ -1637,8 +1628,6 @@ int ObHashGroupByOp::load_data_batch(int64_t max_row_cnt)
       if (NULL != cur_part) {
         store_rows = batch_rows_from_dump_;
       }
-      last_batch_size = child_brs->size_ - child_brs->skip_->accumulate_bit_cnt(child_brs->size_);
-      bypass_ctrl_.inc_processed_cnt(last_batch_size);
       clear_evaluated_flag();
       loop_cnt += child_brs->size_;
       if (OB_FAIL(try_check_status())) {
@@ -1987,11 +1976,11 @@ int ObHashGroupByOp::batch_process_duplicate_data(
           agged_row_cnt_++;
           LOG_DEBUG("exist item", K(gri_cnt_per_batch_), K(*exist_curr_gr_item),
             K(i), K(agged_row_cnt_));
-        } else if (!enable_dump_
-                || local_group_rows_.size() < MIN_INMEM_GROUPS
-                || process_check_dump
-                || (NULL == bloom_filter
-                    && !need_start_dump(input_rows, est_part_cnt, force_check_dump))) {
+        } else if (NULL == bloom_filter
+                  && (!enable_dump_
+                  || local_group_rows_.size() < MIN_INMEM_GROUPS
+                  || process_check_dump
+                  || !need_start_dump(input_rows, est_part_cnt, force_check_dump))) {
           ++agged_row_cnt_;
           ++agged_group_cnt_;
           ObGroupRowItem *tmp_gr_item = NULL;
@@ -2274,16 +2263,15 @@ int ObHashGroupByOp::group_child_batch_rows(const ObChunkDatumStore::StoredRow *
           gris_per_batch_[gri_cnt_per_batch_++] = exist_curr_gr_item;
         }
         ++agged_row_cnt_;
-        bypass_ctrl_.inc_exists_cnt();
         batch_row_gri_ptrs_[i] = exist_curr_gr_item;
         const_cast<ObGroupRowItem *>(exist_curr_gr_item)->group_row_count_in_batch_++;
         LOG_DEBUG("exist item", K(gri_cnt_per_batch_), K(*exist_curr_gr_item),
                                 K(i), K(agged_row_cnt_));
-      } else if (!enable_dump_
-              || local_group_rows_.size() < MIN_INMEM_GROUPS
-              || process_check_dump
-              || (NULL == bloom_filter
-                  && !need_start_dump(input_rows, est_part_cnt, force_check_dump))) {
+      } else if (NULL == bloom_filter
+                  && (!enable_dump_
+                    || local_group_rows_.size() < MIN_INMEM_GROUPS
+                    || process_check_dump
+                    || !need_start_dump(input_rows, est_part_cnt, force_check_dump))) {
         // add new local group
         if (!batch_hash_calculated) {
           calc_groupby_exprs_hash_batch(dup_groupby_exprs_, child_brs);
@@ -2475,46 +2463,61 @@ int ObHashGroupByOp::load_one_row()
   bool last_group = false;
   bool insert_group_ht = false;
   clear_evaluated_flag();
-  if (OB_ISNULL(last_child_row_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("last child row not init", K(ret));
-  } else if (ObThreeStageAggrStage::FIRST_STAGE == MY_SPEC.aggr_stage_
-      && by_pass_nth_group_ <= MY_SPEC.dist_col_group_idxs_.count()
-      && by_pass_nth_group_ > 0) {
-    // next permutation
-    if (OB_ISNULL(last_child_row_->store_row_)) {
+  bool got_row = false;
+  while (OB_SUCC(ret) && !got_row) {
+    if (OB_ISNULL(last_child_row_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("failed to get last store row", K(ret));
-    } else if (OB_FAIL(last_child_row_->store_row_->to_expr(child_->get_spec().output_, eval_ctx_))) {
+      LOG_WARN("last child row not init", K(ret));
+    } else if (ObThreeStageAggrStage::FIRST_STAGE == MY_SPEC.aggr_stage_
+        && by_pass_nth_group_ <= MY_SPEC.dist_col_group_idxs_.count()
+        && by_pass_nth_group_ > 0) {
+      // next permutation
+      if (OB_ISNULL(last_child_row_->store_row_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to get last store row", K(ret));
+      } else if (OB_FAIL(last_child_row_->store_row_->to_expr(child_->get_spec().output_, eval_ctx_))) {
+        LOG_WARN("failed to restore last row", K(ret));
+      } else if (OB_FAIL(by_pass_get_next_permutation(by_pass_nth_group_, last_group, insert_group_ht))) {
+        LOG_WARN("failed to get next permutation row", K(ret));
+      } else {
+        if (no_non_distinct_aggr_ && last_group) {
+          got_row = false;
+        } else {
+          got_row = true;
+        }
+      }
+    } else if (FALSE_IT(by_pass_nth_group_ = 0)) {
+    } else if (nullptr != last_child_row_->store_row_
+              && OB_FAIL(last_child_row_->store_row_->to_expr(child_->get_spec().output_, eval_ctx_))) {
       LOG_WARN("failed to restore last row", K(ret));
+    } else if (OB_FAIL(child_->get_next_row())) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("failed to get next row", K(ret));
+      }
+    } else if (OB_FAIL(last_child_row_->save_store_row(child_->get_spec().output_, eval_ctx_))) {
+      LOG_WARN("failed to save last row", K(ret));
+    } else if (OB_FAIL(try_check_status())) {
+      LOG_WARN("check status failed", K(ret));
     } else if (OB_FAIL(by_pass_get_next_permutation(by_pass_nth_group_, last_group, insert_group_ht))) {
       LOG_WARN("failed to get next permutation row", K(ret));
+    } else {
+      if (no_non_distinct_aggr_ && last_group) {
+        got_row = false;
+      } else {
+        got_row = true;
+      }
     }
-  } else if (FALSE_IT(by_pass_nth_group_ = 0)) {
-  } else if (nullptr != last_child_row_->store_row_
-             && OB_FAIL(last_child_row_->store_row_->to_expr(child_->get_spec().output_, eval_ctx_))) {
-    LOG_WARN("failed to restore last row", K(ret));
-  } else if (OB_FAIL(child_->get_next_row())) {
-    if (OB_UNLIKELY(OB_ITER_END != ret)) {
-      LOG_WARN("failed to get next row", K(ret));
-    }
-  } else if (OB_FAIL(last_child_row_->save_store_row(child_->get_spec().output_, eval_ctx_))) {
-    LOG_WARN("failed to save last row", K(ret));
-  } else if (OB_FAIL(try_check_status())) {
-    LOG_WARN("check status failed", K(ret));
-  } else if (OB_FAIL(by_pass_get_next_permutation(by_pass_nth_group_, last_group, insert_group_ht))) {
-    LOG_WARN("failed to get next permutation row", K(ret));
-  }
-  if (OB_FAIL(ret) || no_non_distinct_aggr_) {
-  } else if (OB_ISNULL(by_pass_group_row_)
-              || OB_ISNULL(by_pass_group_row_->group_row_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("by pass group row is not init", K(ret));
-  } else {
-    ++agged_row_cnt_;
-    ++agged_group_cnt_;
-    if (OB_FAIL(aggr_processor_.single_row_agg(*by_pass_group_row_->group_row_, eval_ctx_))) {
-      LOG_WARN("failed to do single row agg", K(ret));
+    if (OB_FAIL(ret) || no_non_distinct_aggr_) {
+    } else if (OB_ISNULL(by_pass_group_row_)
+                || OB_ISNULL(by_pass_group_row_->group_row_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("by pass group row is not init", K(ret));
+    } else {
+      ++agged_row_cnt_;
+      ++agged_group_cnt_;
+      if (OB_FAIL(aggr_processor_.single_row_agg(*by_pass_group_row_->group_row_, eval_ctx_))) {
+        LOG_WARN("failed to do single row agg", K(ret));
+      }
     }
   }
   return ret;
@@ -2532,7 +2535,9 @@ int ObHashGroupByOp::by_pass_prepare_one_batch(const int64_t batch_size)
     //consume curr batch
     if (OB_FAIL(by_pass_brs_holder_.restore())) {
       LOG_WARN("failed to restore child batch", K(ret));
-    } else if (OB_FAIL(by_pass_get_next_permutation_batch(by_pass_nth_group_, last_group, by_pass_child_brs_, insert_group_ht))) {
+    } else if (OB_FAIL(by_pass_get_next_permutation_batch(by_pass_nth_group_, last_group,
+                                                          by_pass_child_brs_, brs_,
+                                                          insert_group_ht))) {
       LOG_WARN("failed to get next permutation row", K(ret));
     }
   } else if (FALSE_IT(by_pass_nth_group_ = 0)) {
@@ -2548,7 +2553,9 @@ int ObHashGroupByOp::by_pass_prepare_one_batch(const int64_t batch_size)
     LOG_WARN("failed to save child batch", K(ret));
   } else if (OB_FAIL(try_check_status())) {
     LOG_WARN("check status failed", K(ret));
-  } else if (OB_FAIL(by_pass_get_next_permutation_batch(by_pass_nth_group_, last_group, by_pass_child_brs_, insert_group_ht))) {
+  } else if (OB_FAIL(by_pass_get_next_permutation_batch(by_pass_nth_group_, last_group,
+                                                        by_pass_child_brs_, brs_,
+                                                        insert_group_ht))) {
       LOG_WARN("failed to get next permutation row", K(ret));
   }
   if (OB_FAIL(ret) || no_non_distinct_aggr_) {
@@ -2556,21 +2563,17 @@ int ObHashGroupByOp::by_pass_prepare_one_batch(const int64_t batch_size)
              || by_pass_batch_size_ <= 0) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("by pass group row is not init", K(ret), K(by_pass_batch_size_));
-  } else if (OB_FAIL(aggr_processor_.eval_aggr_param_batch(*by_pass_child_brs_))) {
-    LOG_WARN("fail to eval aggr param batch", K(ret), K(*by_pass_child_brs_));
+  } else if (OB_FAIL(aggr_processor_.eval_aggr_param_batch(brs_))) {
+    LOG_WARN("fail to eval aggr param batch", K(ret), K(brs_));
   } else {
     if (OB_FAIL(aggr_processor_.single_row_agg_batch(by_pass_group_batch_, eval_ctx_,
-                                                     by_pass_child_brs_->size_, by_pass_child_brs_->skip_))) {
+                                                     brs_.size_, brs_.skip_))) {
       LOG_WARN("failed to single row agg", K(ret));
     } else {
-      int64_t aggr_cnt = by_pass_child_brs_->size_ - by_pass_child_brs_->skip_->accumulate_bit_cnt(by_pass_child_brs_->size_);
+      int64_t aggr_cnt = brs_.size_ - brs_.skip_->accumulate_bit_cnt(brs_.size_);
       agged_row_cnt_ += aggr_cnt;
       agged_group_cnt_ += aggr_cnt;
     }
-  }
-  if (OB_SUCC(ret)) {
-    brs_.size_ = by_pass_child_brs_->size_;
-    brs_.skip_->deep_copy(*by_pass_child_brs_->skip_, by_pass_child_brs_->size_);
   }
   return ret;
 }
@@ -2600,35 +2603,44 @@ int ObHashGroupByOp::by_pass_get_next_permutation(int64_t &nth_group, bool &last
 }
 
 int ObHashGroupByOp::by_pass_get_next_permutation_batch(int64_t &nth_group, bool &last_group,
-                                                        const ObBatchRows *child_brs, bool &insert_group_ht)
+                                                        const ObBatchRows *child_brs,
+                                                        ObBatchRows &my_brs,
+                                                        bool &insert_group_ht)
 {
   int ret = OB_SUCCESS;
-  if (ObThreeStageAggrStage::NONE_STAGE == MY_SPEC.aggr_stage_) {
+  CK (OB_NOT_NULL(child_brs));
+  OX (my_brs.size_ = child_brs->size_);
+  OX (my_brs.skip_->deep_copy(*child_brs->skip_, child_brs->size_));
+  if (OB_FAIL(ret)) {
+  } else if (ObThreeStageAggrStage::NONE_STAGE == MY_SPEC.aggr_stage_) {
     last_group = true;
   } else if (OB_FAIL(next_duplicate_data_permutation(nth_group, last_group, child_brs, insert_group_ht))) {
     LOG_WARN("failed to get next permutation", K(ret));
   } else {
     CK (dup_groupby_exprs_.count() == all_groupby_exprs_.count());
-    CK (OB_NOT_NULL(child_brs));
-    for (int64_t i = 0; OB_SUCC(ret) && i < dup_groupby_exprs_.count(); ++i) {
-      ObDatum *datum = nullptr;
-      if (nullptr == dup_groupby_exprs_.at(i)) {
-        for (int64_t j = 0; j < child_brs->size_; ++j) {
-          if (child_brs->skip_->at(j)) {
-            continue;
+    if (no_non_distinct_aggr_ && last_group) {
+      my_brs.skip_->set_all(child_brs->size_);
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < dup_groupby_exprs_.count(); ++i) {
+        ObDatum *datum = nullptr;
+        if (nullptr == dup_groupby_exprs_.at(i)) {
+          for (int64_t j = 0; j < child_brs->size_; ++j) {
+            if (child_brs->skip_->at(j)) {
+              continue;
+            }
+            all_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j).set_null();
           }
-          all_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j).set_null();
-        }
-      } else if (OB_FAIL(dup_groupby_exprs_.at(i)->eval_batch(eval_ctx_, *child_brs->skip_, child_brs->size_))) {
-        LOG_WARN("failed to eval dup exprs", K(ret), K(i));
-      } else {
-         for (int64_t j = 0; j < child_brs->size_; ++j) {
-          if (child_brs->skip_->at(j)) {
-            continue;
+        } else if (OB_FAIL(dup_groupby_exprs_.at(i)->eval_batch(eval_ctx_, *child_brs->skip_, child_brs->size_))) {
+          LOG_WARN("failed to eval dup exprs", K(ret), K(i));
+        } else {
+          for (int64_t j = 0; j < child_brs->size_; ++j) {
+            if (child_brs->skip_->at(j)) {
+              continue;
+            }
+            all_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j).set_datum(dup_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j));
           }
-          all_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j).set_datum(dup_groupby_exprs_.at(i)->locate_expr_datum(eval_ctx_, j));
+          all_groupby_exprs_.at(i)->set_evaluated_projected(eval_ctx_);
         }
-        all_groupby_exprs_.at(i)->set_evaluated_projected(eval_ctx_);
       }
     }
   }

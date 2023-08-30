@@ -89,7 +89,7 @@ int ObLogForUpdate::compute_sharding_info()
   } else if (OB_ISNULL(get_sharding())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else  {
+  } else {
     is_partition_wise_ = !is_multi_part_dml_ && !child->is_exchange_allocated() &&
         get_sharding()->is_distributed() &&
         NULL != get_sharding()->get_phy_table_location_info();
@@ -109,7 +109,7 @@ int ObLogForUpdate::allocate_granule_post(AllocGIContext &ctx)
   if (OB_ISNULL(get_plan())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (OB_FAIL(pw_allocate_granule_post(ctx))){ // 分配完GI以后，会对ctx的状态进行清理
+  } else if (OB_FAIL(pw_allocate_granule_post(ctx))) { // 分配完GI以后，会对ctx的状态进行清理
     LOG_WARN("failed to allocate pw gi post", K(ret));
   } else {
     if (is_partition_wise_state && ctx.is_op_set_pw(this)) {
@@ -308,7 +308,7 @@ bool ObLogForUpdate::is_multi_table_skip_locked()
   return is_multi_table_skip_locked;
 }
 
-int ObLogForUpdate::inner_replace_op_exprs(const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr *> > &to_replace_exprs)
+int ObLogForUpdate::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < index_dml_info_.count(); ++i) {
@@ -316,31 +316,27 @@ int ObLogForUpdate::inner_replace_op_exprs(const common::ObIArray<std::pair<ObRa
     if (OB_ISNULL(dml_info)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("dml info is null", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
-                                            dml_info->ck_cst_exprs_))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, dml_info->ck_cst_exprs_))) {
       LOG_WARN("failed to replace exprs", K(ret));
     } else if (NULL != dml_info->new_part_id_expr_ &&
-        OB_FAIL(replace_expr_action(to_replace_exprs, dml_info->new_part_id_expr_))) {
+        OB_FAIL(replace_expr_action(replacer, dml_info->new_part_id_expr_))) {
       LOG_WARN("failed to replace new parititon id expr", K(ret));
     } else if (NULL != dml_info->old_part_id_expr_ &&
-        OB_FAIL(replace_expr_action(to_replace_exprs, dml_info->old_part_id_expr_))) {
+        OB_FAIL(replace_expr_action(replacer, dml_info->old_part_id_expr_))) {
       LOG_WARN("failed to replace old parititon id expr", K(ret));
     } else if (NULL != dml_info->old_rowid_expr_ &&
-        OB_FAIL(replace_expr_action(to_replace_exprs, dml_info->old_rowid_expr_))) {
+        OB_FAIL(replace_expr_action(replacer, dml_info->old_rowid_expr_))) {
       LOG_WARN("failed to replace old rowid expr", K(ret));
     } else if (NULL != dml_info->new_rowid_expr_ &&
-        OB_FAIL(replace_expr_action(to_replace_exprs, dml_info->new_rowid_expr_))) {
+        OB_FAIL(replace_expr_action(replacer, dml_info->new_rowid_expr_))) {
       LOG_WARN("failed to replace new rowid expr", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
-              dml_info->column_convert_exprs_))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, dml_info->column_convert_exprs_))) {
       LOG_WARN("failed to replace exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
-                      dml_info->column_old_values_exprs_))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, dml_info->column_old_values_exprs_))) {
       LOG_WARN("failed to replace column old values exprs ", K(ret));
     }
     for (int64_t j = 0; OB_SUCC(ret) && j < dml_info->assignments_.count(); ++j) {
-      if (OB_FAIL(replace_expr_action(to_replace_exprs,
-                                      dml_info->assignments_.at(j).expr_))) {
+      if (OB_FAIL(replace_expr_action(replacer, dml_info->assignments_.at(j).expr_))) {
         LOG_WARN("failed to replace expr", K(ret));
       }
     }

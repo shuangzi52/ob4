@@ -668,7 +668,7 @@ int ObQueryHint::print_stmt_hint(PlanText &plan_text, const ObDMLStmt &stmt,
     if (OB_FAIL(print_outline_data(plan_text))) {
       LOG_WARN("failed to print outline data", K(ret));
     }
-  } else if (!has_outline_data()) {
+  } else if (!has_outline_data() || OB_INVALID_ID != stmt.get_dblink_id()) {
     // Not outline data, print current stmt hint here.
     // If stmt is the first stmt can add hint, print global hint and hint with qb name.
     // For query "select_1 union all select_2", root stmt is "union all" and the first stmt to print hint is select_1
@@ -1130,90 +1130,8 @@ int ObStmtHint::merge_stmt_hint(const ObStmtHint &other,
       LOG_WARN("failed to merge normal hint", K(ret));
     }
   }
-  if (OB_FAIL(ret)) {
-  } else if (HINT_DOMINATED_EQUAL == policy) {
-    if (OB_FAIL(append_array_no_dup(other_opt_hints_, other.other_opt_hints_))) {
-      LOG_WARN("failed to append other opt hint", K(ret));
-    }
-  } else {
-    ObSEArray<ObItemType, 4> hint_types;
-    ObSEArray<ObHint*, 8> final_hints;
-    const ObIArray<ObHint*> &dominated_hints = LEFT_HINT_DOMINATED == policy ? other_opt_hints_
-                                                                       : other.other_opt_hints_;
-    const ObIArray<ObHint*> &other_hints = LEFT_HINT_DOMINATED == policy ? other.other_opt_hints_
-                                                                   : other_opt_hints_;
-    if (OB_FAIL(merge_other_opt_hint(dominated_hints, true, hint_types, final_hints))) {
-      LOG_WARN("failed to merge other opt hints", K(ret));
-    } else if (OB_FAIL(merge_other_opt_hint(other_hints, false, hint_types, final_hints))) {
-      LOG_WARN("failed to merge other opt hints", K(ret));
-    } else if (OB_FAIL(other_opt_hints_.assign(final_hints))) {
-      LOG_WARN("failed to assign other opt hints", K(ret));
-    }
-  }
-  return ret;
-}
-
-int ObStmtHint::merge_other_opt_hint(const ObIArray<ObHint*> &hints,
-                                     const bool dominated,
-                                     ObIArray<ObItemType> &hint_types,
-                                     ObIArray<ObHint*> &final_hints)
-{
-  int ret = OB_SUCCESS;
-  ObHint *hint = NULL;
-  ObItemType hint_type = T_INVALID;
-  bool exists = false;
-  static const int64_t classify_cnt = 8;  // max count in hint_types
-  if (classify_cnt == hint_types.count() && !dominated) {
-    //all classify type exists in dominated hints, do nothing
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < hints.count(); ++i) {
-      if (OB_ISNULL(hint = hints.at(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null", K(ret));
-      } else {
-        switch (hint->get_hint_type()) {
-          case T_INDEX_HINT:
-          case T_NO_INDEX_HINT:
-          case T_FULL_HINT:
-          case T_INDEX_SS_HINT:
-          case T_INDEX_SS_ASC_HINT:
-          case T_INDEX_SS_DESC_HINT:
-          case T_USE_DAS_HINT: {
-            hint_type = T_INDEX_HINT;
-            break;
-          }
-          case T_USE_NL:
-          case T_USE_MERGE:
-          case T_USE_HASH:  {
-            hint_type = T_USE_NL;
-            break;
-          }
-          case T_USE_NL_MATERIALIZATION:
-          case T_PQ_DISTRIBUTE:
-          case T_PQ_MAP:
-          case T_PX_JOIN_FILTER:
-          case T_PX_PART_JOIN_FILTER:
-          case T_TABLE_PARALLEL:  {
-            hint_type = hint->get_hint_type();
-            break;
-          }
-          default: {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("unexpected hint type in other_opt_hints_", K(ret), K(*hint));
-          }
-        }
-        if (OB_SUCC(ret)) {
-          exists = has_exist_in_array(hint_types, hint_type);
-          if (dominated && !exists &&
-              OB_FAIL(hint_types.push_back(hint_type))) {
-            LOG_WARN("failed to push back hint type", K(ret));
-          } else if ((dominated || !exists) &&
-                    OB_FAIL(final_hints.push_back(hint))) {
-            LOG_WARN("failed to push back hint", K(ret));
-          }
-        }
-      }
-    }
+  if (OB_SUCC(ret) && OB_FAIL(append_array_no_dup(other_opt_hints_, other.other_opt_hints_))) {
+    LOG_WARN("failed to append other opt hint", K(ret));
   }
   return ret;
 }
@@ -1489,19 +1407,32 @@ bool ObStmtHint::has_disable_hint(ObItemType hint_type) const
 void ObLogPlanHint::reset()
 {
   is_outline_data_ = false;
+#ifdef OB_BUILD_SPM
+  is_spm_evolution_ = false;
+#endif
   join_order_.reset();
   table_hints_.reuse();
   join_hints_.reuse();
   normal_hints_.reuse();
 }
 
+#ifndef OB_BUILD_SPM
 int ObLogPlanHint::init_log_plan_hint(ObSqlSchemaGuard &schema_guard,
                                       const ObDMLStmt &stmt,
                                       const ObQueryHint &query_hint)
+#else
+int ObLogPlanHint::init_log_plan_hint(ObSqlSchemaGuard &schema_guard,
+                                      const ObDMLStmt &stmt,
+                                      const ObQueryHint &query_hint,
+                                      const bool is_spm_evolution)
+#endif
 {
   int ret = OB_SUCCESS;
   reset();
   is_outline_data_ = query_hint.has_outline_data();
+#ifdef OB_BUILD_SPM
+  is_spm_evolution_ = is_spm_evolution;
+#endif
   const ObStmtHint &stmt_hint = stmt.get_stmt_hint();
   if (OB_FAIL(join_order_.init_leading_info(stmt, query_hint, stmt_hint.get_normal_hint(T_LEADING)))) {
     LOG_WARN("failed to get leading hint info", K(ret));
@@ -2030,6 +1961,12 @@ int ObLogPlanHint::check_valid_set_left_branch(const ObSelectStmt *select_stmt,
 int ObLogPlanHint::check_status() const
 {
   int ret = OB_SUCCESS;
+#ifdef OB_BUILD_SPM
+  if (is_spm_evolution_) {
+    ret = OB_OUTLINE_NOT_REPRODUCIBLE;
+    LOG_WARN("failed to generate plan use outline data for spm evolution", K(ret));
+  }
+#endif
   return ret;
 }
 
@@ -2131,6 +2068,7 @@ int LogLeadingHint::init_leading_info_from_ordered_hint(const ObDMLStmt &stmt)
         LOG_WARN("failed to init leading infos from table.", K(ret));
       }
     } else if (OB_ISNULL(semi_info = semi_infos.at(i - from_items.count()))) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpect null semi info", K(ret));
     } else if (OB_FAIL(leading_info.right_table_set_.add_member(
                                     stmt.get_table_bit_index(semi_info->right_table_id_)))) {

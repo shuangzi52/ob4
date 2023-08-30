@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_mem_dump.h"
@@ -30,6 +37,7 @@ ObDirectLoadMemDump::Context::Context()
     finished_sub_dump_count_(0),
     sub_dump_count_(0)
 {
+  allocator_.set_tenant_id(MTL_ID());
 }
 
 ObDirectLoadMemDump::Context::~Context()
@@ -203,6 +211,7 @@ int ObDirectLoadMemDump::dump_tables()
   ObArray<ObDirectLoadMemChunkIter<RowType, CompareType>> chunk_iters; //用于暂存iters
   ObDirectLoadExternalMerger<RowType, CompareType> merger;
   CompareType compare;
+  CompareType compare1;  //不带上seq_no的排序
 
   const RowType *external_row = nullptr;
   ObDatumRow datum_row;
@@ -214,12 +223,14 @@ int ObDirectLoadMemDump::dump_tables()
   if (OB_ISNULL(extra_buf_ = static_cast<char *>(allocator_.alloc(extra_buf_size_)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to allocate memory", KR(ret));
-  } else if (OB_FAIL(compare.init(*(mem_ctx_->datum_utils_)))) {
+  } else if (OB_FAIL(compare.init(*(mem_ctx_->datum_utils_), mem_ctx_->dup_action_))) {
     LOG_WARN("fail to init compare", KR(ret));
+  } else if (OB_FAIL(compare1.init(*(mem_ctx_->datum_utils_), mem_ctx_->dup_action_, true))) {
+    LOG_WARN("fail to init compare1", KR(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < context_ptr_->mem_chunk_array_.count(); i++) {
     ChunkType *chunk = context_ptr_->mem_chunk_array_[i];
-    auto iter = chunk->scan(range_.start_, range_.end_, compare);
+    auto iter = chunk->scan(range_.start_, range_.end_, compare1);
     if (OB_FAIL(chunk_iters.push_back(iter))) {
       LOG_WARN("fail to push iter", KR(ret));
     }
@@ -262,7 +273,7 @@ int ObDirectLoadMemDump::dump_tables()
     if (OB_SUCC(ret)) {
       if (OB_FAIL(external_row->to_datums(datum_row.storage_datums_, datum_row.count_))) {
         LOG_WARN("fail to transfer dataum row", KR(ret));
-      } else if (OB_FAIL(table_builder->append_row(external_row->tablet_id_, datum_row))) {
+      } else if (OB_FAIL(table_builder->append_row(external_row->tablet_id_, external_row->seq_no_, datum_row))) {
         if (OB_LIKELY(OB_ERR_PRIMARY_KEY_DUPLICATE == ret)) {
           if (OB_FAIL(mem_ctx_->dml_row_handler_->handle_update_row(datum_row))) {
             LOG_WARN("fail to handle update row", KR(ret), K(datum_row));

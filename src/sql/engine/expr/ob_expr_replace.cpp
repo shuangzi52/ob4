@@ -112,8 +112,11 @@ int ObExprReplace::calc_result_typeN(ObExprResType &type,
       if (from_len == 0 || from_len >= to_len) {
         type.set_length(ori_len);
       } else {
-        type.set_length(MIN(ori_len / from_len * to_len + ori_len % from_len,
-                            OB_MAX_VARCHAR_LENGTH));
+        result_len = ori_len / from_len * to_len + ori_len % from_len;
+        if (result_len < 0 || result_len > OB_MAX_VARCHAR_LENGTH) {
+          result_len = OB_MAX_VARCHAR_LENGTH;
+        }
+        type.set_length(result_len);
       }
     }
   }
@@ -121,15 +124,17 @@ int ObExprReplace::calc_result_typeN(ObExprResType &type,
 }
 
 int ObExprReplace::replace(ObString &ret_str,
+                           const ObCollationType cs_type,
                            const ObString &text,
                            const ObString &from,
                            const ObString &to,
                            ObExprStringBuf &string_buf)
 {
   int ret = OB_SUCCESS;
+  ObString dst_str;
+  bool is_null = false;
   if (OB_UNLIKELY(text.length() <= 0)) {
     // Return empty string
-    ret_str.reset();
   } else if (OB_UNLIKELY(from.length() <= 0) || OB_UNLIKELY(to.length() < 0)) {
     ret_str = text;
   } else if (OB_ISNULL(from.ptr())) {
@@ -138,75 +143,61 @@ int ObExprReplace::replace(ObString &ret_str,
   } else if (OB_UNLIKELY(text.length() < from.length()) ||
              OB_UNLIKELY(from == to)) {
     ret_str = text;
+  } else if (OB_FAIL(ObSQLUtils::check_well_formed_str(text, cs_type, dst_str, is_null, false, false))
+            || OB_FAIL(ObSQLUtils::check_well_formed_str(from, cs_type, dst_str, is_null, false, false))
+            || OB_FAIL(ObSQLUtils::check_well_formed_str(to, cs_type, dst_str, is_null, false, false))) {
+    LOG_WARN("check well formed str failed", K(ret));
   } else {
-    int64_t length_text = text.length();
-    int64_t length_from = from.length();
-    int64_t length_to = to.length();
-    int64_t tot_length = 0;//total length for the result.
-    //locations is used to track the locations of 'from' in 'text'
     ObSEArray<uint32_t, 4> locations(common::ObModIds::OB_SQL_EXPR_REPLACE,
                                      common::OB_MALLOC_NORMAL_BLOCK_SIZE);
-    int64_t start_pos = 1;// the last parameter of locate starts from 1 NOT 0.
-    uint32_t index = 0;
-    int64_t count = 0;
-    while (OB_SUCC(ret)) { //while(1) will be better in terms of performance
-      index = ObCharset::locate(CS_TYPE_BINARY, text.ptr(), length_text,
-                                from.ptr(), length_from,
-                                start_pos);
-      if (0 != index && OB_SUCC(locations.push_back(index))) {
-        start_pos = index + length_from;
+    ObString mb;
+    int32_t wc;
+    ObStringScanner scanner(text, cs_type, ObStringScanner::IGNORE_INVALID_CHARACTER);
+    while (OB_SUCC(ret) && scanner.get_remain_str().length() >= from.length()) {
+      if (0 == MEMCMP(scanner.get_remain_str().ptr(), from.ptr(), from.length())) {
+        ret = locations.push_back(scanner.get_remain_str().ptr() - text.ptr());
+        scanner.forward_bytes(from.length());
+      } else if (OB_FAIL(scanner.next_character(mb, wc))) {
+        LOG_WARN("get next character failed", K(ret));
       } else {
-        break;
+        //do nothing
       }
     }
+
+    int64_t tot_length = 0;
     if (OB_FAIL(ret)) {
-      LOG_WARN("push back failed", K(ret));
-    } else if (0 == (count = locations.count())) {
-      //no 'from' at all.
+      ret_str.reset();
+    } else if (locations.count() == 0) {
       ret_str = text;
-    } else if (OB_UNLIKELY((OB_MAX_VARCHAR_LENGTH - length_text) / count < (length_to - length_from))) {
+    } else if (OB_UNLIKELY((OB_MAX_VARCHAR_LENGTH - text.length()) / locations.count() < (to.length() - from.length()))) {
       ret = OB_ERR_VARCHAR_TOO_LONG;
       LOG_ERROR("Result of replace() was larger than OB_MAX_VARCHAR_LENGTH.",
-          K(length_text), K(length_from), K(length_to), K(OB_MAX_VARCHAR_LENGTH), K(ret));
+           K(text.length()), K(to.length()), K(from.length()), K(OB_MAX_VARCHAR_LENGTH), K(ret));
+      ret_str.reset();
+    } else if (OB_UNLIKELY((tot_length = text.length() + (to.length() - from.length()) * locations.count()) <= 0)) {
+        // tot_length equals to 0 indicates that length_to is zero and "to" is empty string
       ret_str.reset();
     } else {
-      // Avoid realloc
-      if (OB_UNLIKELY((tot_length = length_text + (length_to - length_from) * count) <= 0)) {
-        // tot_length equals to 0 indicates that length_to is zero and "to" is empty string
-        ret_str.reset();
-      } else {
-        char *buf = static_cast<char *>(string_buf.alloc(tot_length));
-        if (OB_ISNULL(buf)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_ERROR("alloc memory failed.", K(tot_length), K(ret));
-        } else {
-          // Core function
-          int64_t pos = 0;
-          const char * const text_ptr_start = text.ptr();
-          const char * const text_ptr_end = text.ptr() + length_text;
-          const char *text_ptr_lower = text.ptr();
-          const char *text_ptr_upper = text.ptr();
-          const char *to_ptr = to.ptr();
-          char *tmp_buf = buf;
-          for (int64_t i = 0; i < count; ++i) {
-            pos = locations.at(i);
-            text_ptr_upper = text_ptr_start + pos - 1;
-            MEMCPY(tmp_buf, text_ptr_lower, text_ptr_upper - text_ptr_lower);
-            tmp_buf += text_ptr_upper - text_ptr_lower;
-            text_ptr_lower = text_ptr_upper + length_from;
-
-            MEMCPY(tmp_buf, to_ptr, length_to);
-            tmp_buf += length_to;
-          }
-          if (text_ptr_lower < text_ptr_end) {
-            //deal with the tail parts of text
-            //such as text="xxxxxxxABCxxxxxABC1234" and from="ABC"
-            //we should also copy the "1234" to destination
-            MEMCPY(tmp_buf, text_ptr_lower, text_ptr_end - text_ptr_lower);
-          }
-          ret_str.assign_ptr(buf, static_cast<int32_t>(tot_length));
-        }
+      char *buf = static_cast<char *>(string_buf.alloc(tot_length));
+      int pos = 0;
+      int text_pos = 0;
+      if (OB_ISNULL(buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("alloc memory failed.", K(tot_length), K(ret));
       }
+
+      for (int i = 0; OB_SUCC(ret) && i < locations.count(); i++) {
+        MEMCPY(buf + pos, text.ptr() + text_pos, locations.at(i) - text_pos);
+        pos += locations.at(i) - text_pos;
+        text_pos = locations.at(i);
+        MEMCPY(buf + pos, to.ptr(), to.length());
+        pos += to.length();
+        text_pos += from.length();
+      }
+      if (OB_SUCC(ret) && text_pos < text.length()) {
+        MEMCPY(buf + pos, text.ptr() + text_pos, text.length() - text_pos);
+      }
+      ret_str.assign_ptr(buf, static_cast<int32_t>(tot_length));
     }
   }
   return ret;
@@ -241,6 +232,7 @@ int ObExprReplace::eval_replace(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &exp
     expr_datum.set_datum(*text);
   } else if (!is_lob_res) { // non text tc inputs
     if (OB_FAIL(replace(res,
+                        expr.datum_meta_.cs_type_,
                         text->get_string(),
                         !from->is_null() ? from->get_string() : ObString(),
                         (NULL != to && !to->is_null()) ? to->get_string() : ObString(),
@@ -275,7 +267,7 @@ int ObExprReplace::eval_replace(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &exp
       LOG_WARN("failed to get string data", K(ret), K(expr.args_[2]->datum_meta_));
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(replace(res, text_data, from_data, to_data, temp_allocator))) {
+      if (OB_FAIL(replace(res, expr.datum_meta_.cs_type_, text_data, from_data, to_data, temp_allocator))) {
         LOG_WARN("do replace for lob resutl failed", K(ret), K(expr.datum_meta_.type_));
       } else if (OB_FAIL(ObTextStringHelper::string_to_templob_result(expr, ctx, expr_datum, res))) {
         LOG_WARN("set lob result failed", K(ret));

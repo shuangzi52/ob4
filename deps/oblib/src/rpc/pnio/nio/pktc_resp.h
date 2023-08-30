@@ -4,8 +4,6 @@ static void pktc_do_cb(pktc_t* io, pktc_cb_t* cb, pktc_msg_t* m) {
 }
 
 static void pktc_do_cb_exception(pktc_t* io, pktc_cb_t* cb) {
-  #ifdef PERF_MODE
-  #else
   pktc_req_t* req = cb->req;
   if (req) {
     // pktc_flush_cb hasn't be executed
@@ -21,7 +19,6 @@ static void pktc_do_cb_exception(pktc_t* io, pktc_cb_t* cb) {
       pktc_flush_cb(io, req);
     }
   }
-  #endif
   cb->resp_cb(cb, NULL, 0);
 }
 
@@ -59,7 +56,7 @@ static void pktc_resp_cb_on_msg(pktc_t* io, pktc_msg_t* msg) {
     dlink_delete(&cb->sk_dlink);
     pktc_do_cb(io, cb, msg);
   } else {
-    rk_debug("resp cb not found: packet_id=%lu", id);
+    rk_info("resp cb not found: packet_id=%lu", id);
   }
 }
 

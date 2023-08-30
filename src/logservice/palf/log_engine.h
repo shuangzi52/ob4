@@ -330,6 +330,11 @@ public:
                                                  const bool need_purge_throttling,
                                                  const int64_t timeout_us,
                                                  LogGetMCStResp &resp);
+#ifdef OB_BUILD_ARBITRATION
+  virtual int sync_get_arb_member_info(const common::ObAddr &server,
+                                       const int64_t timeout_us,
+                                       LogGetArbMemberInfoResp &resp);
+#endif
 
   // @brief: this function used to submit fetch log request to sepcified server
   // @param[in] server: the address of remote server(data source)
@@ -347,7 +352,12 @@ public:
                                    const int64_t fetch_log_size,
                                    const int64_t fetch_log_count,
                                    const int64_t accepted_mode_pid);
-
+  virtual int submit_batch_fetch_log_resp(const common::ObAddr &server,
+                                          const int64_t msg_proposal_id,
+                                          const int64_t prev_log_proposal_id,
+                                          const LSN &prev_lsn,
+                                          const LSN &curr_lsn,
+                                          const LogWriteBuf &write_buf);
   virtual int submit_register_parent_req(const common::ObAddr &server,
                                          const LogLearner &child_itself,
                                          const bool is_to_leader);

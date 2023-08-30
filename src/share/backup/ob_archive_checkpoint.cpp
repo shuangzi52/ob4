@@ -105,7 +105,6 @@ int ObDestRoundCheckpointer::checkpoint(const ObTenantArchiveRoundAttr &round_in
   return ret;
 }
 
-
 int ObDestRoundCheckpointer::count_(const ObDestRoundSummary &summary, ObDestRoundCheckpointer::Counter &counter) const
 {
   int ret = OB_SUCCESS;
@@ -191,6 +190,8 @@ int ObDestRoundCheckpointer::gen_new_round_info_(const ObTenantArchiveRoundAttr 
   } else if (old_round_info.state_.is_beginning()) {
     if (counter.not_start_cnt_ > 0) {
       need_checkpoint = false;
+    } else if (next_checkpoint_scn < old_round_info.start_scn_) {
+      need_checkpoint = false;
     } else if (OB_FALSE_IT(new_round_info.checkpoint_scn_ = next_checkpoint_scn)) {
     } else if (counter.interrupted_cnt_ > 0) {
       ObSqlString comment;
@@ -275,7 +276,7 @@ int ObDestRoundCheckpointer::generate_pieces_(const ObTenantArchiveRoundAttr &ol
 {
   int ret = OB_SUCCESS;
 
-  if (result.new_round_info_.max_scn_ == old_round_info.start_scn_) {
+  if (old_round_info.state_ == result.new_round_info_.state_ && result.new_round_info_.max_scn_ == old_round_info.start_scn_) {
     // No log stream started archive before disable archive, then no piece generated in the round.
     LOG_INFO("no piece generated.", K(old_round_info), K(result));
   } else {
@@ -341,12 +342,14 @@ int ObDestRoundCheckpointer::generate_one_piece_(const ObTenantArchiveRoundAttr 
     LOG_WARN("failed to calc piece base ts", K(ret), K(new_round_info), K(piece_id));
   } else if (OB_FAIL(ObTenantArchiveMgr::decide_piece_end_scn(new_round_info.start_scn_, new_round_info.base_piece_id_, new_round_info.piece_switch_interval_, piece_id, piece.piece_info_.end_scn_))) {
     LOG_WARN("failed to calc piece end ts", K(ret), K(new_round_info), K(piece_id));
+  } else if (OB_FAIL(piece.piece_info_.set_path(new_round_info.path_))) {
+    LOG_WARN("failed to set path", K(ret), K(piece), K(new_round_info));
   }
 
   // stat data amount and checkpoint ts for current piece.
   const ObArray<ObLSDestRoundSummary> &ls_round_list = summary.ls_round_list_;
   piece.piece_info_.checkpoint_scn_ = SCN::max_scn();
-  piece.piece_info_.max_scn_ = SCN::min_scn();
+  piece.piece_info_.max_scn_ = piece.piece_info_.start_scn_;
   for (int64_t i = 0; OB_SUCC(ret) && i < ls_round_list.count(); i++) {
     const ObLSDestRoundSummary &ls_round = ls_round_list.at(i);
     // search the piece
@@ -365,19 +368,31 @@ int ObDestRoundCheckpointer::generate_one_piece_(const ObTenantArchiveRoundAttr 
       gen_ls_piece.max_lsn_ = ls_piece.max_lsn_;
       gen_ls_piece.input_bytes_ = ls_piece.input_bytes_;
       gen_ls_piece.output_bytes_ = ls_piece.output_bytes_;
-      gen_ls_piece.is_ls_deleted_ = ls_round.is_deleted_;
+      gen_ls_piece.is_ls_deleted_ = false;
 
 
       // fill piece
-      piece.piece_info_.checkpoint_scn_ = MIN(piece.piece_info_.checkpoint_scn_, ls_piece.checkpoint_scn_);
+      bool last_piece = false;
+      if (OB_FAIL(ls_round.check_is_last_piece_for_deleted_ls(piece_id, last_piece))) {
+        LOG_WARN("failed to check is last piece for deleted ls", K(ret));
+      } else if (last_piece) {
+        // If the ls is deleted, and this is the last piece. It should not
+        // affect the checkpoint_scn.
+        // Mark the last piece deleted for deleted ls. For example, piece 10 and 11 is found of
+        // a deleted ls for current checkpoint, piece 10 is not marked with deleted, but piece 11
+        // is marked with deleted.
+        gen_ls_piece.is_ls_deleted_ = true;
+      } else {
+        // checkpoint scn may be smaller than start scn for empty piece.
+        piece.piece_info_.checkpoint_scn_ = MAX(piece.piece_info_.start_scn_, MIN(piece.piece_info_.checkpoint_scn_, ls_piece.checkpoint_scn_));
+      }
+
       piece.piece_info_.max_scn_ = MAX(piece.piece_info_.max_scn_, ls_piece.checkpoint_scn_);
       piece.piece_info_.input_bytes_ += ls_piece.input_bytes_;
       piece.piece_info_.output_bytes_ += ls_piece.output_bytes_;
 
-      if (OB_FAIL(piece.piece_info_.set_path(new_round_info.path_))) {
-        LOG_WARN("failed to set path", K(ret), K(piece), K(gen_ls_piece), K(new_round_info));
-      } else if (OB_FAIL(piece.ls_piece_list_.push_back(gen_ls_piece))) {
-        LOG_WARN("failed to push backup ls piece", K(ret), K(piece), K(gen_ls_piece));
+      if (FAILEDx(piece.ls_piece_list_.push_back(gen_ls_piece))) {
+        LOG_WARN("failed to push back ls piece", K(ret), K(piece), K(gen_ls_piece));
       }
     }
   }

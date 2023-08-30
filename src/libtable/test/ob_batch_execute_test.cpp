@@ -23,6 +23,7 @@
 #include "observer/table/ob_htable_utils.h"
 #include "observer/table/ob_htable_filter_operator.h"
 #include "observer/table/ob_table_service.h"
+#include "storage/ls/ob_ls_tablet_service.h"
 #include <thread>
 #undef private
 #undef protected
@@ -42,6 +43,17 @@ const char* db = "test";
 const char* table_name = "batch_execute_test";
 const char* sys_root_pass = "";
 typedef char DefaultBuf[128];
+
+namespace oceanbase
+{
+namespace storage
+{
+int ObLSTabletService::check_parts_tx_state_in_transfer_for_4377_(transaction::ObTxDesc *)
+{
+  return OB_SUCCESS;
+}
+}
+}
 
 // create table if not exists batch_execute_test (C1 bigint primary key, C2 bigint, C3 varchar(100)) PARTITION BY KEY(C1) PARTITIONS 16
 class TestBatchExecute: public ::testing::Test
@@ -3436,9 +3448,9 @@ TEST(TestQueryResult, alloc_memory_if_need)
       printf("allocator: %ld, result_buf: %ld\n", query_result.allocator_.total(), query_result.buf_.get_capacity());
     }
   }
-  ASSERT_EQ(query_result.buf_.get_capacity(), ObTableQueryResult::MAX_BUF_BLOCK_SIZE * 1);
-  ASSERT_GT(query_result.allocator_.total(), ObTableQueryResult::MAX_BUF_BLOCK_SIZE * 1);
-  ASSERT_LE(query_result.allocator_.total(), ObTableQueryResult::MAX_BUF_BLOCK_SIZE * 3);
+  ASSERT_EQ(query_result.buf_.get_capacity(), ObTableQueryResult::get_max_buf_block_size() * 1);
+  ASSERT_GT(query_result.allocator_.total(), ObTableQueryResult::get_max_buf_block_size() * 1);
+  ASSERT_LE(query_result.allocator_.total(), ObTableQueryResult::get_max_buf_block_size() * 3);
 }
 
 TEST_F(TestBatchExecute, update_table_with_index_by_lowercase_rowkey)
@@ -11759,6 +11771,28 @@ TEST_F(TestBatchExecute, atomic_batch_ops)
 
   service_client_->free_table(table);
   table = NULL;
+}
+
+// create table if not exists auto_increment_defensive_test
+// (C1 bigint AUTO_INCREMENT primary key) PARTITION BY KEY(C1) PARTITIONS 16;
+TEST_F(TestBatchExecute, auto_increment_auto_increment_defensive)
+{
+  OB_LOG(INFO, "begin single_insert");
+  ObTable *the_table = NULL;
+  int ret = service_client_->alloc_table(ObString::make_string("auto_increment_defensive_test"), the_table);
+  ASSERT_EQ(OB_SUCCESS, ret);
+
+  ObTableEntityFactory<ObTableEntity> entity_factory;
+  ObITableEntity *entity = NULL;
+  entity = entity_factory.alloc();
+  ASSERT_TRUE(NULL != entity);
+  ObObj key;
+  int key_key = 1234;
+  key.set_int(key_key);
+  ASSERT_EQ(OB_SUCCESS, entity->add_rowkey_value(key));
+  ObTableOperation table_operation = ObTableOperation::insert(*entity);
+  ObTableOperationResult r;
+  ASSERT_EQ(OB_NOT_SUPPORTED, the_table->execute(table_operation, r));
 }
 
 int main(int argc, char **argv)

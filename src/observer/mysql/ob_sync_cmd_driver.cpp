@@ -21,6 +21,11 @@
 #include "rpc/obmysql/packet/ompk_row.h"
 #include "rpc/obmysql/packet/ompk_eof.h"
 #include "share/ob_lob_access_utils.h"
+#include "observer/mysql/obmp_stmt_prexecute.h"
+#include "src/pl/ob_pl_user_type.h"
+#ifdef OB_BUILD_ORACLE_XML
+#include "sql/engine/expr/ob_expr_xml_func_helper.h"
+#endif
 
 namespace oceanbase
 {
@@ -101,9 +106,23 @@ int ObSyncCmdDriver::response_query_result(sql::ObResultSet &result,
     result, is_ps_protocol, has_more_result, can_retry, fetch_limit);
 }
 
+
+void ObSyncCmdDriver::free_output_row(ObMySQLResultSet &result)
+{
+  if (OB_NOT_NULL(result.get_exec_context().get_output_row())) {
+    const ObNewRow *row = result.get_exec_context().get_output_row();
+    for (int64_t i = 0; i < row->get_count(); ++i) {
+      ObObj &obj = row->cells_[i];
+      if (obj.is_pl_extend()) {
+        (void)pl::ObUserDefinedType::destruct_obj(obj, &session_);
+      }
+    }
+  }
+}
+
 int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
 {
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_execution);
   int ret = OB_SUCCESS;
   bool process_ok = false;
   // for select SQL
@@ -127,7 +146,7 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
     }
 
     // open失败，决定是否需要重试
-    retry_ctrl_.test_and_save_retry_state(gctx_, ctx_, result, ret, cli_ret, is_prexecute_);
+    retry_ctrl_.test_and_save_retry_state(gctx_, ctx_, result, ret, cli_ret);
     LOG_WARN("result set open failed, check if need retry",
              K(ret), K(cli_ret), K(retry_ctrl_.need_retry()));
     ret = cli_ret;
@@ -137,6 +156,7 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
       LOG_ERROR("Not SELECT, should not have any row!!!", K(ret));
     } else if (OB_FAIL(response_query_result(result))) {
       LOG_WARN("response query result fail", K(ret));
+      free_output_row(result);
       int cret = result.close();
       if (cret != OB_SUCCESS) {
         LOG_WARN("close result set fail", K(cret));
@@ -148,13 +168,18 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
         need_send_eof = true;
       }
     }
-  } else { /*do nothing*/ }
+  } else if (is_prexecute_) {
+    if (OB_FAIL(response_query_header(result, false, false , // in prexecute , has_more_result and has_ps out is no matter, it will be recalc
+                                      true))) {
+      LOG_WARN("prexecute response query head fail. ", K(ret));
+    }
+  }
 
   if (OB_SUCC(ret)) {
     // for CRUD SQL
     // must be called before result.close()
     process_schema_version_changes(result);
-
+    free_output_row(result);
     if (OB_FAIL(result.close())) {
       LOG_WARN("close result set fail", K(ret));
     } else if (!result.is_with_rows()
@@ -189,7 +214,7 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
         LOG_WARN("response packet fail", K(ret));
       }
     }
-  }
+  } else { /*do nothing*/ }
 
   if (!OB_SUCC(ret) && !process_ok && !retry_ctrl_.need_retry()) {
     int sret = OB_SUCCESS;
@@ -198,7 +223,6 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
       LOG_WARN("send error packet fail", K(sret), K(ret));
     }
   }
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = false;
   return ret;
 }
 
@@ -286,8 +310,7 @@ int ObSyncCmdDriver::response_query_result(ObMySQLResultSet &result)
   const common::ObNewRow *row = NULL;
   if (OB_FAIL(result.next_row(row)) ) {
     LOG_WARN("fail to get next row", K(ret));
-  } else if ((!is_prexecute_ || stmt::T_ANONYMOUS_BLOCK == result.get_stmt_type()) &&
-              OB_FAIL(response_query_header(result, result.has_more_result(), true, is_prexecute_))) {
+  } else if (OB_FAIL(response_query_header(result, result.has_more_result(), true))) {
     LOG_WARN("fail to response query header", K(ret));
   } else if (OB_ISNULL(ctx_.session_info_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -309,13 +332,15 @@ int ObSyncCmdDriver::response_query_result(ObMySQLResultSet &result)
       } else if ((value.is_lob() || value.is_lob_locator() || value.is_json() || value.is_geometry())
                   && OB_FAIL(process_lob_locator_results(value, result))) {
         LOG_WARN("convert lob locator to longtext failed", K(ret));
-      } else if (value.is_user_defined_sql_type() && OB_FAIL(process_sql_udt_results(value, result))) {
+#ifdef OB_BUILD_ORACLE_XML
+      } else if (value.is_user_defined_sql_type() && OB_FAIL(ObXMLExprHelper::process_sql_udt_results(value, result))) {
         LOG_WARN("convert udt to client format failed", K(ret), K(value.get_udt_subschema_id()));
+#endif
       }
     }
 
     if (OB_SUCC(ret)) {
-      MYSQL_PROTOCOL_TYPE protocol_type = result.is_ps_protocol() ? BINARY : TEXT;
+      MYSQL_PROTOCOL_TYPE protocol_type = result.is_ps_protocol() ? MYSQL_PROTOCOL_TYPE::BINARY : MYSQL_PROTOCOL_TYPE::TEXT;
       const ObSQLSessionInfo *tmp_session = result.get_exec_context().get_my_session();
       const ObDataTypeCastParams dtc_params = ObBasicSessionInfo::create_dtc_params(tmp_session);
       ObSMRow sm_row(protocol_type,

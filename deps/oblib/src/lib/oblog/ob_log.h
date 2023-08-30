@@ -42,9 +42,10 @@
 #include "lib/oblog/ob_async_log_struct.h"
 #include "lib/utility/ob_defer.h"
 #include "lib/oblog/ob_syslog_rate_limiter.h"
+#include "lib/signal/ob_signal_handlers.h"
 
-#define OB_LOG_MAX_PAR_MOD_SIZE 32
-#define OB_LOG_MAX_SUB_MOD_SIZE 32
+#define OB_LOG_MAX_PAR_MOD_SIZE 64
+#define OB_LOG_MAX_SUB_MOD_SIZE 64
 
 namespace oceanbase {
 namespace lib {
@@ -334,6 +335,8 @@ public:
   virtual ~ObLogger();
   virtual int init(const ObBaseLogWriterCfg &log_cfg,
                    const bool is_arb_replica);
+  virtual void stop();
+  virtual void wait();
   virtual void destroy();
 
 protected:
@@ -507,6 +510,9 @@ public:
   }
 
 
+#ifdef OB_BUILD_AUDIT_SECURITY
+  int async_audit_dump(const common::ObBasebLogPrint &info);
+#endif
 
   //@brief Check whether the level to print.
   bool __attribute__((weak, noinline, cold)) need_to_print(const int32_t level) { return (level <= get_log_level()); }
@@ -864,7 +870,7 @@ inline const ObLogIdLevelMap *ObThreadLogLevelUtils::get()
 
 inline int8_t ObThreadLogLevelUtils::get_level()
 {
-  return get_level_();;
+  return get_level_();
 }
 
 inline const ObLogIdLevelMap*& ObThreadLogLevelUtils::get_id_level_map_()
@@ -1110,7 +1116,7 @@ inline void ObLogger::check_probe(
             break;
           }
           case ProbeAction::PROBE_STACK: {
-            IGNORE_RETURN raise(60);
+            IGNORE_RETURN faststack();
             break;
           }
           default: {

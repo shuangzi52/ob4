@@ -17,6 +17,7 @@
 #include "share/ls/ob_ls_replica_filter.h" // ObLSReplicaFilter
 #include "share/ob_share_util.h"           // ObShareUtils
 #include "lib/string/ob_sql_string.h"      // ObSqlString
+#include "lib/utility/utility.h" // split_on()
 
 namespace oceanbase
 {
@@ -123,7 +124,8 @@ ObLSReplica::ObLSReplica()
     in_member_list_(false),
     member_time_us_(0),
     learner_list_(),
-    in_learner_list_(false)
+    in_learner_list_(false),
+    rebuild_(false)
 {
 }
 
@@ -157,6 +159,7 @@ void ObLSReplica::reset()
   member_time_us_ = 0;
   learner_list_.reset();
   in_learner_list_ = false;
+  rebuild_ = false;
 }
 
 int ObLSReplica::init(
@@ -178,7 +181,8 @@ int ObLSReplica::init(
     const int64_t data_size,
     const int64_t required_size,
     const MemberList &member_list,
-    const GlobalLearnerList &learner_list)
+    const GlobalLearnerList &learner_list,
+    const bool rebuild)
 {
   int ret = OB_SUCCESS;
   reset();
@@ -210,6 +214,7 @@ int ObLSReplica::init(
     paxos_replica_number_ = paxos_replica_number;
     data_size_ = data_size;
     required_size_ = required_size;
+    rebuild_ = rebuild;
   }
   return ret;
 }
@@ -248,6 +253,7 @@ int ObLSReplica::assign(const ObLSReplica &other)
       in_member_list_ = other.in_member_list_;
       member_time_us_ = other.member_time_us_;
       in_learner_list_ = other.in_learner_list_;
+      rebuild_ = other.rebuild_;
     }
   }
   return ret;
@@ -279,16 +285,18 @@ bool ObLSReplica::is_equal_for_report(const ObLSReplica &other) const
     is_equal = (proposal_id_ == other.proposal_id_);
   }
 
-  // check replica_type and learner_list if necessary
-  bool is_compatible_with_readonly_replica = false;
-  int ret = OB_SUCCESS;
-  if (is_equal && OB_FAIL(ObShareUtil::check_compat_version_for_readonly_replica(
-                                           tenant_id_,
-                                           is_compatible_with_readonly_replica))) {
-    LOG_WARN("failed to check compat version for readonly replica", KR(ret), K_(tenant_id));
-  } else if (is_equal && is_compatible_with_readonly_replica) {
-    is_equal = learner_list_is_equal(learner_list_, other.learner_list_)
-               && replica_type_ == other.replica_type_;
+  // check replica_type/learner_list/rebuild if necessary (>=4.2.0.0)
+  if (is_equal) {
+    bool is_compatible_with_readonly_replica = false;
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(ObShareUtil::check_compat_version_for_readonly_replica(
+        tenant_id_, is_compatible_with_readonly_replica))) {
+      LOG_WARN("failed to check compat version for readonly replica", KR(ret), K_(tenant_id));
+    } else if (is_compatible_with_readonly_replica) {
+      is_equal = learner_list_is_equal(learner_list_, other.learner_list_)
+                 && replica_type_ == other.replica_type_
+                 && rebuild_ == other.rebuild_;
+    }
   }
 
   return is_equal;
@@ -298,15 +306,17 @@ bool ObLSReplica::learner_list_is_equal(const common::GlobalLearnerList &a, cons
 {
   bool is_equal = true;
   if (a.get_member_number() != b.get_member_number()) {
+    // ObMember with flag is considered.
     is_equal = false;
   } else {
     for (int i = 0; is_equal && i < a.get_member_number(); ++i) {
-      ObAddr learner;
+      ObMember learner;
       int ret = OB_SUCCESS;
-      if (OB_FAIL(a.get_server_by_index(i, learner))) {
+      if (OB_FAIL(a.get_member_by_index(i, learner))) {
         is_equal = false;
         LOG_WARN("failed to get server by index", KR(ret), K(i), K(a), K(b));
       } else {
+        // flag of learner is considered
         is_equal = b.contains(learner);
       }
     }
@@ -314,23 +324,57 @@ bool ObLSReplica::learner_list_is_equal(const common::GlobalLearnerList &a, cons
   return is_equal;
 }
 
-bool ObLSReplica::member_list_is_equal(const MemberList &a, const MemberList &b) const
+bool ObLSReplica::member_list_is_equal(const MemberList &a, const MemberList &b)
 {
   bool is_equal = true;
   if (a.count() != b.count()) {
     is_equal = false;
   } else {
-    for (int i = 0; is_equal && i < a.count(); ++i) {
-      is_equal = false;
-      for (int j = 0; j < b.count(); ++j) {
-        if (a[i] == b[j]) {
-          is_equal = true;
-          break;
-        }
+    ARRAY_FOREACH_X(a, idx, cnt, is_equal) {
+      if (!common::is_contain(b, a.at(idx))) {
+        is_equal = false;
+      }
+    }
+    ARRAY_FOREACH_X(b, idx, cnt, is_equal) {
+      if (!common::is_contain(a, b.at(idx))) {
+        is_equal = false;
       }
     }
   }
   return is_equal;
+}
+
+bool ObLSReplica::server_is_in_member_list(
+    const MemberList &member_list,
+    const common::ObAddr &server)
+{
+  bool is_found = false;
+  ARRAY_FOREACH_X(member_list, idx, cnt, !is_found) {
+    if (server == member_list.at(idx).get_server()) {
+      is_found = true;
+    }
+  }
+  return is_found;
+}
+
+bool ObLSReplica::servers_in_member_list_are_same(const MemberList &a, const MemberList &b)
+{
+  bool is_same = true;
+  if (a.count() != b.count()) {
+    is_same = false;
+  } else {
+    ARRAY_FOREACH_X(a, idx, cnt, is_same) {
+      if (!server_is_in_member_list(b, a.at(idx).get_server())) {
+        is_same = false;
+      }
+    }
+    ARRAY_FOREACH_X(b, idx, cnt, is_same) {
+      if (!server_is_in_member_list(a, b.at(idx).get_server())) {
+        is_same = false;
+      }
+    }
+  }
+  return is_same;
 }
 
 int64_t ObLSReplica::to_string(char *buf, const int64_t buf_len) const
@@ -361,7 +405,8 @@ int64_t ObLSReplica::to_string(char *buf, const int64_t buf_len) const
       K_(in_member_list),
       K_(member_time_us),
       K_(learner_list),
-      K_(in_learner_list));
+      K_(in_learner_list),
+      K_(rebuild));
   J_OBJ_END();
   return pos;
 }
@@ -390,7 +435,8 @@ OB_SERIALIZE_MEMBER(ObLSReplica,
                     in_member_list_,
                     member_time_us_,
                     learner_list_,
-                    in_learner_list_);
+                    in_learner_list_,
+                    rebuild_);
 
 int ObLSReplica::member_list2text(
     const MemberList &member_list,
@@ -421,45 +467,192 @@ int ObLSReplica::member_list2text(
   return ret;
 }
 
+int ObLSReplica::parse_addr_from_learner_string_(
+    const ObString &input_string,
+    int64_t &the_count_of_colon_already_parsed,
+    ObAddr &learner_addr)
+{
+  int ret = OB_SUCCESS;
+  int64_t input_string_length = input_string.length();
+  learner_addr.reset();
+  int64_t learner_addr_length = 0;
+  the_count_of_colon_already_parsed = 0;
+  ObSqlString learner_addr_string("LearnerStr");
+  // ipv4 format: a.b.c.d:port:timestamp:flag,..
+  // ipv6 format: [a:b:c:d:e:f:g:h]:port:timestamp:flag,...
+  // for ipv4, we can directly find learner_addr_string before the second ':'
+  // for ipv6, we have to find learner_addr_string before the second ':' at the begining of ']'
+  if (OB_UNLIKELY(input_string.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret));
+  } else if (input_string.prefix_match("[")) {
+    // is IPV6 like addr, try locate the start index from ']'
+    while (OB_SUCC(ret) && learner_addr_length < input_string_length) {
+      if (0 == input_string.ptr()[learner_addr_length] - ']') {
+        break;
+      } else if (0 == input_string.ptr()[learner_addr_length] - ':') {
+        the_count_of_colon_already_parsed++;
+      }
+      learner_addr_length++;
+    }
+  } else {
+    // is IPV4 like addr
+    learner_addr_length = 0;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (learner_addr_length >= input_string_length) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(learner_addr_length),
+             K(input_string_length), K(input_string), K(the_count_of_colon_already_parsed));
+  } else {
+    int64_t colon_num = 0;
+    while (OB_SUCC(ret) && learner_addr_length < input_string_length) {
+      if (0 == input_string.ptr()[learner_addr_length] - ':') {
+        colon_num++;
+        the_count_of_colon_already_parsed++;
+        if (2 == colon_num) {
+          // find the end of learner addr string
+          if (OB_FAIL(learner_addr_string.append(input_string.ptr(), learner_addr_length))) {
+            LOG_WARN("fail to construct learner addr string", KR(ret),
+                     K(input_string), K(learner_addr_length), K(the_count_of_colon_already_parsed));
+          } else {
+            break;
+          }
+        } else {
+          learner_addr_length++;
+        }
+      } else {
+        learner_addr_length++;
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (0 >= learner_addr_length || !learner_addr_string.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(input_string), K(learner_addr_length), K(learner_addr_string));
+  } else if (OB_FAIL(learner_addr.parse_from_string(learner_addr_string.string()))) {
+    LOG_WARN("fail to parse addr from string", KR(ret), K(input_string), K(input_string_length),
+             K(learner_addr_string), K(learner_addr_length), K(the_count_of_colon_already_parsed));
+  }
+  return ret;
+}
+
+int ObLSReplica::parsing_int_from_string_(
+    const ObString &input_text,
+    int64_t &output_value)
+{
+  int ret = OB_SUCCESS;
+  output_value = 0;
+  int64_t pos = 0; // not used
+  bool is_negative = false;
+  if (OB_UNLIKELY(input_text.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret));
+  } else if (OB_FAIL(extract_int(input_text, 0, pos, output_value))) {
+    LOG_WARN("fail to extract int from string", KR(ret), K(input_text), K(output_value));
+  } else {
+    is_negative = 0 == input_text[0] - '-';
+    output_value *= is_negative ? (-1) : (1);
+  }
+  return ret;
+}
+
 int ObLSReplica::text2learner_list(const char *text, GlobalLearnerList &learner_list)
 {
   int ret = OB_SUCCESS;
-  char *learner_text = nullptr;
-  char *save_ptr1 = nullptr;
-  learner_list.reset();
-  if (nullptr == text) {
+  ObArenaAllocator allocator("LSReplica");
+  ObString input_text_before_trim;
+  ObString input_text_after_trim;
+  ObArray<ObString> learner_string_array;
+  if (OB_ISNULL(text)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), KP(text));
-  }
-  while (OB_SUCC(ret)) {
-    learner_text = strtok_r((nullptr == learner_text ? const_cast<char *>(text) : nullptr), ",", &save_ptr1);
-    /*
-     * ipv4 format: a.b.c.d:port:timestamp,...
-     * ipv6 format: [a:b:c:d:e:f:g:h]:port:timestamp,...
-     */
-    if (nullptr != learner_text) {
-      char *timestamp_str = nullptr;
-      char *end_ptr = nullptr;
+  } else if (OB_FAIL(ob_write_string(allocator, ObString::make_string(text), input_text_before_trim))) {
+    LOG_WARN("fail to write string", KR(ret), KP(text));
+  } else if (FALSE_IT(input_text_after_trim = input_text_before_trim.trim())) {
+  } else if (OB_FAIL(split_on(input_text_after_trim, ',', learner_string_array))) {
+    LOG_WARN("fail to split string", KR(ret), K(input_text_after_trim), K(input_text_before_trim));
+  } else {
+    for (int64_t learner_index = 0;
+         learner_index < learner_string_array.count() && OB_SUCC(ret);
+         learner_index++) {
+      /*
+       *  ipv4 format: a.b.c.d:port:timestamp:flag,...
+       *  ipv6 format: [a:b:c:d:e:f:g:h]:port:timestamp:flag,...
+       */
+      int64_t the_count_of_colon_already_parsed = 0;
+      // 1. parse ip:port
       ObAddr learner_addr;
-      if (OB_NOT_NULL(timestamp_str = strrchr(learner_text, ':'))) {
-        *timestamp_str++ = '\0';
-        int64_t timestamp_val = strtoll(timestamp_str, &end_ptr, 10);
-        if (end_ptr == timestamp_str || *end_ptr != '\0') {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("strtoll failed", KR(ret));
-        } else if (OB_FAIL(learner_addr.parse_from_cstring(learner_text))) {
-          LOG_ERROR("parse from cstring failed", KR(ret), K(learner_text));
-        } else if (OB_FAIL(learner_list.add_learner(ObMember(learner_addr, timestamp_val)))) {
-          LOG_WARN("push back failed", KR(ret), K(learner_addr), K(timestamp_val));
-        }
-      } else {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_ERROR("parse learner text failed", KR(ret), K(learner_text));
+      if (OB_FAIL(parse_addr_from_learner_string_(
+                      learner_string_array.at(learner_index),
+                      the_count_of_colon_already_parsed,
+                      learner_addr))) {
+        LOG_WARN("fail to parse learner addr from string", KR(ret),
+                 K(learner_index), K(learner_string_array));
       }
-    } else {
-      break;
+
+      // 2. split learner addr string by ':'
+      ObArray<ObString> learner_sub_string_array;
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(split_on(learner_string_array.at(learner_index), ':', learner_sub_string_array))) {
+        LOG_WARN("fail to split learner string", KR(ret),
+                 K(learner_string_array), K(learner_sub_string_array));
+      } else if (OB_UNLIKELY(the_count_of_colon_already_parsed >= learner_sub_string_array.count())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
+                 "array_count", learner_sub_string_array.count(),
+                 K(learner_string_array), K(learner_index));
+      }
+
+      // 3. skip the_count_of_colon_already_parsed and parse timestamp
+      int64_t timestamp_val = 0;
+      if (OB_FAIL(ret)) {
+      } else if (OB_UNLIKELY(the_count_of_colon_already_parsed >= learner_sub_string_array.count())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
+                 "array_count", learner_sub_string_array.count(),
+                 K(learner_sub_string_array));
+      } else if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(the_count_of_colon_already_parsed), timestamp_val))) {
+        LOG_WARN("fail to extract timestamp from string", KR(ret), K(learner_sub_string_array), K(the_count_of_colon_already_parsed));
+      } else {
+        the_count_of_colon_already_parsed++;
+      }
+
+      // 4. parse flag if needed
+      // In 4.2-bp2 we changed the procedure to migrate a replica.
+      // Before add this replica to member_list, we add it to learner_list with flag first.
+      // So a learner replica must HAVE flag substring since 4.2-bp2, and must NOT HAVE flag substring before 4.2-bp2.
+      // We have to deal with the compatible problem here to parse learner with flag or just ignore flag substring.
+      int64_t flag_val = 0;
+      if (OB_FAIL(ret)) {
+      } else if (the_count_of_colon_already_parsed < learner_sub_string_array.count()) {
+        if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(the_count_of_colon_already_parsed), flag_val))) {
+          LOG_WARN("fail to extract flag from string", KR(ret), K(learner_sub_string_array), K(the_count_of_colon_already_parsed));
+        } else {
+          the_count_of_colon_already_parsed++;
+        }
+      }
+
+      // 5. make sure no remain parts
+      if (OB_FAIL(ret)) {
+      } else if (the_count_of_colon_already_parsed < learner_sub_string_array.count()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
+                 "array_count", learner_sub_string_array.count(),
+                 K(learner_sub_string_array));
+      }
+
+      // 6. construct learner
+      if (OB_FAIL(ret)) {
+      } else {
+        ObMember learner_to_add(learner_addr, timestamp_val);
+        learner_to_add.set_flag(flag_val);
+        if (OB_FAIL(learner_list.add_learner(learner_to_add))) {
+          LOG_WARN("push back learner failed", KR(ret), K(learner_to_add));
+        }
+      }
     }
-  } // while
+  }
   return ret;
 }
 

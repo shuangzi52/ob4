@@ -86,36 +86,22 @@ int ObDASCtx::get_das_tablet_mapper(const uint64_t ref_table_id,
   if (tablet_mapper.is_non_partition_optimized()) {
     // table ids has calced for no partition entity table, continue
   } else if (!is_vt) {
-    if (schema_guard_ == nullptr) {
-      void *buf = allocator_.alloc(sizeof(ObSchemaGetterGuard));
-      if (OB_ISNULL(buf)) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_WARN("allocate schema getter guard failed", K(ret));
-      } else {
-        schema_guard_ = new (buf) ObSchemaGetterGuard(share::schema::ObSchemaMgrItem::MOD_DAS_CTX);
-        self_schema_guard_ = true;
-        if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, *schema_guard_))) {
-          LOG_WARN("get schema guard failed", K(ret));
-          //release the schema guard when fetch the schema guard throw exception
-          schema_guard_->~ObSchemaGetterGuard();
-          schema_guard_ = nullptr;
-        }
-      }
-    }
     //get ObTableSchema object corresponding to the table_id from ObSchemaGetterGuard
     //record the ObTableSchema into tablet_mapper
     //the tablet and partition info come from ObTableSchema in the real table
-
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(schema_guard_->get_table_schema(tenant_id,
-          real_table_id, tablet_mapper.table_schema_))) {
-        LOG_WARN("get table schema failed", K(ret), K(tenant_id), K(real_table_id));
-      } else if (OB_ISNULL(tablet_mapper.table_schema_)) {
-        ret = OB_TABLE_NOT_EXIST;
-        LOG_WARN("table schema is not found", K(ret), K(real_table_id));
-      } else {
-        tablet_mapper.related_info_.guard_ = schema_guard_;
-      }
+    ObSchemaGetterGuard *schema_guard = nullptr;
+    if (OB_ISNULL(sql_ctx_) || OB_ISNULL(schema_guard = sql_ctx_->schema_guard_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("schema guard is nullptr", K(ret), K(sql_ctx_), K(schema_guard));
+    } else if (OB_FAIL(schema_guard->get_table_schema(tenant_id,
+                                                      real_table_id,
+                                                      tablet_mapper.table_schema_))) {
+      LOG_WARN("get table schema failed", K(ret), K(tenant_id), K(real_table_id));
+    } else if (OB_ISNULL(tablet_mapper.table_schema_)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_WARN("table schema is not found", K(ret), K(real_table_id));
+    } else {
+      tablet_mapper.related_info_.guard_ = schema_guard;
     }
   } else {
     //get all server lists corresponding to the table_id from the tablet location cache
@@ -443,29 +429,20 @@ int ObDASCtx::add_candi_table_loc(const ObDASTableLocMeta &loc_meta,
   return ret;
 }
 
-bool ObDASCtx::has_same_lsid(ObLSID *lsid)
+int ObDASCtx::get_all_lsid(share::ObLSArray &ls_ids)
 {
-  bool bret = true;
-  ObLSID first_lsid;
-  FOREACH_X(table_node, table_locs_, bret) {
+  int ret = OB_SUCCESS;
+  FOREACH_X(table_node, table_locs_, OB_SUCC(ret)) {
     ObDASTableLoc *table_loc = *table_node;
     for (DASTabletLocListIter tablet_node = table_loc->tablet_locs_begin();
-         bret && tablet_node != table_loc->tablet_locs_end(); ++tablet_node) {
+         OB_SUCC(ret) && tablet_node != table_loc->tablet_locs_end(); ++tablet_node) {
       ObDASTabletLoc *tablet_loc = *tablet_node;
-      if (!first_lsid.is_valid()) {
-        first_lsid = tablet_loc->ls_id_;
-      } else if (first_lsid != tablet_loc->ls_id_) {
-        bret = false;
+      if (!is_contain(ls_ids, tablet_loc->ls_id_)) {
+        ret = ls_ids.push_back(tablet_loc->ls_id_);
       }
     }
   }
-  if (!first_lsid.is_valid()) {
-    bret = false;
-  }
-  if (bret && lsid != nullptr) {
-    *lsid = first_lsid;
-  }
-  return bret;
+  return ret;
 }
 
 int64_t ObDASCtx::get_related_tablet_cnt() const
@@ -593,6 +570,7 @@ OB_DEF_SERIALIZE(ObDASCtx)
   }
   OB_UNIS_ENCODE(flags_);
   OB_UNIS_ENCODE(snapshot_);
+  OB_UNIS_ENCODE(location_router_);
   return ret;
 }
 
@@ -622,6 +600,7 @@ OB_DEF_DESERIALIZE(ObDASCtx)
   if (OB_SUCC(ret) && OB_FAIL(rebuild_tablet_loc_reference())) {
     LOG_WARN("rebuild tablet loc reference failed", K(ret));
   }
+  OB_UNIS_DECODE(location_router_);
   return ret;
 }
 
@@ -635,6 +614,7 @@ OB_DEF_SERIALIZE_SIZE(ObDASCtx)
   }
   OB_UNIS_ADD_LEN(flags_);
   OB_UNIS_ADD_LEN(snapshot_);
+  OB_UNIS_ADD_LEN(location_router_);
   return len;
 }
 }  // namespace sql

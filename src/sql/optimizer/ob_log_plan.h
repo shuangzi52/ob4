@@ -126,6 +126,28 @@ struct ObDistinctAggrBatch
   TO_STRING_KV(K(mocked_aggrs_), K(mocked_params_));
 };
 
+struct CandidatePlan
+{
+  CandidatePlan(ObLogicalOperator *plan_tree)
+  : plan_tree_(plan_tree)
+  { }
+  CandidatePlan()
+  : plan_tree_(NULL)
+  { }
+  virtual ~CandidatePlan() {}
+  void reset()
+  {
+    plan_tree_ = NULL;
+  }
+  ObLogicalOperator *plan_tree_;
+
+  int64_t to_string(char *buf, const int64_t buf_len) const
+  {
+    UNUSED(buf);
+    UNUSED(buf_len);
+    return common::OB_SUCCESS;
+  }
+};
 
 typedef common::ObSEArray<ObJoinOrder*, 4> JoinOrderArray;
 
@@ -419,7 +441,8 @@ public:
   int check_location_need_multi_partition_dml(ObLogicalOperator &top,
                                               uint64_t table_id,
                                               bool &is_multi_part_dml,
-                                              bool &is_result_local);
+                                              bool &is_result_local,
+                                              ObShardingInfo *&source_sharding);
 
   int check_if_use_hybrid_hash_distribution(ObOptimizerContext &optimizer_ctx,
                                             const ObDMLStmt *stmt,
@@ -430,32 +453,11 @@ public:
                                uint64_t source_table_id,
                                ObShardingInfo *&sharding_info,
                                ObTablePartitionInfo *&table_part_info);
-
+  int assign_right_popular_value_to_left(ObExchangeInfo &left_exch_info,
+                                         ObExchangeInfo &right_exch_info);
   void set_insert_stmt(const ObInsertStmt *insert_stmt) { insert_stmt_ = insert_stmt; }
   const ObInsertStmt *get_insert_stmt() const { return insert_stmt_; }
 public:
-  struct CandidatePlan
-  {
-    CandidatePlan(ObLogicalOperator *plan_tree)
-    : plan_tree_(plan_tree)
-    { }
-    CandidatePlan()
-    : plan_tree_(NULL)
-    { }
-    virtual ~CandidatePlan() {}
-    void reset()
-    {
-      plan_tree_ = NULL;
-    }
-    ObLogicalOperator *plan_tree_;
-
-    int64_t to_string(char *buf, const int64_t buf_len) const
-    {
-      UNUSED(buf);
-      UNUSED(buf_len);
-      return common::OB_SUCCESS;
-    }
-  };
 
   struct All_Candidate_Plans
   {
@@ -832,10 +834,10 @@ public:
                                         const ObIArray<OrderItem> &sort_keys,
                                         const bool need_sort,
                                         const int64_t prefix_pos,
-                                        const bool is_partition_wise,
+                                        const bool is_local_order,
                                         ObRawExpr *topn_expr = NULL,
                                         bool is_fetch_with_ties = false,
-                                        OrderItem *hash_sortkey = NULL);
+                                        const OrderItem *hash_sortkey = NULL);
 
   int allocate_dist_range_sort_as_top(ObLogicalOperator *&top,
                                       const ObIArray<OrderItem> &sort_keys,
@@ -854,7 +856,7 @@ public:
                            const bool is_local_merge_sort = false,
                            ObRawExpr *topn_expr = NULL,
                            bool is_fetch_with_ties = false,
-                           OrderItem *hash_sortkey = NULL);
+                           const OrderItem *hash_sortkey = NULL);
 
   int allocate_exchange_as_top(ObLogicalOperator *&top,
                                const ObExchangeInfo &exch_info);
@@ -1334,6 +1336,8 @@ public:
 
   int perform_gather_stat_replace(ObLogicalOperator *op);
 
+  common::ObIArray<ObRawExpr *> &get_new_or_quals() { return new_or_quals_; }
+
 protected:
   virtual int generate_normal_raw_plan() = 0;
   virtual int generate_dblink_raw_plan();
@@ -1728,9 +1732,11 @@ public:
   const ObLogPlanHint &get_log_plan_hint() const { return log_plan_hint_; }
   bool has_join_order_hint() { return !log_plan_hint_.join_order_.leading_tables_.is_empty(); }
   const ObRelIds& get_leading_tables() { return log_plan_hint_.join_order_.leading_tables_; }
-  void set_added_leading() { outline_print_flags_ |= ADDED_LEADING_HINT; }
   void reset_outline_print_flags() { outline_print_flags_ = 0; }
   bool has_added_leading() const { return outline_print_flags_ & ADDED_LEADING_HINT; }
+  void set_added_leading() { outline_print_flags_ |= ADDED_LEADING_HINT; }
+  bool has_added_win_dist() const { return outline_print_flags_ & ADDED_WIN_DIST_HINT; }
+  void set_added_win_dist() { outline_print_flags_ |= ADDED_WIN_DIST_HINT; }
   const common::ObIArray<ObRawExpr*> &get_onetime_query_refs() const { return onetime_query_refs_; }
 private:
   static const int64_t IDP_PATHNUM_THRESHOLD = 5000;
@@ -1741,11 +1747,12 @@ protected: // member variable
   ObLogOperatorFactory log_op_factory_;
   All_Candidate_Plans candidates_;
   common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 4, common::ModulePageAllocator, true > group_replaced_exprs_;
-  common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 4, common::ModulePageAllocator, true >
-      window_function_replaced_exprs_;
-  common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 4, common::ModulePageAllocator, true > gen_col_replaced_exprs_;
-  common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 1, common::ModulePageAllocator, true > stat_gather_replaced_exprs_;
+  ObRawExprReplacer group_replacer_;
+  ObRawExprReplacer window_function_replacer_;
+  ObRawExprReplacer gen_col_replacer_;
+  ObRawExprReplacer onetime_replacer_;
   // used for gather statistic begin
+  ObRawExprReplacer stat_gather_replacer_;
   ObRawExpr* stat_partition_id_expr_;
   ObLogTableScan* stat_table_scan_;
   // used for gather statistics end
@@ -1814,7 +1821,8 @@ private:
 
   ObLogPlanHint log_plan_hint_;
   enum OUTLINE_PRINT_FLAG {
-    ADDED_LEADING_HINT        = 1 << 0
+    ADDED_LEADING_HINT    = 1 << 0,
+    ADDED_WIN_DIST_HINT   = 1 << 1
   };
   uint64_t outline_print_flags_; // used print outline
   common::ObSEArray<ObRelIds, 8, common::ModulePageAllocator, true> bushy_tree_infos_;
@@ -1877,6 +1885,7 @@ private:
   common::ObSEArray<ObExecParamRawExpr *, 4, common::ModulePageAllocator, true> onetime_params_;
   common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 4,
                     common::ModulePageAllocator, true > onetime_replaced_exprs_;
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> new_or_quals_;
   DISALLOW_COPY_AND_ASSIGN(ObLogPlan);
 };
 

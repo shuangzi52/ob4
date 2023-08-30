@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yiren.ly <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_multiple_sstable_compactor.h"
@@ -40,6 +47,8 @@ ObDirectLoadMultipleSSTableCompactor::ObDirectLoadMultipleSSTableCompactor()
     data_block_count_(0),
     row_count_(0),
     max_data_block_size_(0),
+    start_key_allocator_("TLD_SRowkey"),
+    end_key_allocator_("TLD_ERowkey"),
     is_inited_(false)
 {
 }
@@ -59,6 +68,8 @@ int ObDirectLoadMultipleSSTableCompactor::init(const ObDirectLoadMultipleSSTable
     LOG_WARN("invalid args", KR(ret), K(param));
   } else {
     param_ = param;
+    start_key_allocator_.set_tenant_id(MTL_ID());
+    end_key_allocator_.set_tenant_id(MTL_ID());
     start_key_.set_min_rowkey();
     end_key_.set_min_rowkey();
     is_inited_ = true;

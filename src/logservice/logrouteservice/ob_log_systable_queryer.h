@@ -16,6 +16,8 @@
 #include "ob_ls_log_stat_info.h"   // ObLSLogInfo
 #include "ob_all_server_info.h"    // ObAllServerInfo
 #include "ob_all_zone_info.h"      // ObAllZoneInfo, ObAllZoneTypeInfo
+#include "src/logservice/logfetcher/ob_log_fetcher_err_handler.h"
+#include "ob_all_units_info.h"     // ObUnitsRecordInfo
 
 namespace oceanbase
 {
@@ -37,15 +39,22 @@ public:
   virtual ~ObLogSysTableQueryer();
   int init(const int64_t cluster_id,
       const bool is_across_cluster,
-      common::ObISQLClient &sql_proxy);
+      common::ObISQLClient &sql_proxy,
+      logfetcher::IObLogErrHandler *err_handler);
   bool is_inited() const { return is_inited_; }
   void destroy();
 
 public:
+  // SELECT SVR_IP, SVR_PORT, ROLE, BEGIN_LSN, END_LSN FROM GV$OB_LOG_STAT
   int get_ls_log_info(
       const uint64_t tenant_id,
       const share::ObLSID &ls_id,
       ObLSLogInfo &ls_log_info);
+
+  //  SELECT SVR_IP, SVR_PORT, ZONE, ZONE_TYPE, REGION from GV$OB_UNITS;
+  int get_all_units_info(
+      const uint64_t tenant_id,
+      ObUnitsRecordInfo &units_record_info);
 
   int get_all_server_info(
       const uint64_t tenant_id,
@@ -69,6 +78,12 @@ private:
       RecordsType &records,
       const char *event,
       int64_t &record_count);
+
+  // ObUnitsRecordInfo
+  // @param [in] res, result read from the GV$OB_UNITS table
+  // @param [out] units_record_info, items in the GV$OB_UNITS table
+  int parse_record_from_row_(common::sqlclient::ObMySQLResult &res,
+      ObUnitsRecordInfo &units_record_info);
 
   // ObLSLogInfo
   // @param [in] res, result read from __all_virtual_log_stat table
@@ -99,6 +114,7 @@ private:
   bool is_across_cluster_;             // whether the SQL query across cluster
   int64_t cluster_id_;                 // ClusterID
   common::ObISQLClient *sql_proxy_;    // sql_proxy to use
+  logfetcher::IObLogErrHandler *err_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(ObLogSysTableQueryer);
 };

@@ -66,7 +66,7 @@ typedef struct YYLTYPE
 
 %{
 #include "pl/parser/pl_parser_mysql_mode_lex.h"
-#include "pl_parser_base.h"
+#include "pl/parser/pl_parser_base.h"
 
 typedef struct _YYLookaheadToken
 {
@@ -126,6 +126,7 @@ int obpl_mysql_wrap_node_into_subquery(ObParseCtx *_parse_ctx, ParseNode *node) 
       parse_result.charset_info_ = _parse_ctx->charset_info_;
       parse_result.is_not_utf8_connection_ = _parse_ctx->is_not_utf8_connection_;
       parse_result.connection_collation_ = _parse_ctx->connection_collation_;
+      parse_result.sql_mode_ = _parse_ctx->scanner_ctx_.sql_mode_;
       if (0 == parse_sql_stmt(&parse_result)) {
         *node = *parse_result.result_tree_->children_[0];
         node->str_value_ = subquery;
@@ -1990,7 +1991,12 @@ scalar_data_type:
   }
   | pl_obj_access_ref '%' ROWTYPE
   {
-    malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SP_ROWTYPE, 1, $1);
+    if (parse_ctx->is_for_trigger_ && parse_ctx->is_inner_parse_) {
+      malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SP_ROWTYPE, 1, $1);
+    } else {
+      obpl_mysql_yyerror(&@3, parse_ctx, "Syntax Error\n");
+      YYERROR;
+    }
   }
 ;
 
@@ -2454,6 +2460,8 @@ ParseNode *obpl_mysql_read_sql_construct(ObParseCtx *parse_ctx, const char *pref
     }
   }
   if (OB_PARSER_SUCCESS == errcode) {
+    parse_ctx->scanner_ctx_.sql_end_loc = parse_ctx->stmt_len_ <= parse_ctx->scanner_ctx_.sql_end_loc ?
+                                            parse_ctx->stmt_len_ - 1 : parse_ctx->scanner_ctx_.sql_end_loc;
     sql_str_len = parse_ctx->scanner_ctx_.sql_end_loc - parse_ctx->scanner_ctx_.sql_start_loc + 1;
   }
   if (OB_PARSER_SUCCESS == errcode && sql_str_len > 0) {
@@ -2475,6 +2483,7 @@ ParseNode *obpl_mysql_read_sql_construct(ObParseCtx *parse_ctx, const char *pref
     parse_result.charset_info_ = parse_ctx->charset_info_;
     parse_result.is_not_utf8_connection_ = parse_ctx->is_not_utf8_connection_;
     parse_result.connection_collation_ = parse_ctx->connection_collation_;
+    parse_result.sql_mode_ = parse_ctx->scanner_ctx_.sql_mode_;
   }
   if (sql_str_len <= 0) {
     //do nothing

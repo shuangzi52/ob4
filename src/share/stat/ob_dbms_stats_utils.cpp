@@ -118,6 +118,7 @@ int ObDbmsStatsUtils::check_range_skew(ObHistType hist_type,
 
 int ObDbmsStatsUtils::batch_write(share::schema::ObSchemaGetterGuard *schema_guard,
                                   const uint64_t tenant_id,
+                                  ObMySQLTransaction &trans,
                                   ObIArray<ObOptTableStat *> &table_stats,
                                   ObIArray<ObOptColumnStat*> &column_stats,
                                   const int64_t current_time,
@@ -129,6 +130,7 @@ int ObDbmsStatsUtils::batch_write(share::schema::ObSchemaGetterGuard *schema_gua
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOptStatManager::get_instance().batch_write(schema_guard,
                                                            tenant_id,
+                                                           trans,
                                                            table_stats,
                                                            column_stats,
                                                            current_time,
@@ -272,6 +274,9 @@ bool ObDbmsStatsUtils::is_no_stat_virtual_table(const int64_t table_id)
          table_id == share::OB_ALL_VIRTUAL_SESSION_EVENT_TID ||
          table_id == share::OB_ALL_VIRTUAL_PROXY_ROUTINE_TID ||
          table_id == share::OB_ALL_VIRTUAL_TX_DATA_TID ||
+         table_id == share::OB_ALL_VIRTUAL_TRANS_LOCK_STAT_TID ||
+         table_id == share::OB_ALL_VIRTUAL_TRANS_SCHEDULER_TID ||
+         table_id == share::OB_ALL_VIRTUAL_SQL_AUDIT_TID ||
          table_id == share::OB_ALL_VIRTUAL_SESSTAT_ORA_TID ||
          table_id == share::OB_TENANT_VIRTUAL_SHOW_CREATE_TABLE_ORA_TID ||
          table_id == share::OB_TENANT_VIRTUAL_SHOW_CREATE_PROCEDURE_ORA_TID ||
@@ -289,7 +294,9 @@ bool ObDbmsStatsUtils::is_no_stat_virtual_table(const int64_t table_id)
          table_id == share::OB_ALL_VIRTUAL_TRACE_SPAN_INFO_ORA_TID ||
          table_id == share::OB_ALL_VIRTUAL_LOCK_WAIT_STAT_ORA_TID ||
          table_id == share::OB_ALL_VIRTUAL_TRANS_STAT_ORA_TID ||
-         table_id == share::OB_ALL_VIRTUAL_OPT_STAT_GATHER_MONITOR_ORA_TID;
+         table_id == share::OB_ALL_VIRTUAL_OPT_STAT_GATHER_MONITOR_ORA_TID ||
+         table_id == share::OB_ALL_VIRTUAL_TRANS_LOCK_STAT_ORA_TID ||
+         table_id == share::OB_ALL_VIRTUAL_TRANS_SCHEDULER_ORA_TID;
 }
 
 bool ObDbmsStatsUtils::is_virtual_index_table(const int64_t table_id)
@@ -310,7 +317,9 @@ bool ObDbmsStatsUtils::is_virtual_index_table(const int64_t table_id)
          table_id == share::OB_ALL_VIRTUAL_SESSTAT_ORA_ALL_VIRTUAL_SESSTAT_I1_TID ||
          table_id == share::OB_ALL_VIRTUAL_SYSSTAT_ORA_ALL_VIRTUAL_SYSSTAT_I1_TID ||
          table_id == share::OB_ALL_VIRTUAL_SYSTEM_EVENT_ORA_ALL_VIRTUAL_SYSTEM_EVENT_I1_TID ||
-         table_id == share::OB_ALL_VIRTUAL_SQL_PLAN_MONITOR_ORA_ALL_VIRTUAL_SQL_PLAN_MONITOR_I1_TID;
+         table_id == share::OB_ALL_VIRTUAL_SQL_PLAN_MONITOR_ORA_ALL_VIRTUAL_SQL_PLAN_MONITOR_I1_TID ||
+         table_id == share::OB_ALL_VIRTUAL_ASH_ALL_VIRTUAL_ASH_I1_TID ||
+         table_id == share::OB_ALL_VIRTUAL_ASH_ORA_ALL_VIRTUAL_ASH_I1_TID;
 }
 
 int ObDbmsStatsUtils::parse_granularity(const ObString &granularity, ObGranularityType &granu_type)
@@ -345,35 +354,32 @@ int ObDbmsStatsUtils::parse_granularity(const ObString &granularity, ObGranulari
 int ObDbmsStatsUtils::split_batch_write(sql::ObExecContext &ctx,
                                         ObIArray<ObOptTableStat*> &table_stats,
                                         ObIArray<ObOptColumnStat*> &column_stats,
-                                        const bool is_index_stat /*default false*/,
-                                        const bool is_history_stat /*default false*/,
+                                        const bool is_index_stat/*default false*/,
+                                        const bool is_history_stat/*default false*/,
                                         const bool is_online_stat /*default false*/)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(ctx.get_my_session())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret), K(ctx.get_my_session()));
-  } else if (OB_FAIL(split_batch_write(ctx.get_virtual_table_ctx().schema_guard_,
-                                       ctx.get_my_session()->get_effective_tenant_id(),
-                                       table_stats,
-                                       column_stats,
-                                       is_index_stat,
-                                       is_history_stat,
-                                       is_online_stat,
-                                       CREATE_OBJ_PRINT_PARAM(ctx.get_my_session())))) {
+  if (OB_FAIL(split_batch_write(ctx.get_virtual_table_ctx().schema_guard_,
+                                ctx.get_my_session(),
+                                ctx.get_sql_proxy(),
+                                table_stats,
+                                column_stats,
+                                is_index_stat,
+                                is_history_stat,
+                                is_online_stat))) {
     LOG_WARN("failed to split batch write", K(ret));
-  } else {/*do nothing*/}
+  }
   return ret;
 }
 
 int ObDbmsStatsUtils::split_batch_write(share::schema::ObSchemaGetterGuard *schema_guard,
-                                        const uint64_t tenant_id,
+                                        sql::ObSQLSessionInfo *session_info,
+                                        common::ObMySQLProxy *sql_proxy,
                                         ObIArray<ObOptTableStat*> &table_stats,
                                         ObIArray<ObOptColumnStat*> &column_stats,
                                         const bool is_index_stat/*default false*/,
                                         const bool is_history_stat/*default false*/,
-                                        const bool is_online_stat /*default false*/,
-                                        const ObObjPrintParams &print_params)
+                                        const bool is_online_stat /*default false*/)
 {
   int ret = OB_SUCCESS;
   int64_t idx_tab_stat = 0;
@@ -383,6 +389,14 @@ int ObDbmsStatsUtils::split_batch_write(share::schema::ObSchemaGetterGuard *sche
   LOG_DEBUG("dbms stats write stats", K(table_stats), K(column_stats));
   const int64_t MAX_NUM_OF_WRITE_STATS = 2000;
   int64_t current_time = ObTimeUtility::current_time();
+  ObMySQLTransaction trans;
+  //begin trans before writing stats
+  if (OB_ISNULL(session_info) || OB_ISNULL(sql_proxy)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), K(session_info), K(sql_proxy));
+  } else if (OB_FAIL(trans.start(sql_proxy, session_info->get_effective_tenant_id()))) {
+    LOG_WARN("fail to start transaction", K(ret));
+  }
   while (OB_SUCC(ret) &&
         (idx_tab_stat < table_stats.count() || idx_col_stat < column_stats.count())) {
     ObSEArray<ObOptTableStat*, 4> write_table_stats;
@@ -420,16 +434,28 @@ int ObDbmsStatsUtils::split_batch_write(share::schema::ObSchemaGetterGuard *sche
     }
     if (OB_SUCC(ret)) {
       if (OB_FAIL(ObDbmsStatsUtils::batch_write(schema_guard,
-                                                tenant_id,
+                                                session_info->get_effective_tenant_id(),
+                                                trans,
                                                 write_table_stats,
                                                 write_column_stats,
                                                 current_time,
                                                 is_index_stat,
                                                 is_history_stat,
                                                 is_online_stat,
-                                                print_params))) {
+                                                CREATE_OBJ_PRINT_PARAM(session_info)))) {
         LOG_WARN("failed to batch write stats", K(ret), K(idx_tab_stat), K(idx_col_stat));
       } else {/*do nothing*/}
+    }
+  }
+  //end trans after writing stats.
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(trans.end(true))) {
+      LOG_WARN("fail to commit transaction", K(ret));
+    }
+  } else {
+    int tmp_ret = OB_SUCCESS;
+    if (OB_SUCCESS != (tmp_ret = trans.end(false))) {
+      LOG_WARN("fail to roll back transaction", K(tmp_ret));
     }
   }
   return ret;
@@ -774,6 +800,81 @@ int ObDbmsStatsUtils::get_subpart_infos(const ObTableSchema &table_schema,
     ret = (ret == OB_ITER_END ? OB_SUCCESS : ret);
   }
   return ret;
+}
+
+int ObDbmsStatsUtils::truncate_string_for_opt_stats(const ObObj *old_obj,
+                                                    ObIAllocator &alloc,
+                                                    ObObj *&new_obj)
+{
+  int ret = OB_SUCCESS;
+  bool is_truncated = false;
+  if (OB_ISNULL(old_obj)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null");
+  } else if (ObColumnStatParam::is_valid_opt_col_type(old_obj->get_type()) && old_obj->is_string_type()) {
+    ObString str;
+    if (OB_FAIL(old_obj->get_string(str))) {
+      LOG_WARN("failed to get string", K(ret), K(str));
+    } else {
+      ObObj *tmp_obj = NULL;
+      int64_t truncated_str_len = get_truncated_str_len(str, old_obj->get_collation_type());
+      if (truncated_str_len == str.length()) {
+        //do nothing
+      } else if (OB_UNLIKELY(truncated_str_len < 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(old_obj), K(str), K(truncated_str_len));
+      } else if (OB_ISNULL(tmp_obj = static_cast<ObObj*>(alloc.alloc(sizeof(ObObj))))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc buf", K(ret));
+      } else {
+        tmp_obj->set_varchar(str.ptr(), static_cast<int32_t>(truncated_str_len));
+        tmp_obj->set_meta_type(old_obj->get_meta());
+        new_obj = tmp_obj;
+        is_truncated = true;
+      }
+    }
+  }
+  if (OB_SUCC(ret) && !is_truncated) {
+    new_obj = const_cast<ObObj *>(old_obj);
+  }
+  LOG_TRACE("Succeed to truncate string obj for opt stats", KPC(old_obj), KPC(new_obj), K(is_truncated));
+  return ret;
+}
+
+
+int ObDbmsStatsUtils::shadow_truncate_string_for_opt_stats(ObObj &obj)
+{
+  int ret = OB_SUCCESS;
+  if (ObColumnStatParam::is_valid_opt_col_type(obj.get_type()) && obj.is_string_type()) {
+    ObString str;
+    if (OB_FAIL(obj.get_string(str))) {
+      LOG_WARN("failed to get string", K(ret), K(str), K(obj));
+    } else {
+      int64_t truncated_str_len = get_truncated_str_len(str, obj.get_collation_type());
+      if (OB_UNLIKELY(truncated_str_len < 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(obj), K(str), K(truncated_str_len));
+      } else {
+        str.assign_ptr(str.ptr(), static_cast<int32_t>(truncated_str_len));
+        obj.set_common_value(str);
+        LOG_TRACE("Succeed to shadow truncate string obj for opt stats", K(obj));
+      }
+    }
+  }
+  return ret;
+}
+
+int64_t ObDbmsStatsUtils::get_truncated_str_len(const ObString &str, const ObCollationType cs_type)
+{
+  int64_t truncated_str_len = 0;
+  int64_t mb_len = ObCharset::strlen_char(cs_type, str.ptr(), str.length());
+  if (mb_len <= OPT_STATS_MAX_VALUE_CHAR_LEN) {//keep origin str
+    truncated_str_len = str.length();
+  } else {//get max truncate str len
+    truncated_str_len = ObCharset::charpos(cs_type, str.ptr(), str.length(), OPT_STATS_MAX_VALUE_CHAR_LEN);
+  }
+  LOG_TRACE("Succeed to get truncated str len", K(str), K(cs_type), K(truncated_str_len));
+  return truncated_str_len;
 }
 
 }

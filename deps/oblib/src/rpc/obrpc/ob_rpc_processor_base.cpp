@@ -29,6 +29,7 @@
 #include "rpc/obrpc/ob_irpc_extra_payload.h"
 #include "rpc/obrpc/ob_rpc_processor_base.h"
 #include "rpc/obrpc/ob_rpc_net_handler.h"
+#include "rpc/obrpc/ob_poc_rpc_server.h"
 
 using namespace oceanbase::common;
 
@@ -293,6 +294,10 @@ int ObRpcProcessorBase::do_response(const Response &rsp)
         // The cluster_id of the response must be the src_cluster_id of the request
         packet->set_dst_cluster_id(rpc_pkt_->get_src_cluster_id());
 
+#ifdef ERRSIM
+        packet->set_module_type(THIS_WORKER.get_module_type());
+#endif
+
         packet->set_request_arrival_time(req_->get_request_arrival_time());
         packet->set_arrival_push_diff(req_->get_arrival_push_diff());
         packet->set_push_pop_diff(req_->get_push_pop_diff());
@@ -415,9 +420,9 @@ int ObRpcProcessorBase::part_response(const int retcode, bool is_last)
     char *tmp_buf = NULL;
     if (OB_FAIL(ret)) {
       //do nothing
-    } else if (content_size + max_overflow_size > common::OB_MAX_PACKET_LENGTH) {
+    } else if (content_size + max_overflow_size > get_max_rpc_packet_size()) {
       ret = common::OB_RPC_PACKET_TOO_LONG;
-      RPC_OBRPC_LOG(WARN, "response content size bigger than OB_MAX_PACKET_LENGTH", K(ret));
+      RPC_OBRPC_LOG(ERROR, "response content size bigger than max_rpc_packet_size", K(ret), "limit", get_max_rpc_packet_size());
     } else {
       /*
        *                   RPC response packet buffer format
@@ -488,7 +493,11 @@ int ObRpcProcessorBase::part_response(const int retcode, bool is_last)
         RPC_OBRPC_LOG(WARN, "response data fail", K(ret));
       }
     } else {
-      RPC_REQ_OP.response_result(req_, NULL);
+      int response_retcode = retcode != OB_SUCCESS ? retcode : ret;
+      if (part_response_error(req_, response_retcode) != OB_SUCCESS) {
+        RPC_REQ_OP.response_result(req_, NULL);
+        RPC_OBRPC_LOG(ERROR, "response rpc result failed", K(ret));
+      }
       req_ = NULL;
     }
 
@@ -501,6 +510,31 @@ int ObRpcProcessorBase::part_response(const int retcode, bool is_last)
   return ret;
 }
 
+int ObRpcProcessorBase::part_response_error(rpc::ObRequest* req, const int retcode)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sessid = sc_ ? sc_->sessid() : 0;
+  bool is_last = true;
+  ObRpcResultCode rcode;
+  char tbuf[sizeof(rcode)];
+  rcode.rcode_ = retcode;
+  LOG_INFO("execute part_response_error", K(retcode));
+  int64_t pos = 0;
+  if (req->get_nio_protocol() != rpc::ObRequest::TRANSPORT_PROTO_POC) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_INFO("part_response_error is only supported in pkt-nio farmework", K(req->get_nio_protocol()));
+  } else if (OB_FAIL(rcode.serialize(tbuf, sizeof(tbuf), pos))) {
+    RPC_OBRPC_LOG(WARN, "serialize result code fail", K(ret));
+  } else {
+    ObRpcPacket pkt;
+    pkt.set_content(tbuf, pos);
+    Response err_rsp(sessid, is_stream_, is_last, bad_routing_, &pkt);
+    if (OB_FAIL(do_response(err_rsp))) {
+      RPC_OBRPC_LOG(WARN, "response data fail", K(ret));
+    }
+  }
+  return ret;
+}
 int ObRpcProcessorBase::flush(int64_t wait_timeout)
 {
   int ret = OB_SUCCESS;
@@ -542,10 +576,12 @@ int ObRpcProcessorBase::flush(int64_t wait_timeout)
     reuse();
     set_ob_request(*req);
     if (!rpc_pkt_) {
-      RPC_REQ_OP.response_result(req, NULL);
+      ret = OB_ERR_UNEXPECTED;
+      if (part_response_error(req, ret) != OB_SUCCESS) {
+        RPC_REQ_OP.response_result(req, NULL);
+      }
       req_ = NULL;
       is_stream_end_ = true;
-      ret = OB_ERR_UNEXPECTED;
       RPC_OBRPC_LOG(ERROR, "rpc packet is NULL in stream", K(ret));
     } else if (rpc_pkt_->is_stream_last()) {
       ret = OB_ITER_END;

@@ -402,12 +402,20 @@ int TriggerHandle::calc_trigger_routine(
   ObArray<int64_t> path;
   ObArray<int64_t> nocopy_params;
   trigger_id = ObTriggerInfo::get_trigger_spec_package_id(trigger_id);
+  bool old_flag = false;
+  CK (OB_NOT_NULL(exec_ctx.get_my_session()));
+  OX (old_flag = exec_ctx.get_my_session()->is_for_trigger_package());
+  OX (exec_ctx.get_my_session()->set_for_trigger_package(true));
   OV (OB_NOT_NULL(exec_ctx.get_pl_engine()));
   OZ (exec_ctx.get_pl_engine()->execute(
     exec_ctx, exec_ctx.get_allocator(), trigger_id, routine_id, path, params, nocopy_params, result),
       trigger_id, routine_id, params);
   CK (OB_NOT_NULL(exec_ctx.get_my_session()));
   OZ (exec_ctx.get_my_session()->reset_all_package_state_by_dbms_session(true));
+  if (exec_ctx.get_my_session()->is_for_trigger_package()) {
+    // whether `ret == OB_SUCCESS`, need to restore flag
+    exec_ctx.get_my_session()->set_for_trigger_package(old_flag);
+  }
   return ret;
 }
 
@@ -780,6 +788,19 @@ int TriggerHandle::destroy_compound_trigger_state(ObExecContext &exec_ctx, const
     }
   }
   return ret;
+}
+
+int64_t TriggerHandle::get_routine_param_count(const uint64_t routine_id)
+{
+  int64_t count = OB_INVALID_COUNT;
+  if (lib::is_oracle_mode()
+      && (ROUTINE_IDX_BEFORE_STMT == routine_id
+          || ROUTINE_IDX_AFTER_STMT == routine_id)) {
+    count = STMT_POINT_PARAM_COUNT;
+  } else {
+    count = ROW_POINT_PARAM_COUNT;
+  }
+  return count;
 }
 
 }  // namespace sql

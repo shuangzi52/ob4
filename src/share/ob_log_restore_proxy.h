@@ -24,6 +24,7 @@
 #include "lib/mysqlclient/ob_mysql_connection_pool.h"
 #include "share/ob_ls_id.h"
 #include "share/ob_tenant_role.h"
+#include "share/ob_root_addr_agent.h"//ObRootAddr
 #include "share/schema/ob_schema_struct.h"
 #include "logservice/palf/palf_options.h"
 #include <cstdint>
@@ -50,7 +51,13 @@ public:
   int end_refresh() override;
 
 private:
+  typedef common::SpinRWLock RWLock;
+  typedef common::SpinRLockGuard  RLockGuard;
+  typedef common::SpinWLockGuard  WLockGuard;
+
+private:
   common::ObArray<common::ObAddr> server_list_;
+  mutable RWLock lock_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLogRestoreMySQLProvider);
@@ -133,15 +140,21 @@ public:
   int get_compatibility_mode(const uint64_t tenant_id, ObCompatibilityMode &compat_mode);
   // get log restore source tenant access point
   int get_server_ip_list(const uint64_t tenant_id, common::ObArray<common::ObAddr> &addrs);
+  //get tenant server ip and prot
+  //param[in] tenant_id : primary tenant_id
+  int get_server_addr(const uint64_t tenant_id, common::ObIArray<common::ObAddr> &addrs);
   int check_begin_lsn(const uint64_t tenant_id);
   // get log restore source tenant info, includes tenant role and tennat status
   int get_tenant_info(ObTenantRole &role, schema::ObTenantStatus &status);
   // get the access_mode and max_scn of the specific LS in log restore source tenant
   int get_max_log_info(const ObLSID &id, palf::AccessMode &mode, SCN &scn);
+  // get ls from dba_ob_ls
+  int is_ls_existing(const ObLSID &id);
 private:
   bool is_user_changed_(const char *user_name, const char *user_password, const char *db_name);
   void destroy_tg_();
 private:
+  int construct_server_ip_list(const common::ObSqlString &sql, common::ObIArray<common::ObAddr> &addrs);
   bool inited_;
   uint64_t tenant_id_;
   int tg_id_;

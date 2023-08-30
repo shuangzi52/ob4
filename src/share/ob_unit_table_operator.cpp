@@ -17,6 +17,7 @@
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "share/ob_dml_sql_splicer.h"
 #include "share/config/ob_server_config.h"
+#include "share/ob_unit_getter.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
 #include "common/ob_timeout_ctx.h"
@@ -30,8 +31,7 @@ namespace share
 {
 ObUnitTableOperator::ObUnitTableOperator()
   : inited_(false),
-    proxy_(NULL),
-    config_(NULL)
+    proxy_(NULL)
 {
 }
 
@@ -39,7 +39,7 @@ ObUnitTableOperator::~ObUnitTableOperator()
 {
 }
 
-int ObUnitTableOperator::init(common::ObMySQLProxy &proxy, common::ObServerConfig *config)
+int ObUnitTableOperator::init(common::ObMySQLProxy &proxy)
 {
   int ret = OB_SUCCESS;
   if (inited_) {
@@ -47,7 +47,6 @@ int ObUnitTableOperator::init(common::ObMySQLProxy &proxy, common::ObServerConfi
     LOG_WARN("init twice", K(ret));
   } else {
     proxy_ = &proxy;
-    config_ = config;
     inited_ = true;
   }
   return ret;
@@ -695,6 +694,43 @@ int ObUnitTableOperator::get_units_by_resource_pools(
   return ret;
 }
 
+int ObUnitTableOperator::get_unit_groups_by_tenant(const uint64_t tenant_id,
+                          common::ObIArray<ObSimpleUnitGroup> &unit_groups) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else {
+    ObSqlString sql;
+    ObTimeoutCtx ctx;
+    if (OB_FAIL(rootserver::ObRootUtils::get_rs_default_timeout_ctx(ctx))) {
+      LOG_WARN("fail to get timeout ctx", KR(ret), K(ctx));
+    } else if (OB_FAIL(sql.append_fmt("SELECT distinct unit_group_id, status from "
+                   "%s where resource_pool_id in "
+                   "(select resource_pool_id from %s where tenant_id = %lu) order by unit_group_id ",
+                   OB_ALL_UNIT_TNAME, OB_ALL_RESOURCE_POOL_TNAME, tenant_id))) {
+      LOG_WARN("append_fmt failed", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(read_unit_groups(sql, unit_groups))) {
+      LOG_WARN("failed to read unit group", KR(ret), K(sql));
+    } else {
+      uint64_t last_unit_group_id = OB_INVALID_ID;
+      for (int64_t i = 0; OB_SUCC(ret) && i < unit_groups.count(); ++i) {
+        const uint64_t current_id = unit_groups.at(i).get_unit_group_id();
+        if (OB_INVALID_ID == last_unit_group_id || last_unit_group_id != current_id) {
+          last_unit_group_id = current_id;
+        } else if (last_unit_group_id == current_id) {
+          //one ls group can not has different status
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("has unit group with different status", KR(ret), K(last_unit_group_id),
+                   K(current_id), K(unit_groups));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObUnitTableOperator::get_units_by_tenant(const uint64_t tenant_id,
     common::ObIArray<ObUnit> &units) const
 {
@@ -713,6 +749,37 @@ int ObUnitTableOperator::get_units_by_tenant(const uint64_t tenant_id,
       LOG_WARN("append_fmt failed", KR(ret), K(tenant_id));
     } else if (OB_FAIL(read_units(sql, units))) {
       LOG_WARN("read_units failed", KR(ret), K(sql));
+    }
+  }
+  return ret;
+}
+
+int ObUnitTableOperator::get_unit_stats(common::ObIArray<ObUnitStat> &unit_stats) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else {
+    ObSqlString sql;
+    ObTimeoutCtx ctx;
+    const char * normal_status_str = ObUnitInfoGetter::get_unit_status_str(ObUnitInfoGetter::ObUnitStatus::UNIT_NORMAL);
+    const char * migrate_in_status_str = ObUnitInfoGetter::get_unit_status_str(ObUnitInfoGetter::ObUnitStatus::UNIT_MIGRATE_IN);
+    const char * migrate_out_status_str = ObUnitInfoGetter::get_unit_status_str(ObUnitInfoGetter::ObUnitStatus::UNIT_MIGRATE_OUT);
+    if (OB_FAIL(rootserver::ObRootUtils::get_rs_default_timeout_ctx(ctx))) {
+      LOG_WARN("fail to get timeout ctx", KR(ret), K(ctx));
+    } else if (OB_FAIL(sql.append_fmt("SELECT unit_id, "
+             "cast(sum(data_disk_in_use) as signed) required_size, "
+             "status in ('%s', '%s') is_migrating "
+             "from %s where status in ('%s', '%s', '%s') group by unit_id",
+             migrate_in_status_str, migrate_out_status_str,
+             OB_ALL_VIRTUAL_UNIT_TNAME,
+             normal_status_str, migrate_in_status_str, migrate_out_status_str)))
+      // only count unit in NORMAL or MIGRATE IN or MIGRATE OUT status on servers
+    {
+      LOG_WARN("append_fmt failed", KR(ret));
+    } else if (OB_FAIL(read_unit_stats(sql, unit_stats))) {
+      LOG_WARN("read_unit_stats failed", KR(ret), K(sql));
     }
   }
   return ret;
@@ -768,6 +835,28 @@ int ObUnitTableOperator::str2zone_list(const char *str,
   return ret;
 }
 
+int ObUnitTableOperator::read_unit_group(const ObMySQLResult &result, ObSimpleUnitGroup &unit_group) const
+{
+  int ret = OB_SUCCESS;
+  unit_group.reset();
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else {
+    ObString status_str;
+    uint64_t unit_group_id = OB_INVALID_ID;
+    EXTRACT_INT_FIELD_MYSQL(result, "unit_group_id", unit_group_id, uint64_t);
+    EXTRACT_VARCHAR_FIELD_MYSQL(result, "status", status_str);
+    if (OB_FAIL(ret)) {
+      LOG_WARN("failed to get cell", KR(ret), K(unit_group_id), K(status_str));
+    } else {
+      ObUnit::Status status = ObUnit::str_to_unit_status(status_str);
+      unit_group = ObSimpleUnitGroup(unit_group_id, status);
+    }
+  }
+  return ret;
+}
+
 int ObUnitTableOperator::read_unit(const ObMySQLResult &result, ObUnit &unit) const
 {
   int ret = OB_SUCCESS;
@@ -798,14 +887,7 @@ int ObUnitTableOperator::read_unit(const ObMySQLResult &result, ObUnit &unit) co
     unit.server_.set_ip_addr(ip, static_cast<int32_t>(port));
     unit.migrate_from_server_.set_ip_addr(
         migrate_from_svr_ip, static_cast<int32_t>(migrate_from_svr_port));
-    if (0 == STRCMP(status, ObUnit::unit_status_strings[ObUnit::UNIT_STATUS_ACTIVE])) {
-      unit.status_ = ObUnit::UNIT_STATUS_ACTIVE;
-    } else if (0 == STRCMP(status, ObUnit::unit_status_strings[ObUnit::UNIT_STATUS_DELETING])) {
-      unit.status_ = ObUnit::UNIT_STATUS_DELETING;
-    } else {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid unit status", K(ret));
-    }
+    unit.status_ = ObUnit::str_to_unit_status(status);
   }
   return ret;
 }
@@ -893,6 +975,27 @@ int ObUnitTableOperator::read_unit_config(const ObMySQLResult &result,
   return ret;
 }
 
+int ObUnitTableOperator::read_unit_stat(const ObMySQLResult &result, ObUnitStat &unit_stat) const
+{
+  int ret = OB_SUCCESS;
+  unit_stat.reset();
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else {
+    uint64_t unit_id = OB_INVALID_ID;
+    int64_t required_size = 0;
+    bool is_migrating = false;
+    EXTRACT_INT_FIELD_MYSQL(result, "unit_id", unit_id, uint64_t);
+    EXTRACT_INT_FIELD_MYSQL(result, "required_size", required_size, int64_t);
+    EXTRACT_BOOL_FIELD_MYSQL(result, "is_migrating", is_migrating);
+    if (FAILEDx(unit_stat.init(unit_id, required_size, is_migrating))) {
+      LOG_WARN("failed to init unit_stat", KR(ret), K(unit_id));
+    }
+  }
+  return ret;
+}
+
 #define READ_ITEMS(Item, item) \
   do { \
     if (OB_ISNULL(proxy_)) { \
@@ -956,6 +1059,37 @@ int ObUnitTableOperator::read_units(ObSqlString &sql,
     LOG_WARN("invalid sql", K(sql), K(ret));
   } else {
     READ_ITEMS(ObUnit, unit);
+  }
+  return ret;
+}
+
+int ObUnitTableOperator::read_unit_groups(ObSqlString &sql,
+                                    ObIArray<ObSimpleUnitGroup> &unit_groups) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (OB_UNLIKELY(sql.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid sql", K(sql), KR(ret));
+  } else {
+    READ_ITEMS(ObSimpleUnitGroup, unit_group);
+  }
+  return ret;
+}
+
+int ObUnitTableOperator::read_unit_stats(ObSqlString &sql, ObIArray<ObUnitStat> &unit_stats) const
+{
+  int ret = OB_SUCCESS;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (sql.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid sql", K(sql), K(ret));
+  } else {
+    READ_ITEMS(ObUnitStat, unit_stat);
   }
   return ret;
 }

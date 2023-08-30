@@ -96,27 +96,27 @@ TEST_F(TestBlockManager, test_inc_and_dec_ref_cnt)
   ASSERT_TRUE(macro_id.is_valid());
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(1, block_info.mem_ref_cnt_);
+  ASSERT_EQ(1, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   ret = OB_SERVER_BLOCK_MGR.inc_ref(macro_id);
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(2, block_info.mem_ref_cnt_);
+  ASSERT_EQ(2, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   ret = OB_SERVER_BLOCK_MGR.dec_ref(macro_id);
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(1, block_info.mem_ref_cnt_);
+  ASSERT_EQ(1, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   macro_handle.reset();
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(0, block_info.mem_ref_cnt_);
+  ASSERT_EQ(0, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 }
 
@@ -155,7 +155,7 @@ TEST_F(TestBlockManager, test_mark_and_sweep)
     ASSERT_TRUE(macro_id.is_valid());
     ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
     ASSERT_EQ(OB_SUCCESS, ret);
-    ASSERT_EQ(1, block_info.mem_ref_cnt_);
+    ASSERT_EQ(1, block_info.ref_cnt_);
     ASSERT_TRUE(block_info.access_time_ > 0);
   }
 
@@ -165,22 +165,22 @@ TEST_F(TestBlockManager, test_mark_and_sweep)
   ret = mark_info.init(ObModIds::OB_STORAGE_FILE_BLOCK_REF, OB_SERVER_TENANT_ID);
   ASSERT_EQ(OB_SUCCESS, ret);
 
-  common::hash::ObHashSet<MacroBlockId> macro_id_set;
+  common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> macro_id_set;
   ret = macro_id_set.create(MAX(2, OB_SERVER_BLOCK_MGR.block_map_.count()));
   ASSERT_EQ(OB_SUCCESS, ret);
   int64_t safe_ts = ObTimeUtility::current_time();
-  int64_t disk_blk_cnt = 0;
   int64_t hold_cnt = 0;
-  ObBlockManager::GetPendingFreeBlockFunctor functor(mark_info, disk_blk_cnt, hold_cnt);
+  ObBlockManager::GetPendingFreeBlockFunctor functor(mark_info, hold_cnt);
   ret = OB_SERVER_BLOCK_MGR.block_map_.for_each(functor);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(blk_cnt - 1, mark_info.count());
 
-  ret = OB_SERVER_BLOCK_MGR.mark_server_meta_blocks(mark_info, macro_id_set);
+  ObMacroBlockMarkerStatus tmp_status;
+  ret = OB_SERVER_BLOCK_MGR.mark_server_meta_blocks(mark_info, macro_id_set, tmp_status);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(blk_cnt - 1, mark_info.count());
 
-  ret = OB_SERVER_BLOCK_MGR.mark_tmp_file_blocks(mark_info, macro_id_set);
+  ret = OB_SERVER_BLOCK_MGR.mark_tmp_file_blocks(mark_info, macro_id_set, tmp_status);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(blk_cnt - 1, mark_info.count());
 
@@ -213,32 +213,25 @@ TEST_F(TestBlockManager, test_ref_cnt_wash_and_load)
 
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(2, block_info.mem_ref_cnt_);
-  ASSERT_EQ(0, block_info.disk_ref_cnt_);
+  ASSERT_EQ(2, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   // test wash block
-  ret = OB_SERVER_BLOCK_MGR.inc_disk_ref(macro_id);
-  ASSERT_EQ(OB_SUCCESS, ret);
   ret = OB_SERVER_BLOCK_MGR.dec_ref(macro_id);
   ASSERT_EQ(OB_SUCCESS, ret);
 
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(1, block_info.mem_ref_cnt_);
-  ASSERT_EQ(1, block_info.disk_ref_cnt_);
+  ASSERT_EQ(1, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   // test load block
   ret = OB_SERVER_BLOCK_MGR.inc_ref(macro_id);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ret = OB_SERVER_BLOCK_MGR.dec_disk_ref(macro_id);
-  ASSERT_EQ(OB_SUCCESS, ret);
 
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(2, block_info.mem_ref_cnt_);
-  ASSERT_EQ(0, block_info.disk_ref_cnt_);
+  ASSERT_EQ(2, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   ret = OB_SERVER_BLOCK_MGR.dec_ref(macro_id);
@@ -246,15 +239,14 @@ TEST_F(TestBlockManager, test_ref_cnt_wash_and_load)
 
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(1, block_info.mem_ref_cnt_);
-  ASSERT_EQ(0, block_info.disk_ref_cnt_);
+  ASSERT_EQ(1, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 
   macro_handle.reset();
 
   ret = OB_SERVER_BLOCK_MGR.block_map_.get(macro_id, block_info);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(0, block_info.mem_ref_cnt_);
+  ASSERT_EQ(0, block_info.ref_cnt_);
   ASSERT_TRUE(block_info.access_time_ > 0);
 }
 

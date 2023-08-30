@@ -183,10 +183,11 @@ struct ObDMLBaseParam
         dml_allocator_(nullptr),
         encrypt_meta_(NULL),
         encrypt_meta_legacy_(),
-        spec_seq_no_(-1),
+        spec_seq_no_(),
         snapshot_(),
         direct_insert_task_id_(0),
-        write_flag_()
+        write_flag_(),
+        check_schema_version_(true)
   {
   }
 
@@ -211,12 +212,13 @@ struct ObDMLBaseParam
   common::ObSEArray<transaction::ObEncryptMetaCache, 1> encrypt_meta_legacy_;
 
   // specified seq_no
-  int64_t spec_seq_no_;
+  transaction::ObTxSEQ spec_seq_no_;
   // transaction snapshot
   transaction::ObTxReadSnapshot snapshot_;
   int64_t direct_insert_task_id_; // 0 means no direct insert
   // write flag for inner write processing
   concurrent_control::ObWriteFlag write_flag_;
+  bool check_schema_version_;
   bool is_valid() const { return (timeout_ > 0 && schema_version_ >= 0); }
   bool is_direct_insert() const { return (direct_insert_task_id_ > 0); }
   DECLARE_TO_STRING;

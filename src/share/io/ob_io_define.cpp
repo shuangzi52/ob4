@@ -57,6 +57,76 @@ ObIOMode oceanbase::common::get_io_mode_enum(const char *mode_string)
   return mode;
 }
 
+const char *oceanbase::common::get_io_sys_group_name(ObIOModule module)
+{
+  const char *ret_name = "UNKNOWN";
+  switch (module) {
+    case ObIOModule::SLOG_IO:
+      ret_name = "SLOG_IO";
+      break;
+    case ObIOModule::CALIBRATION_IO:
+      ret_name = "CALIBRATION_IO";
+      break;
+    case ObIOModule::DETECT_IO:
+      ret_name = "DETECT_IO";
+      break;
+    case ObIOModule::DIRECT_LOAD_IO:
+      ret_name = "DIRECT_LOAD_IO";
+      break;
+    case ObIOModule::SHARED_BLOCK_RW_IO:
+      ret_name = "SHARED_BLOCK_ReaderWriter_IO";
+      break;
+    case ObIOModule::SSTABLE_WHOLE_SCANNER_IO:
+      ret_name = "SSTABLE_WHOLE_SCANNER_IO";
+      break;
+    case ObIOModule::INSPECT_BAD_BLOCK_IO:
+      ret_name = "INSPECT_BAD_BLOCK_IO";
+      break;
+    case ObIOModule::SSTABLE_INDEX_BUILDER_IO:
+      ret_name = "SSTABLE_INDEX_BUILDER_IO";
+      break;
+    case ObIOModule::BACKUP_READER_IO:
+      ret_name = "BACKUP_READER_IO";
+      break;
+    case ObIOModule::BLOOM_FILTER_IO:
+      ret_name = "BLOOM_FILTER_IO";
+      break;
+    case ObIOModule::SHARED_MACRO_BLOCK_MGR_IO:
+      ret_name = "SHARED_MACRO_BLOCK_MGR_IO";
+      break;
+    case ObIOModule::INDEX_BLOCK_TREE_CURSOR_IO:
+      ret_name = "INDEX_BLOCK_TREE_CURSOR_IO";
+      break;
+    case ObIOModule::MICRO_BLOCK_CACHE_IO:
+      ret_name = "MICRO_BLOCK_CACHE_IO";
+      break;
+    case ObIOModule::ROOT_BLOCK_IO:
+      ret_name = "ROOT_BLOCK_IO";
+      break;
+    case ObIOModule::TMP_PAGE_CACHE_IO:
+      ret_name = "TMP_PAGE_CACHE_IO";
+      break;
+    case ObIOModule::INDEX_BLOCK_MICRO_ITER_IO:
+      ret_name = "INDEX_BLOCK_MICRO_ITER_IO";
+      break;
+    case ObIOModule::HA_COPY_MACRO_BLOCK_IO:
+      ret_name = "HA_COPY_MACRO_BLOCK_IO";
+      break;
+    case ObIOModule::LINKED_MACRO_BLOCK_IO:
+      ret_name = "LINKED_MACRO_BLOCK_IO";
+      break;
+    case ObIOModule::HA_MACRO_BLOCK_WRITER_IO:
+      ret_name = "HA_MACRO_BLOCK_WRITER_IO";
+      break;
+    case ObIOModule::TMP_TENANT_MEM_BLOCK_IO:
+      ret_name = "TMP_TENANT_MEM_BLOCK_IO";
+      break;
+    default:
+      break;
+  }
+  return ret_name;
+}
+
 /******************             IOFlag              **********************/
 ObIOFlag::ObIOFlag()
   : flag_(0)
@@ -91,6 +161,11 @@ ObIOMode ObIOFlag::get_mode() const
   return static_cast<ObIOMode>(mode_);
 }
 
+void ObIOFlag::set_group_id(ObIOModule module)
+{
+  group_id_ = THIS_WORKER.get_group_id() != 0 ? THIS_WORKER.get_group_id() : static_cast<int64_t>(module);
+}
+
 void ObIOFlag::set_group_id(int64_t group_id)
 {
   group_id_ = group_id;
@@ -104,6 +179,11 @@ void ObIOFlag::set_wait_event(int64_t wait_event_id)
 int64_t ObIOFlag::get_group_id() const
 {
   return group_id_;
+}
+
+ObIOModule ObIOFlag::get_io_module() const
+{
+  return static_cast<ObIOModule>(group_id_);
 }
 
 int64_t ObIOFlag::get_wait_event() const
@@ -156,6 +236,11 @@ void ObIOFlag::set_detect(const bool is_detect)
   is_detect_ = is_detect;
 }
 
+void ObIOFlag::set_time_detect(const bool is_time_detect)
+{
+  is_time_detect_ = is_time_detect;
+}
+
 bool ObIOFlag::is_unlimited() const
 {
   return is_unlimited_;
@@ -164,6 +249,11 @@ bool ObIOFlag::is_unlimited() const
 bool ObIOFlag::is_detect() const
 {
   return is_detect_;
+}
+
+bool ObIOFlag::is_time_detect() const
+{
+  return is_time_detect_;
 }
 
 /******************             IOCallback              **********************/
@@ -178,10 +268,10 @@ ObIOCallback::~ObIOCallback()
 
 }
 
-int ObIOCallback::process(const bool is_success)
+int ObIOCallback::process(const char *data_buffer, const int64_t size)
 {
   lib::set_compat_mode(compat_mode_);
-  return inner_process(is_success);
+  return inner_process(data_buffer, size);
 }
 
 int ObIOCallback::deep_copy(char *buf, const int64_t buf_len, ObIOCallback *&copied_callback) const
@@ -392,10 +482,7 @@ void ObIORequest::destroy()
     control_block_ = nullptr;
   }
   io_info_.reset();
-  if (nullptr != raw_buf_ && nullptr != tenant_io_mgr_.get_ptr()) {
-    tenant_io_mgr_.get_ptr()->io_allocator_.free(raw_buf_);
-    raw_buf_ = nullptr;
-  }
+  free_io_buffer();
   io_buf_ = nullptr;
   io_offset_ = 0;
   io_size_ = 0;
@@ -438,8 +525,8 @@ int64_t ObIORequest::get_group_id() const
 uint64_t ObIORequest::get_io_usage_index()
 {
   uint64_t index = 0;
-  if (get_group_id() < GROUP_START_ID) {
-    //other group , do nothing
+  if (!is_user_group(get_group_id())) {
+    //other group or sys group , do nothing
   } else {
     index = tenant_io_mgr_.get_ptr()->get_usage_index(get_group_id());
   }
@@ -455,8 +542,22 @@ const char *ObIORequest::get_data()
     buf = io_buf_;
   } else {
     // re-calculate with const parameters, in case of partial return change aligned_buf and so on.
+
+    //todo QILU: buf = get_user_data_buf()，完成no_callback memcpy改造后替换
+    buf = get_io_data_buf();
+  }
+  return buf;
+}
+
+const char *ObIORequest::get_io_data_buf()
+{
+  char *buf = nullptr;
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(nullptr == raw_buf_)) {
+    LOG_ERROR("raw buf is null, maybe has been recycle");
+  } else {
     const int64_t aligned_offset = lower_align(io_info_.offset_, DIO_READ_ALIGN_SIZE);
-    const char *aligned_buf = reinterpret_cast<const char *>(upper_align(reinterpret_cast<int64_t>(raw_buf_), DIO_READ_ALIGN_SIZE));
+    char *aligned_buf = reinterpret_cast<char *>(upper_align(reinterpret_cast<int64_t>(raw_buf_), DIO_READ_ALIGN_SIZE));
     buf = aligned_buf + io_info_.offset_ - aligned_offset;
   }
   return buf;
@@ -499,20 +600,17 @@ int ObIORequest::alloc_aligned_io_buf()
       && OB_UNLIKELY(!is_io_aligned(io_info_.offset_) || !is_io_aligned(io_info_.size_))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("write io info not aligned", K(ret), K(io_info_));
-  } else if (nullptr == copied_callback_) {
+  } else {
     align_offset_size(io_info_.offset_, io_info_.size_, io_offset_, io_size_);
+    const int64_t io_buffer_size = io_size_ + DIO_READ_ALIGN_SIZE;
     if (OB_ISNULL(tenant_io_mgr_.get_ptr())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tenant io manager is null", K(ret));
-    } else if (OB_ISNULL(raw_buf_ = tenant_io_mgr_.get_ptr()->io_allocator_.alloc(io_size_ + DIO_READ_ALIGN_SIZE))) {
+    } else if (OB_ISNULL(raw_buf_ = tenant_io_mgr_.get_ptr()->io_allocator_.alloc(io_buffer_size))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate memory failed", K(ret), K(io_size_));
     } else {
       io_buf_ = reinterpret_cast<char *>(upper_align(reinterpret_cast<int64_t>(raw_buf_), DIO_READ_ALIGN_SIZE));
-    }
-  } else {
-    if (OB_FAIL(copied_callback_->alloc_io_buf(io_buf_, io_size_, io_offset_))) {
-      LOG_WARN("callback allocate memory failed", K(ret), K(io_info_));
     }
   }
   if (OB_SUCC(ret)) {
@@ -536,9 +634,11 @@ int ObIORequest::prepare()
 {
   int ret = OB_SUCCESS;
   ObTimeGuard tg("prepare", 100000); //100ms
-  if (OB_ISNULL(control_block_)
-      && (OB_ISNULL(io_info_.fd_.device_handle_) || OB_ISNULL(control_block_ = io_info_.fd_.device_handle_->alloc_iocb()))) {
+  if (OB_ISNULL(io_info_.fd_.device_handle_)) {
     ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("device handle is null", K(ret), K(*this));
+  } else if (OB_ISNULL(control_block_) && OB_ISNULL(control_block_ = io_info_.fd_.device_handle_->alloc_iocb())) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("alloc io control block failed", K(ret), K(*this));
   } else if (FALSE_IT(tg.click("alloc_iocb"))) {
   } else if (OB_ISNULL(io_buf_) && OB_FAIL(alloc_io_buf())) {
@@ -581,6 +681,14 @@ bool ObIORequest::can_callback() const
   return nullptr != copied_callback_ && nullptr != io_buf_;
 }
 
+void ObIORequest::free_io_buffer()
+{
+  if (nullptr != raw_buf_ && nullptr != tenant_io_mgr_.get_ptr()) {
+    tenant_io_mgr_.get_ptr()->io_allocator_.free(raw_buf_);
+    raw_buf_ = nullptr;
+  }
+}
+
 void ObIORequest::cancel()
 {
   int ret = OB_SUCCESS;
@@ -614,7 +722,11 @@ void ObIORequest::finish(const ObIORetCode &ret_code)
       ret_code_ = ret_code;
       is_finished_ = true;
       if (OB_NOT_NULL(tenant_io_mgr_.get_ptr())) {
-        tenant_io_mgr_.get_ptr()->io_usage_.accumulate(*this);
+        if (get_group_id() > USER_RESOURCE_GROUP_END_ID) {
+          tenant_io_mgr_.get_ptr()->io_backup_usage_.accumulate(*this);
+        } else {
+          tenant_io_mgr_.get_ptr()->io_usage_.accumulate(*this);
+        }
         tenant_io_mgr_.get_ptr()->io_usage_.record_request_finish(*this);
       }
       if (OB_UNLIKELY(OB_SUCCESS != ret_code_.io_ret_)) {
@@ -859,7 +971,7 @@ int ObIOHandle::wait(const int64_t timeout_ms)
       LOG_WARN("IO error, ", K(ret), K(*req_));
     }
   } else if (OB_TIMEOUT == ret) {
-    LOG_WARN("IO wait timeout, ", K(timeout_ms), K(ret), K(*req_));
+    LOG_WARN("IO wait timeout", K(timeout_ms), K(ret), K(*req_));
   }
   estimate();
 
@@ -1173,7 +1285,7 @@ int ObTenantIOConfig::parse_group_config(const char *config_str)
 int ObTenantIOConfig::add_single_group_config(const uint64_t tenant_id, const int64_t group_id, int64_t min_percent, int64_t max_percent, int64_t weight_percent)
 {
   int ret = OB_SUCCESS;
-  if (group_id < GROUP_START_ID || !is_valid_tenant_id(tenant_id) ||
+  if (OB_UNLIKELY(!is_user_group(group_id)) || !is_valid_tenant_id(tenant_id) ||
       min_percent < 0 || min_percent > 100 ||
       max_percent < 0 || max_percent > 100 ||
       weight_percent < 0 || weight_percent > 100 ||

@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <errno.h>
@@ -25,7 +37,7 @@ static __thread int ussl_server_ctx_id = -1;
 static uint64_t global_gid_arr[USSL_MAX_FD_NUM];
 static int global_client_ctx_id_arr[USSL_MAX_FD_NUM];
 static int global_send_negotiation_arr[USSL_MAX_FD_NUM];
-static int is_ussl_bg_thread_started = 0;
+int is_ussl_bg_thread_started = 0;
 
 static __attribute__((constructor(102))) void init_global_array()
 {
@@ -59,9 +71,25 @@ int ussl_connect(int sockfd, const struct sockaddr *address, socklen_t address_l
       ussl_clear_client_opt(sockfd);
     }
   } else {
+    if (AF_INET == address->sa_family) {
+      struct sockaddr_in self_addr;
+      socklen_t len = sizeof(self_addr);
+      if (0 == getsockname(sockfd, (struct sockaddr *)&self_addr, &len)) {
+        struct sockaddr_in *dst_addr = (struct sockaddr_in *)address;
+        if (self_addr.sin_port == dst_addr->sin_port && self_addr.sin_addr.s_addr == dst_addr->sin_addr.s_addr) {
+          ret = -1;
+          errno = EIO;
+          char str[INET_ADDRSTRLEN];
+          ussl_log_warn("connection to %s failed, self connect self", inet_ntop(AF_INET, (const void*)(address), str, sizeof(str)));
+        }
+      } else {
+        ret = -1;
+        ussl_log_warn("getsockname failed, fd:%d, error:%s", sockfd, strerror(errno));
+      }
+    }
     /* if gid has been set and connect return success, we also let the ret to be -1 and errno to be
      * EINPROGRESS */
-    if (sockfd >= 0 && sockfd < USSL_MAX_FD_NUM && global_gid_arr[sockfd] != UINT64_MAX) {
+    if (ret == 0 && sockfd >= 0 && sockfd < USSL_MAX_FD_NUM && global_gid_arr[sockfd] != UINT64_MAX) {
       ret = -1;
       errno = EINPROGRESS;
     }
@@ -111,7 +139,7 @@ int ussl_setsockopt(int socket, int level, int optname, const void *optval, sock
 {
   int ret = 0;
   if (ATOMIC_BCAS(&is_ussl_bg_thread_started, 0, 1)) {
-    ret = init_bg_thread();
+    ret = ussl_init_bg_thread();
     if (0 != ret) {
       ussl_log_error("start ussl-bk-thread failed!, ret:%d", ret);
       ATOMIC_STORE(&is_ussl_bg_thread_started, 0);
@@ -159,6 +187,15 @@ int ussl_setsockopt(int socket, int level, int optname, const void *optval, sock
     }
   }
   return ret;
+}
+
+void ussl_stop()
+{
+  ATOMIC_STORE(&ussl_is_stopped, 1);
+}
+void ussl_wait()
+{
+  ussl_wait_bg_thread();
 }
 
 int ussl_listen(int socket, int backlog)

@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_multiple_sstable_scanner.h"
@@ -16,7 +23,8 @@ using namespace common;
 using namespace blocksstable;
 
 ObDirectLoadMultipleSSTableScanner::ObDirectLoadMultipleSSTableScanner()
-  : sstable_(nullptr),
+  : allocator_("TLD_Scanner"),
+    sstable_(nullptr),
     range_(nullptr),
     datum_utils_(nullptr),
     is_iter_start_(false),
@@ -48,6 +56,7 @@ int ObDirectLoadMultipleSSTableScanner::init(ObDirectLoadMultipleSSTable *sstabl
     table_data_desc_ = table_data_desc;
     range_ = &range;
     datum_utils_ = datum_utils;
+    allocator_.set_tenant_id(MTL_ID());
     if (OB_FAIL(data_block_scanner_.init(sstable, table_data_desc, range, datum_utils))) {
       LOG_WARN("fail to init data block scanner", KR(ret));
     } else if (OB_FAIL(data_block_reader_.init(table_data_desc.sstable_data_block_size_,

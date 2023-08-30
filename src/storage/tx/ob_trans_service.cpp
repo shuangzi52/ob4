@@ -31,6 +31,7 @@
 #include "wrs/ob_weak_read_util.h"               // ObWeakReadUtil
 #include "storage/memtable/ob_memtable_context.h"
 #include "storage/memtable/ob_memtable.h"
+#include "storage/tx_storage/ob_ls_service.h"
 #include "common/storage/ob_sequence.h"
 #include "observer/ob_srv_network_frame.h"
 #include "share/rc/ob_tenant_module_init_ctx.h"
@@ -148,7 +149,7 @@ int ObTransService::init(const ObAddr &self,
     TRANS_LOG(ERROR, "dup table scan timer init error", K(ret));
   } else if (OB_FAIL(ObSimpleThreadPool::init(2, msg_task_cnt, "TransService", tenant_id))) {
     TRANS_LOG(WARN, "thread pool init error", KR(ret), K(msg_task_cnt));
-  } else if (OB_FAIL(tx_desc_mgr_.init(std::bind(&ObTransService::gen_trans_id_,
+  } else if (OB_FAIL(tx_desc_mgr_.init(std::bind(&ObTransService::gen_trans_id,
                                                  this, std::placeholders::_1),
                                        lib::ObMemAttr(tenant_id, "TxDescMgr")))) {
     TRANS_LOG(WARN, "ObTxDescMgr init error", K(ret));
@@ -516,6 +517,17 @@ void ObTransService::handle(void *task)
         mtl_free(advance_ckpt_task);
         advance_ckpt_task = nullptr;
       }
+    } else if (ObTransRetryTaskType::STANDBY_CLEANUP_TASK == trans_task->get_task_type()) {
+      ObTxStandbyCleanupTask *standby_cleanup_task = static_cast<ObTxStandbyCleanupTask *>(trans_task);
+      if (OB_ISNULL(standby_cleanup_task)) {
+        TRANS_LOG(WARN, "standby cleanup task is null");
+      } else if (OB_FAIL(do_standby_cleanup())) {
+        TRANS_LOG(WARN, "do standby cleanup failed", K(ret));
+      }
+      if (OB_NOT_NULL(standby_cleanup_task)) {
+        mtl_free(standby_cleanup_task);
+        standby_cleanup_task = nullptr;
+      }
     } else {
       ret = OB_ERR_UNEXPECTED;
       TRANS_LOG(ERROR, "unexpected trans task type!!!", KR(ret), K(*trans_task));
@@ -602,6 +614,38 @@ int ObTransService::get_max_decided_scn(const share::ObLSID &ls_id, share::SCN &
   return ret;
 }
 
+int ObTransService::check_dup_table_lease_valid(const ObLSID ls_id,
+                                                bool &is_dup_ls,
+                                                bool &is_lease_valid)
+{
+  int ret = OB_SUCCESS;
+
+  ObLSHandle ls_handle;
+  is_dup_ls = false;
+  is_lease_valid = false;
+
+  if (!ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid argument", K(ret), K(ls_id));
+  } else if (!dup_table_loop_worker_.is_useful_dup_ls(ls_id)) {
+    is_dup_ls = false;
+    ret = OB_SUCCESS;
+  } else if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id, ls_handle, ObLSGetMod::TRANS_MOD))) {
+    is_dup_ls = false;
+    TRANS_LOG(WARN, "get ls failed", K(ret), K(ls_id), K(ls_handle));
+  } else if (!ls_handle.is_valid()) {
+    is_dup_ls = false;
+    ret = OB_ERR_UNEXPECTED;
+    TRANS_LOG(WARN, "invalid ls handle", K(ret), K(ls_id), K(ls_handle));
+  } else if (ls_handle.get_ls()->get_dup_table_ls_handler()->is_dup_table_lease_valid()) {
+    is_dup_ls = true;
+    is_lease_valid = true;
+    ret = OB_SUCCESS;
+  }
+
+  return ret;
+}
+
 int ObTransService::handle_redo_sync_task_(ObDupTableRedoSyncTask *task, bool &need_release_task)
 {
   UNUSED(task);
@@ -619,7 +663,6 @@ int ObTransService::remove_callback_for_uncommited_txn(
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(!is_running_)) {
     TRANS_LOG(WARN, "ObTransService is not running");
-    ret = OB_NOT_RUNNING;
   } else if (OB_ISNULL(memtable_set)) {
     TRANS_LOG(WARN, "memtable is NULL");
     ret = OB_INVALID_ARGUMENT;
@@ -696,7 +739,8 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
                                          const ObTxDataSourceType &type,
                                          const char *buf,
                                          const int64_t buf_len,
-                                         const int64_t request_id)
+                                         const int64_t request_id,
+                                         const ObRegisterMdsFlag &register_flag)
 {
   const int64_t MAX_RETRY_CNT = 5;
   const int64_t RETRY_INTERVAL = 400 * 1000;
@@ -718,7 +762,7 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
   tx_param.access_mode_ = tx_desc.access_mode_;
   tx_param.isolation_ = tx_desc.isolation_;
   tx_param.timeout_us_ = tx_desc.timeout_us_;
-  int64_t savepoint = 0;
+  ObTxSEQ savepoint;
   if (OB_UNLIKELY(!tx_desc.is_valid() || !ls_id.is_valid() || type <= ObTxDataSourceType::UNKNOWN
                   || type >= ObTxDataSourceType::MAX_TYPE || OB_ISNULL(buf) || buf_len < 0)) {
     ret = OB_INVALID_ARGUMENT;
@@ -730,7 +774,8 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
   } else if (OB_ISNULL(rpc_proxy_)) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "rpc proxy not inited", KR(ret), K(tx_desc), K(ls_id), K(type));
-  } else if (OB_FAIL(arg.init(tx_desc.tenant_id_, tx_desc, ls_id, type, str, request_id))) {
+  } else if (OB_FAIL(arg.init(tx_desc.tenant_id_, tx_desc, ls_id, type, str, request_id,
+                              register_flag))) {
     TRANS_LOG(WARN, "rpc arg init failed", KR(ret), K(tx_desc), K(ls_id), K(type));
   } else if (OB_FAIL(create_implicit_savepoint(tx_desc, tx_param, savepoint))) {
     TRANS_LOG(WARN, "create implicit savepoint failed", K(ret), K(tx_desc));
@@ -746,27 +791,28 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
 
       if (ObTimeUtil::current_time() >= tx_desc.expire_ts_) {
         ret = OB_TIMEOUT;
-        TRANS_LOG(WARN, "register tx data timeout", KR(ret), K(tx_desc), K(ls_id), K(type),K(retry_cnt));
+        TRANS_LOG(WARN, "register tx data timeout", KR(ret), K(tx_desc), K(ls_id), K(type),
+                  K(retry_cnt));
       } else if (OB_ISNULL(location_adapter_)
-                 || OB_FAIL(location_adapter_->nonblock_get_leader(tx_desc.cluster_id_, tx_desc.tenant_id_,
-                                                          ls_id, ls_leader_addr))) {
+                 || OB_FAIL(location_adapter_->nonblock_get_leader(
+                     tx_desc.cluster_id_, tx_desc.tenant_id_, ls_id, ls_leader_addr))) {
         TRANS_LOG(WARN, "get leader failed", KR(ret), K(ls_id));
       } else if (ls_leader_addr == self_) {
         local_retry_cnt = 0;
 
         time_guard.click("register in ctx begin");
         do {
-          if (OB_FAIL(register_mds_into_ctx(*(arg.tx_desc_), ls_id, type, buf, buf_len))) {
+          if (OB_FAIL(register_mds_into_ctx_(*(arg.tx_desc_), ls_id, type, buf, buf_len, register_flag))) {
             TRANS_LOG(WARN, "register msd into ctx failed", K(ret));
             if (OB_EAGAIN == ret) {
               if (ObTimeUtil::current_time() >= tx_desc.expire_ts_) {
                 ret = OB_TIMEOUT;
                 TRANS_LOG(WARN, "register tx data timeout in this participant", KR(ret), K(tx_desc),
-                          K(ls_id), K(type),K(retry_cnt),K(local_retry_cnt));
+                          K(ls_id), K(type), K(retry_cnt), K(local_retry_cnt));
               } else if (local_retry_cnt > MAX_RETRY_CNT) {
                 ret = OB_NOT_MASTER;
-                TRANS_LOG(WARN, "local retry too many times, need retry by the scheduler",
-                    K(ret), K(local_retry_cnt), K(retry_cnt) );
+                TRANS_LOG(WARN, "local retry too many times, need retry by the scheduler", K(ret),
+                          K(local_retry_cnt), K(retry_cnt));
               } else {
                 local_retry_cnt++;
               }
@@ -800,8 +846,8 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
                              .by(tx_desc.tenant_id_)
                              .timeout(tx_desc.expire_ts_)
                              .register_tx_data(arg, result))) {
-        TRANS_LOG(WARN, "register_tx_fata failed", KR(ret), K(ls_leader_addr), K(arg), K(tx_desc), K(ls_id),
-                  K(result));
+        TRANS_LOG(WARN, "register_tx_fata failed", KR(ret), K(ls_leader_addr), K(arg), K(tx_desc),
+                  K(ls_id), K(result));
         time_guard.click("register by rpc end");
       } else if (OB_FALSE_IT(time_guard.click("register by rpc end"))) {
       } else if (OB_FAIL(result.result_)) {
@@ -820,7 +866,7 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
                     K(type));
         }
       }
-    } while (OB_NOT_MASTER == ret && this->self_ ==  tx_desc.addr_);
+    } while (OB_NOT_MASTER == ret && this->self_ == tx_desc.addr_);
 
     if (OB_SUCC(ret)) {
       if (OB_FAIL(add_tx_exec_result(tx_desc, tx_result))) {
@@ -838,24 +884,17 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
     }
   }
 
-  TRANS_LOG(INFO,
-            "register multi data source result",
-            KR(ret),
-            K(arg),
-            K(result),
-            K(tx_desc),
-            K(local_retry_cnt),
-            K(retry_cnt),
-            K(request_id),
-            K(time_guard));
+  TRANS_LOG(INFO, "register multi data source result", KR(ret), K(arg), K(result), K(tx_desc),
+            K(local_retry_cnt), K(retry_cnt), K(request_id), K(time_guard));
   return ret;
 }
 
-int ObTransService::register_mds_into_ctx(ObTxDesc &tx_desc,
-                                     const ObLSID &ls_id,
-                                     const ObTxDataSourceType &type,
-                                     const char *buf,
-                                     const int64_t buf_len)
+int ObTransService::register_mds_into_ctx_(ObTxDesc &tx_desc,
+                                           const ObLSID &ls_id,
+                                           const ObTxDataSourceType &type,
+                                           const char *buf,
+                                           const int64_t buf_len,
+                                           const ObRegisterMdsFlag &register_flag)
 {
   int ret = OB_SUCCESS;
   ObStoreCtx store_ctx;
@@ -863,36 +902,27 @@ int ObTransService::register_mds_into_ctx(ObTxDesc &tx_desc,
   snapshot.init_none_read();
   concurrent_control::ObWriteFlag write_flag;
   write_flag.set_is_mds();
-  if (OB_UNLIKELY(!tx_desc.is_valid() ||
-                  !ls_id.is_valid() ||
-                  OB_ISNULL(buf) ||
-                  buf_len <= 0)) {
+  if (OB_UNLIKELY(!tx_desc.is_valid() || !ls_id.is_valid() || OB_ISNULL(buf) || buf_len <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", KR(ret), K(tx_desc), K(ls_id), KP(buf), K(buf_len));
   } else if (FALSE_IT(store_ctx.ls_id_ = ls_id)) {
-  } else if (OB_FAIL(get_write_store_ctx(tx_desc, snapshot, write_flag, store_ctx))) {
+  } else if (OB_FAIL(get_write_store_ctx(tx_desc, snapshot, write_flag, store_ctx, ObTxSEQ::INVL(), true))) {
     TRANS_LOG(WARN, "get store ctx failed", KR(ret), K(tx_desc), K(ls_id));
   } else {
-    do {
-      memtable::ObMvccWriteGuard guard;
-      if (OB_FAIL(guard.write_auth(store_ctx))) {
-        TRANS_LOG(WARN, "write auth failed", KR(ret), K(tx_desc), K(ls_id));
-      } else {
-        ObPartTransCtx *ctx = store_ctx.mvcc_acc_ctx_.tx_ctx_;
-        if (OB_ISNULL(ctx)) {
-          ret = OB_ERR_UNEXPECTED;
-          TRANS_LOG(WARN, "unexpected null ptr", KR(ret), K(tx_desc), K(ls_id), K(type));
-        } else if (OB_FAIL(ctx->register_multi_data_source(type, buf, buf_len))) {
-          TRANS_LOG(WARN, "register multi source data failed", KR(ret), K(tx_desc), K(ls_id), K(type));
-        }
-      }
-    } while (0);
+    ObPartTransCtx *ctx = store_ctx.mvcc_acc_ctx_.tx_ctx_;
+    if (OB_ISNULL(ctx)) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(WARN, "unexpected null ptr", KR(ret), K(tx_desc), K(ls_id), K(type));
+    } else if (OB_FAIL(ctx->register_multi_data_source(type, buf, buf_len, false /*try lock*/, register_flag))) {
+      TRANS_LOG(WARN, "register multi source data failed", KR(ret), K(tx_desc), K(ls_id), K(type), K(register_flag));
+    }
     int tmp_ret = OB_SUCCESS;
     if (OB_SUCCESS != (tmp_ret = revert_store_ctx(store_ctx))) {
       TRANS_LOG(WARN, "revert store ctx failed", KR(tmp_ret), K(tx_desc), K(ls_id), K(type));
     }
   }
-  TRANS_LOG(DEBUG, "register multi source data on participant", KR(ret), K(tx_desc), K(ls_id), K(type));
+  TRANS_LOG(DEBUG, "register multi source data on participant", KR(ret), K(tx_desc), K(ls_id),
+            K(type));
   return ret;
 }
 

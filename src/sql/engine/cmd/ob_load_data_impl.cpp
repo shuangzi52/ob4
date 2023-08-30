@@ -43,6 +43,7 @@
 #include "share/backup/ob_backup_io_adapter.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "sql/rewrite/ob_transform_utils.h"
+#include "observer/omt/ob_tenant_timezone_mgr.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -393,7 +394,7 @@ int ObLoadDataBase::memory_wait_local(ObExecContext &ctx,
       }
       //if it is location exception, refresh location cache with block interface
       //because load data can only local retry
-      loc_router.refresh_location_cache(false, ret);
+      loc_router.refresh_location_cache_by_errno(false, ret);
     }
 
     //print info
@@ -518,7 +519,7 @@ int ObInsertValueGenerator::gen_insert_values(ObIArray<ObString> &insert_values,
         }
       }
       if (OB_SUCC(ret)) {
-        ObHexEscapeSqlStr escape_str(const_string);
+        ObHexEscapeSqlStr escape_str(const_string, !!(SMO_NO_BACKSLASH_ESCAPES & sql_mode_));
         int64_t len = escape_str.to_string(data_buffer_->current_ptr() + 1, data_buffer_->get_remain_len() - 1);
         if (OB_UNLIKELY(len + 2 >= data_buffer_->get_remain_len())) {
           ret = OB_SIZE_OVERFLOW;
@@ -571,10 +572,11 @@ int ObInsertValueGenerator::gen_insert_sql(ObSqlString &insert_sql)
   return ret;
 }
 
-int ObInsertValueGenerator::set_params(ObString &insert_header, ObCollationType cs_type)
+int ObInsertValueGenerator::set_params(ObString &insert_header, ObCollationType cs_type, int64_t sql_mode)
 {
   insert_header_ = insert_header;
   cs_type_ = cs_type;
+  sql_mode_ = sql_mode;
   return OB_SUCCESS;
 }
 
@@ -906,7 +908,8 @@ void ObCSVFormats::init(const ObDataInFileStruct &file_formats)
 }
 
 ObShuffleTaskHandle::ObShuffleTaskHandle(ObDataFragMgr &main_datafrag_mgr,
-                                         ObBitSet<> &main_string_values)
+                                         ObBitSet<> &main_string_values,
+                                         uint64_t tenant_id)
   : exec_ctx(allocator, GCTX.session_mgr_),
     data_buffer(NULL),
     escape_buffer(NULL),
@@ -915,13 +918,14 @@ ObShuffleTaskHandle::ObShuffleTaskHandle(ObDataFragMgr &main_datafrag_mgr,
     string_values(main_string_values)
 {
   const int64_t FILE_BUFFER_SIZE = ObLoadFileBuffer::MAX_BUFFER_SIZE;
+  ObMemAttr attr(tenant_id, ObModIds::OB_SQL_LOAD_DATA);
   void *buf = NULL;
-  buf = ob_malloc(FILE_BUFFER_SIZE, ObModIds::OB_SQL_LOAD_DATA);
+  buf = ob_malloc(FILE_BUFFER_SIZE, attr);
   if (OB_NOT_NULL(buf)) {
     data_buffer = new(buf) ObLoadFileBuffer(
           FILE_BUFFER_SIZE - sizeof(ObLoadFileBuffer));
   }
-  buf = ob_malloc(FILE_BUFFER_SIZE, ObModIds::OB_SQL_LOAD_DATA);
+  buf = ob_malloc(FILE_BUFFER_SIZE, attr);
   if (OB_NOT_NULL(buf)) {
     escape_buffer = new(buf) ObLoadFileBuffer(
           FILE_BUFFER_SIZE - sizeof(ObLoadFileBuffer));
@@ -985,14 +989,14 @@ int ObLoadDataSPImpl::exec_shuffle(int64_t task_id, ObShuffleTaskHandle *handle)
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KP(handle));
 //  } else if (FALSE_IT(handle->exec_ctx.get_allocator().reuse())) {
-  } else if (OB_FAIL(part_buf_mgr.init(ObModIds::OB_SQL_LOAD_DATA,
+  } else if (FALSE_IT(tenant_id = handle->exec_ctx.get_my_session()->get_effective_tenant_id())) {
+  } else if (OB_FAIL(part_buf_mgr.init(ObMemAttr(tenant_id, ObModIds::OB_SQL_LOAD_DATA),
                                        handle->datafrag_mgr.get_total_part_cnt()))) {
     LOG_WARN("fail to init part buf mgr", K(ret));
   } else if (OB_FAIL(insert_values.prepare_allocate(
                        handle->generator.get_insert_exprs().count()))) {
     LOG_WARN("fail to prealloc", K(ret),
              "insert values count", handle->generator.get_insert_exprs().count());
-  } else if (FALSE_IT(tenant_id = handle->exec_ctx.get_my_session()->get_effective_tenant_id())) {
   } else if (OB_ISNULL(expr_buf = ob_malloc(ObLoadFileBuffer::MAX_BUFFER_SIZE,
                                             ObMemAttr(tenant_id, ObModIds::OB_SQL_LOAD_DATA)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1161,9 +1165,10 @@ int ObLoadDataSPImpl::exec_insert(ObInsertTask &task, ObInsertResult& result)
   int64_t sql_buff_len_init = OB_MALLOC_BIG_BLOCK_SIZE; //2M
   int64_t field_buf_len = OB_MAX_VARCHAR_LENGTH;
   char *field_buff = NULL;
-  ObSqlString sql_str(ObModIds::OB_SQL_LOAD_DATA);
-  ObSEArray<ObString, 1> single_row_values;
   ObMemAttr attr(task.tenant_id_, ObModIds::OB_SQL_LOAD_DATA);
+  ObSqlString sql_str;
+  ObSEArray<ObString, 1> single_row_values;
+  sql_str.set_attr(attr);
 
 #ifdef TEST_MODE
   delay_process_by_probability(INSERT_TASK_DROP_RATE);
@@ -1223,9 +1228,21 @@ int ObLoadDataSPImpl::exec_insert(ObInsertTask &task, ObInsertResult& result)
              K(ret), K(deserialized_rows), K(task.row_count_));
   }
 
+  if (OB_SUCC(ret)) {
+    ObTZMapWrap tz_map_wrap;
+    if (OB_FAIL(OTTZ_MGR.get_tenant_tz(task.tenant_id_, tz_map_wrap))) {
+      LOG_WARN("get tenant timezone map failed", K(ret));
+    } else {
+      task.timezone_.set_tz_info_map(tz_map_wrap.get_tz_map());
+    }
+  }
+
   int64_t affected_rows = 0;
   ObSessionParam param;
   param.is_load_data_exec_ = true;
+
+  param.sql_mode_ = &task.sql_mode_;
+  param.tz_info_wrap_ = &task.timezone_;
 
   if (OB_SUCC(ret) && OB_FAIL(GCTX.sql_proxy_->write(task.tenant_id_,
                                                      sql_str.string(),
@@ -2737,14 +2754,15 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
     } else if (OB_FAIL(field_values_in_file.prepare_allocate(num_of_file_column))) {
       LOG_WARN("fail to reserve array", K(ret));
     } else if (OB_ISNULL(buf = ob_malloc(ObLoadFileBuffer::MAX_BUFFER_SIZE,
-                                         ObModIds::OB_SQL_LOAD_DATA))) {
+                                         ObMemAttr(tenant_id, ObModIds::OB_SQL_LOAD_DATA)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate memory failed", K(ret));
     } else if (FALSE_IT(expr_buffer = new(buf) ObLoadFileBuffer(
                           ObLoadFileBuffer::MAX_BUFFER_SIZE - sizeof(ObLoadFileBuffer)))) {
     } else if (OB_FAIL(generator.init(*session, expr_buffer, ctx.get_sql_ctx()->schema_guard_))) {
       LOG_WARN("fail to init generator", K(ret));
-    } else if (OB_FAIL(generator.set_params(insert_stmt_head_buff, load_args.file_cs_type_))) {
+    } else if (OB_FAIL(generator.set_params(insert_stmt_head_buff, load_args.file_cs_type_,
+                                            session->get_sql_mode()))) {
       LOG_WARN("fail to set params", K(ret));
     } else if (OB_FAIL(copy_exprs_for_shuffle_task(ctx, load_stmt, insert_infos,
                                                    generator.get_field_exprs(),
@@ -2868,7 +2886,7 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
       int64_t pos = 0;
 
       if (OB_ISNULL(handle = OB_NEWx(ObShuffleTaskHandle, (&ctx.get_allocator()),
-                                     data_frag_mgr, string_type_column_bitset))
+                                     data_frag_mgr, string_type_column_bitset, tenant_id))
           || OB_ISNULL(handle->data_buffer)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("Failed to alloc", K(ret));
@@ -2878,7 +2896,7 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
           LOG_WARN("fail to deserialize", K(ret));
         } else if (OB_FAIL(handle->parser.init(file_formats, num_of_file_column, load_args.file_cs_type_))) {
           LOG_WARN("fail to init parser", K(ret));
-        } else if (OB_FAIL(handle->generator.set_params(insert_stmt_head_buff, load_args.file_cs_type_))) {
+        } else if (OB_FAIL(handle->generator.set_params(insert_stmt_head_buff, load_args.file_cs_type_, session->get_sql_mode()))) {
           LOG_WARN("fail to set params", K(ret));
         } else if (OB_FAIL(copy_exprs_for_shuffle_task(ctx, load_stmt, insert_infos,
                                                        handle->generator.get_field_exprs(),
@@ -2917,6 +2935,8 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
       if (OB_ISNULL(insert_task = OB_NEWx(ObInsertTask, (&ctx.get_allocator())))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("Failed to alloc", K(ret));
+      } else if (OB_FAIL(insert_task->timezone_.deep_copy(ctx.get_my_session()->get_tz_info_wrap()))) {
+        LOG_WARN("fail to copy timezone", K(ret));
       } else {
         //insert的column name都是一样的，所有的task共用一块儿buf做序列化就可以了
         insert_task->insert_stmt_head_ = insert_stmt_head_buff;
@@ -2924,6 +2944,7 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
         insert_task->row_count_ = batch_row_count;
         insert_task->tenant_id_ = ctx.get_my_session()->get_effective_tenant_id();
         insert_task->token_server_idx_ = server_j;
+        insert_task->sql_mode_ = ctx.get_my_session()->get_sql_mode();
         if (OB_FAIL(insert_resource.push_back(insert_task))) {
           insert_task->~ObInsertTask();
           LOG_WARN("fail to push back", K(ret));
@@ -2933,7 +2954,7 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
       }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(server_last_available_ts.init(ObModIds::OB_SQL_LOAD_DATA, MAX_SERVER_COUNT))) {
+      if (OB_FAIL(server_last_available_ts.init(ObMemAttr(tenant_id, ObModIds::OB_SQL_LOAD_DATA), MAX_SERVER_COUNT))) {
         LOG_WARN("fail to create server map", K(ret));
       }
     }

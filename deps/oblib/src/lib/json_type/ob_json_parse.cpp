@@ -170,14 +170,22 @@ int ObJsonParser::check_json_syntax(const ObString &j_doc, ObIAllocator *allocat
       rapidjson::InsituStringStream ss(static_cast<char *>(alloc_buf));
       ObRapidJsonReader reader(&parse_allocator);
       rapidjson::ParseResult r;
-      if (HAS_FLAG(parse_flag, JSN_RELAXED_FLAG)) {
-        r = reader.Parse<RELAXJSON_FLAG>(ss, handler);
-      } else if (HAS_FLAG(parse_flag, JSN_STRICT_FLAG)) {
-        r = reader.Parse<STRICTJSON_FLAG>(ss, handler);
-      } else {
-        r = reader.Parse<rapidjson::kParseInsituFlag>(ss, handler);
+      try {
+        if (HAS_FLAG(parse_flag, JSN_RELAXED_FLAG)) {
+          r = reader.Parse<RELAXJSON_FLAG>(ss, handler);
+        } else if (HAS_FLAG(parse_flag, JSN_STRICT_FLAG)) {
+          r = reader.Parse<STRICTJSON_FLAG>(ss, handler);
+        } else {
+          r = reader.Parse<rapidjson::kParseInsituFlag>(ss, handler);
+        }
+      } catch (const std::bad_alloc &e) {
+        allocator->free(alloc_buf);
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc memory for json text", K(ret));
       }
-      if (r.IsError()) {
+
+      if (OB_FAIL(ret)) {
+      } else if (r.IsError()) {
         allocator->free(alloc_buf);
         if (handler.is_too_deep()) {
           ret = OB_ERR_JSON_OUT_OF_DEPTH;
@@ -186,7 +194,7 @@ int ObJsonParser::check_json_syntax(const ObString &j_doc, ObIAllocator *allocat
         }
         offset = reader.GetErrorOffset();
         syntaxerr = rapidjson::GetParseError_En(reader.GetParseErrorCode());
-        LOG_WARN("fail to parse json text", K(ret), K(r.Code()), KCSTRING(syntaxerr), K(offset));
+        LOG_DEBUG("fail to parse json text", K(ret), K(r.Code()), KCSTRING(syntaxerr), K(offset));
       }
     } else {
       ObRapidJsonHandler handler(allocator, true);
@@ -194,15 +202,22 @@ int ObJsonParser::check_json_syntax(const ObString &j_doc, ObIAllocator *allocat
       rapidjson::InsituStringStream ss(static_cast<char *>(alloc_buf));
       ObRapidJsonReader reader(&parse_allocator);
       rapidjson::ParseResult r;
-      if (HAS_FLAG(parse_flag, JSN_RELAXED_FLAG)) {
-        r = reader.Parse<RELAXJSON_FLAG>(ss, handler);
-      } else if (HAS_FLAG(parse_flag, JSN_STRICT_FLAG)) {
-        r = reader.Parse<STRICTJSON_FLAG>(ss, handler);
-      } else {
-        r = reader.Parse<rapidjson::kParseInsituFlag>(ss, handler);
+      try {
+        if (HAS_FLAG(parse_flag, JSN_RELAXED_FLAG)) {
+          r = reader.Parse<RELAXJSON_FLAG>(ss, handler);
+        } else if (HAS_FLAG(parse_flag, JSN_STRICT_FLAG)) {
+          r = reader.Parse<STRICTJSON_FLAG>(ss, handler);
+        } else {
+          r = reader.Parse<rapidjson::kParseInsituFlag>(ss, handler);
+        }
+      } catch (const std::bad_alloc &e) {
+        allocator->free(alloc_buf);
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc memory for json text", K(ret));
       }
 
-      if (!r.IsError()) {
+      if (OB_FAIL(ret)) {
+      } else if (!r.IsError()) {
         if (OB_ISNULL(handler.get_built_doc()) && OB_NOT_NULL(syntaxerr)) {
           allocator->free(alloc_buf);
           ret = OB_ERR_UNEXPECTED;
@@ -256,7 +271,7 @@ bool ObRapidJsonHandler::seeing_value(ObJsonNode *value)
         INIT_SUCC(ret);
         next_state_ = ObJsonExpectNextState::EXPECT_OBJECT_KEY;
         ObJsonObject *object = dynamic_cast<ObJsonObject *>(current_element_);
-        if (OB_FAIL(object->add(key_, value, with_unique_key_))) {
+        if (OB_FAIL(object->add(key_, value, with_unique_key_, true, false))) {
           LOG_WARN("fail to add element to json object", K(ret));
           if (ret == OB_ERR_DUPLICATE_KEY) {
             with_duplicate_key_ = true;
@@ -317,7 +332,13 @@ bool ObRapidJsonHandler::is_end_object_or_array()
       // Sort the key-value pairs of the ObJsonObject at the current level.
       ObJsonObject *obj = static_cast<ObJsonObject *>(current_element_);
       obj->update_serialize_size();
-      obj->sort();
+      obj->stable_sort();
+      int64_t origin_num = obj->element_count();
+      obj->unique();
+      if (with_unique_key_ && obj->element_count() < origin_num) {
+        is_continue = false;
+        with_duplicate_key_ = true;
+      }
     } else { // current is array
       current_element_->update_serialize_size();
     }

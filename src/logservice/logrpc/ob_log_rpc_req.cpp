@@ -11,6 +11,7 @@
  */
 
 #include "ob_log_rpc_req.h"
+#include "logservice/palf/log_define.h"
 
 namespace oceanbase
 {
@@ -28,7 +29,11 @@ LogConfigChangeCmd::LogConfigChangeCmd()
     curr_replica_num_(0),
     new_replica_num_(0),
     cmd_type_(INVALID_CONFIG_CHANGE_CMD),
-    timeout_us_(0) { }
+    timeout_us_(0),
+    lock_owner_(palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER),
+    config_version_(),
+    added_list_(),
+    removed_list_() { }
 
 LogConfigChangeCmd::LogConfigChangeCmd(
     const common::ObAddr &src,
@@ -46,7 +51,11 @@ LogConfigChangeCmd::LogConfigChangeCmd(
     curr_replica_num_(),
     new_replica_num_(new_replica_num),
     cmd_type_(cmd_type),
-    timeout_us_(timeout_us) { }
+    timeout_us_(timeout_us),
+    lock_owner_(palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER),
+    config_version_(),
+    added_list_(),
+    removed_list_() { }
 
 LogConfigChangeCmd::LogConfigChangeCmd(
     const common::ObAddr &src,
@@ -64,11 +73,60 @@ LogConfigChangeCmd::LogConfigChangeCmd(
     curr_replica_num_(curr_replica_num),
     new_replica_num_(new_replica_num),
     cmd_type_(cmd_type),
-    timeout_us_(timeout_us) { }
+    timeout_us_(timeout_us),
+    lock_owner_(palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER),
+    config_version_(),
+    added_list_(),
+    removed_list_() { }
+
+LogConfigChangeCmd::LogConfigChangeCmd(const common::ObAddr &src,
+                                       const int64_t palf_id,
+                                       const int64_t lock_owner,
+                                       const LogConfigChangeCmdType cmd_type,
+                                       const int64_t timeout_us)
+    : src_(src),
+      palf_id_(palf_id),
+      added_member_(),
+      removed_member_(),
+      curr_member_list_(),
+      curr_replica_num_(0),
+      new_replica_num_(0),
+      cmd_type_(cmd_type),
+      timeout_us_(timeout_us),
+      lock_owner_(lock_owner),
+      config_version_(),
+      added_list_(),
+      removed_list_() { }
+
+LogConfigChangeCmd::LogConfigChangeCmd(
+    const common::ObAddr &src,
+    const int64_t palf_id,
+    const common::ObMemberList &added_list,
+    const common::ObMemberList &removed_list,
+    const LogConfigChangeCmdType cmd_type,
+    const int64_t timeout_us)
+  : src_(src),
+    palf_id_(palf_id),
+    added_member_(),
+    removed_member_(),
+    curr_member_list_(),
+    curr_replica_num_(0),
+    new_replica_num_(0),
+    cmd_type_(cmd_type),
+    timeout_us_(timeout_us),
+    lock_owner_(palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER),
+    config_version_(),
+    added_list_(added_list),
+    removed_list_(removed_list) { }
 
 LogConfigChangeCmd::~LogConfigChangeCmd()
 {
   reset();
+}
+
+void LogConfigChangeCmd::in_leader(const palf::LogConfigVersion &config_version)
+{
+  config_version_ = config_version;
 }
 
 bool LogConfigChangeCmd::is_valid() const
@@ -82,22 +140,34 @@ bool LogConfigChangeCmd::is_valid() const
       SWITCH_TO_ACCEPTOR_CMD == cmd_type_)? removed_member_.is_valid(): true);
   bool_ret = bool_ret && ((is_set_new_replica_num())? is_valid_replica_num(new_replica_num_): true);
   bool_ret = bool_ret && ((CHANGE_REPLICA_NUM_CMD == cmd_type_)? curr_member_list_.is_valid()    \
-      && is_valid_replica_num(curr_replica_num_) && is_valid_replica_num(new_replica_num_): true);
+      && is_valid_replica_num(curr_replica_num_) && is_valid_replica_num(new_replica_num_): true);\
+  bool_ret = bool_ret && ((TRY_LOCK_CONFIG_CHANGE_CMD == cmd_type_ || UNLOCK_CONFIG_CHANGE_CMD == cmd_type_) ? \
+      (palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER != lock_owner_) : true);
+  bool_ret = bool_ret && ((REPLACE_LEARNERS_CMD == cmd_type_)? (added_list_.is_valid()    \
+      && removed_list_.is_valid()): true);
   return bool_ret;
 }
 
 bool LogConfigChangeCmd::is_remove_member_list() const
 {
   return REMOVE_MEMBER_CMD == cmd_type_
+#ifdef OB_BUILD_ARBITRATION
+         || REMOVE_ARB_MEMBER_CMD == cmd_type_
+#endif
          || REPLACE_MEMBER_CMD == cmd_type_
-         || SWITCH_TO_LEARNER_CMD == cmd_type_;
+         || SWITCH_TO_LEARNER_CMD == cmd_type_
+         || REPLACE_MEMBER_WITH_LEARNER_CMD == cmd_type_;
 }
 
 bool LogConfigChangeCmd::is_add_member_list() const
 {
   return ADD_MEMBER_CMD == cmd_type_
+#ifdef OB_BUILD_ARBITRATION
+        || ADD_ARB_MEMBER_CMD == cmd_type_
+#endif
         || REPLACE_MEMBER_CMD == cmd_type_
-        || SWITCH_TO_ACCEPTOR_CMD == cmd_type_;
+        || SWITCH_TO_ACCEPTOR_CMD == cmd_type_
+        || REPLACE_MEMBER_WITH_LEARNER_CMD == cmd_type_;
 }
 
 bool LogConfigChangeCmd::is_set_new_replica_num() const
@@ -119,19 +189,23 @@ void LogConfigChangeCmd::reset()
   new_replica_num_ = 0;
   cmd_type_ = INVALID_CONFIG_CHANGE_CMD;
   timeout_us_ = 0;
+  lock_owner_ = palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER;
+  config_version_.reset();
+  added_list_.reset();
+  removed_list_.reset();
 }
 
 OB_SERIALIZE_MEMBER(LogConfigChangeCmd, src_, palf_id_, added_member_, removed_member_,
-curr_member_list_, curr_replica_num_, new_replica_num_, cmd_type_, timeout_us_);
+curr_member_list_, curr_replica_num_, new_replica_num_, cmd_type_, timeout_us_, lock_owner_,
+config_version_, added_list_, removed_list_);
 // ============= LogConfigChangeCmd end =============
 
 // ============= LogConfigChangeCmdResp begin ===========
 LogConfigChangeCmdResp::LogConfigChangeCmdResp()
-  : ret_(OB_MAX_ERROR_CODE) { }
+{
+  reset();
+}
 
-LogConfigChangeCmdResp::LogConfigChangeCmdResp(
-    const int ret)
-    : ret_(ret) { }
 
 LogConfigChangeCmdResp::~LogConfigChangeCmdResp()
 {
@@ -146,61 +220,12 @@ bool LogConfigChangeCmdResp::is_valid() const
 void LogConfigChangeCmdResp::reset()
 {
   ret_ = OB_MAX_ERROR_CODE;
+  lock_owner_ = palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER;
+  is_locked_ = false;
 }
-OB_SERIALIZE_MEMBER(LogConfigChangeCmdResp, ret_);
+
+OB_SERIALIZE_MEMBER(LogConfigChangeCmdResp, ret_, lock_owner_, is_locked_);
 // ============= LogConfigChangeCmdResp end =============
-
-// ============= LogGetLeaderMaxScnReq begin ===========
-LogGetLeaderMaxScnReq::LogGetLeaderMaxScnReq(const common::ObAddr &src,
-                                         const int64_t palf_id)
-  : src_(src), palf_id_(palf_id)
-{
-}
-
-LogGetLeaderMaxScnReq::~LogGetLeaderMaxScnReq()
-{
-  reset();
-}
-
-bool LogGetLeaderMaxScnReq::is_valid() const
-{
-  return src_.is_valid() && palf::is_valid_palf_id(palf_id_);
-}
-
-void LogGetLeaderMaxScnReq::reset()
-{
-  src_.reset();
-  palf_id_ = palf::INVALID_PALF_ID;
-}
-
-OB_SERIALIZE_MEMBER(LogGetLeaderMaxScnReq, src_, palf_id_);
-
-// ============= LogGetLeaderMaxTsNSReq end =============
-
-// ============= LogGetLeaderMaxTsNSResp begin =============
-LogGetLeaderMaxScnResp::LogGetLeaderMaxScnResp(const share::SCN &max_scn)
-{
-  max_scn_ = max_scn;
-}
-
-LogGetLeaderMaxScnResp::~LogGetLeaderMaxScnResp()
-{
-  reset();
-}
-
-bool LogGetLeaderMaxScnResp::is_valid() const
-{
-  return max_scn_.is_valid();
-}
-
-void LogGetLeaderMaxScnResp::reset()
-{
-  max_scn_.reset();
-}
-
-OB_SERIALIZE_MEMBER(LogGetLeaderMaxScnResp, max_scn_);
-// ============= LogGetLeaderMaxTsNSResp end ===============
-//
 
 // ============= LogGetPalfStatReq begin ===========
 LogGetPalfStatReq::LogGetPalfStatReq(

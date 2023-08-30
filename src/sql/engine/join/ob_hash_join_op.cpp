@@ -754,38 +754,10 @@ int ObHashJoinOp::do_sync_wait_all()
   return ret;
 }
 
-// copy ObOperator::drain_exch
-// It's same as the base operator, but only need add sync to wait exit for shared hash join
-int ObHashJoinOp::drain_exch()
+// need add sync to wait exit for shared hash join
+int ObHashJoinOp::inner_drain_exch()
 {
-  int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-  /**
-   * 1. try to open this operator
-   * 2. try to drain all children
-   */
-  if (OB_FAIL(try_open())) {
-    LOG_WARN("fail to open operator", K(ret));
-  } else if (!exch_drained_) {
-    // don't sync to wait all when operator call drain_exch by self
-    tmp_ret = do_sync_wait_all();
-    exch_drained_ = true;
-    for (int64_t i = 0; i < child_cnt_ && OB_SUCC(ret); i++) {
-      if (OB_ISNULL(children_[i])) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("NULL child found", K(ret), K(i));
-      } else if (OB_FAIL(children_[i]->drain_exch())) {
-        LOG_WARN("drain exch failed", K(ret));
-      }
-    }
-    if (OB_SUCC(ret)) {
-      ret = tmp_ret;
-      if (OB_FAIL(ret)) {
-        LOG_WARN("failed to do sync wait all", K(ret));
-      }
-    }
-  }
-  return ret;
+  return do_sync_wait_all();
 }
 
 int ObHashJoinOp::next()
@@ -1278,8 +1250,8 @@ int ObHashJoinOp::build_hash_table_for_nest_loop(int64_t &num_left_rows)
     int64_t memory_bound = std::max(remain_data_memory_size_,
                                     hj_batch->get_chunk_row_store().get_max_blk_size());
     const int64_t row_bound = hash_table.nbuckets_ / 2;
-    ObChunkDatumStore::IterationAge iter_age;
-    hj_batch->set_iteration_age(iter_age);
+    hj_batch->set_iteration_age(iter_age_);
+    iter_age_.inc();
     while (OB_SUCC(ret)) {
       int64_t read_size = 0;
       if (OB_FAIL(hj_batch->get_next_batch(left_stored_rows,
@@ -1768,8 +1740,8 @@ int ObHashJoinOp::build_hash_table_in_memory(int64_t &num_left_rows)
     // do nothing
   } else {
     PartHashJoinTable &hash_table = *cur_hash_table_;
-    ObChunkDatumStore::IterationAge iter_age;
-    hj_batch->set_iteration_age(iter_age);
+    hj_batch->set_iteration_age(iter_age_);
+    iter_age_.inc();
     while (OB_SUCC(ret)) {
       int64_t read_size = 0;
       if (OB_FAIL(hj_batch->get_next_batch(left_stored_rows,

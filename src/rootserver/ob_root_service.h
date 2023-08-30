@@ -16,7 +16,6 @@
 #include "lib/net/ob_addr.h"
 #include "lib/thread/ob_work_queue.h"
 
-#include "share/backup/ob_backup_info_mgr.h"
 #include "share/ob_common_rpc_proxy.h"
 #include "share/ob_tenant_id_schema_version.h"
 #include "share/ob_inner_config_root_addr.h"
@@ -46,20 +45,19 @@
 #include "rootserver/ob_upgrade_executor.h"
 #include "rootserver/ob_upgrade_storage_format_version_executor.h"
 #include "rootserver/ob_create_inner_schema_executor.h"
-#include "rootserver/backup/ob_backup_service.h"
-#include "rootserver/backup/ob_backup_task_scheduler.h"
 #include "rootserver/ob_update_rs_list_task.h"
 #include "rootserver/ob_schema_history_recycler.h"
-#include "rootserver/backup/ob_backup_lease_service.h"
 #include "rootserver/ddl_task/ob_ddl_scheduler.h"
 #include "share/ls/ob_ls_info.h"
 #include "share/ls/ob_ls_table_operator.h"
-#include "rootserver/backup/ob_archive_scheduler_service.h"
 #include "rootserver/ob_disaster_recovery_task_mgr.h"
 #include "rootserver/ob_disaster_recovery_task_executor.h"
 #include "rootserver/ob_empty_server_checker.h"
 #include "rootserver/ob_lost_replica_checker.h"
 #include "rootserver/ob_server_zone_op_service.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "rootserver/ob_rs_master_key_manager.h"
+#endif
 
 namespace oceanbase
 {
@@ -290,6 +288,7 @@ public:
   class ObUpdateAllServerConfigTask : public common::ObAsyncTimerTask
   {
   public:
+    const static int64_t RETRY_INTERVAL = 600 * 1000L * 1000L;  // 10min
     explicit ObUpdateAllServerConfigTask(ObRootService &root_service);
     virtual ~ObUpdateAllServerConfigTask() {}
   public:
@@ -402,7 +401,6 @@ public:
   // misc get functions
   share::ObLSTableOperator &get_lst_operator() { return *lst_operator_; }
   share::schema::ObMultiVersionSchemaService &get_schema_service() { return *schema_service_; }
-  ObBackupTaskScheduler &get_backup_task_scheduler() { return backup_task_scheduler_;}
   ObServerManager &get_server_mgr() { return server_manager_; }
   ObZoneManager &get_zone_mgr() { return zone_manager_; }
   ObUnitManager &get_unit_mgr() { return unit_manager_; }
@@ -429,6 +427,9 @@ public:
   int not_implement();
 
   int execute_bootstrap(const obrpc::ObBootstrapArg &arg);
+#ifdef OB_BUILD_TDE_SECURITY
+  int check_sys_tenant_initial_master_key_valid();
+#endif
 
   int check_config_result(const char *name, const char *value);
   int check_ddl_allowed();
@@ -440,6 +441,7 @@ public:
   int fetch_location(const obrpc::ObFetchLocationArg &arg,
                      obrpc::ObFetchLocationResult &res);
   int merge_finish(const obrpc::ObMergeFinishArg &arg);
+
   // 4.0 backup
   // balance over
   int receive_backup_over(const obrpc::ObBackupTaskRes &res);
@@ -574,6 +576,15 @@ public:
   int drop_synonym(const obrpc::ObDropSynonymArg &arg);
   //----End of functions for managing synonyms----
 
+#ifdef OB_BUILD_SPM
+  //----Functions for managing plan_baselines----
+  int accept_plan_baseline(const obrpc::ObModifyPlanBaselineArg &arg);
+  int cancel_evolve_task(const obrpc::ObModifyPlanBaselineArg &arg);
+  int admin_load_baseline(const obrpc::ObLoadPlanBaselineArg &arg);
+  int admin_load_baseline_v2(const obrpc::ObLoadPlanBaselineArg &arg, obrpc::ObLoadBaselineRes &res);
+  // int drop_plan_baseline(const obrpc::ObDropPlanBaselineArg &arg);
+  //----End of functions for managing plan_baselines----
+#endif
 
   //----Functions for sync rewrite rules----
   int admin_sync_rewrite_rules(const obrpc::ObSyncRewriteRuleArg &arg);
@@ -685,6 +696,12 @@ public:
   int admin_reload_server();
   int admin_reload_zone();
   int admin_clear_merge_error(const obrpc::ObAdminMergeArg &arg);
+#ifdef OB_BUILD_ARBITRATION
+  int admin_add_arbitration_service(const obrpc::ObAdminAddArbitrationServiceArg &arg);
+  int admin_remove_arbitration_service(const obrpc::ObAdminRemoveArbitrationServiceArg &arg);
+  int admin_replace_arbitration_service(const obrpc::ObAdminReplaceArbitrationServiceArg &arg);
+  int remove_cluster_info_from_arb_server(const obrpc::ObRemoveClusterInfoFromArbServerArg &arg);
+#endif
   int admin_migrate_unit(const obrpc::ObAdminMigrateUnitArg &arg);
   int admin_upgrade_virtual_schema();
   int run_job(const obrpc::ObRunJobArg &arg);
@@ -696,7 +713,7 @@ public:
   int admin_set_tracepoint(const obrpc::ObAdminSetTPArg &arg);
   int admin_set_backup_config(const obrpc::ObAdminSetConfigArg &arg);
   /* physical restore */
-  int physical_restore_tenant(const obrpc::ObPhysicalRestoreTenantArg &arg);
+  int physical_restore_tenant(const obrpc::ObPhysicalRestoreTenantArg &arg, obrpc::Int64 &job_id);
   int check_restore_tenant_valid(const share::ObPhysicalRestoreJob &job_info,
       share::schema::ObSchemaGetterGuard &guard);
   int rebuild_index_in_restore(const obrpc::ObRebuildIndexInRestoreArg &arg);
@@ -743,6 +760,7 @@ public:
   // @see ObInspector
   int schedule_inspector_task();
   int schedule_update_rs_list_task();
+  int schedule_update_all_server_config_task();
   //update statistic cache
   int update_stat_cache(const obrpc::ObUpdateStatCacheArg &arg);
 
@@ -780,7 +798,15 @@ public:
   int update_rslist();
   int recompile_all_views_batch(const obrpc::ObRecompileAllViewsBatchArg &arg);
   int try_add_dep_infos_for_synonym_batch(const obrpc::ObTryAddDepInofsForSynonymBatchArg &arg);
+#ifdef OB_BUILD_TDE_SECURITY
+  int handle_get_root_key(const obrpc::ObRootKeyArg &arg, obrpc::ObRootKeyResult &result);
+  int get_root_key_from_obs(const obrpc::ObRootKeyArg &arg, obrpc::ObRootKeyResult &result);
+#endif
 private:
+#ifdef OB_BUILD_TDE_SECURITY
+  int try_check_encryption_zone_cond(
+      const obrpc::ObAdminZoneArg &arg);
+#endif
   int check_parallel_ddl_conflict(
       share::schema::ObSchemaGetterGuard &schema_guard,
       const obrpc::ObDDLArg &arg);
@@ -949,18 +975,18 @@ private:
   ObSnapshotInfoManager snapshot_manager_;
   int64_t core_meta_table_version_;
   ObUpdateRsListTimerTask update_rs_list_timer_task_;
+  ObUpdateAllServerConfigTask update_all_server_config_task_;
   int64_t baseline_schema_version_;
 
-  // backup
-  ObBackupService backup_service_;
-  ObBackupTaskScheduler backup_task_scheduler_;
-  ObArchiveSchedulerService archive_service_;
   int64_t start_service_time_;
   ObRsStatus rs_status_;
 
   int64_t fail_count_;
   ObSchemaHistoryRecycler schema_history_recycler_;
-  ObBackupLeaseService backup_lease_service_;
+#ifdef OB_BUILD_TDE_SECURITY
+  // master key manager
+  ObRsMasterKeyManager master_key_mgr_;
+#endif
   // Disaster Recovery related
   ObDRTaskExecutor disaster_recovery_task_executor_;
   ObDRTaskMgr disaster_recovery_task_mgr_;

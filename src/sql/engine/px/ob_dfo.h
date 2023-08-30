@@ -182,6 +182,21 @@ public:
   TO_STRING_KV(K_(p2p_sequence_ids), K_(target_addrs));
 };
 
+struct ObQCMonitoringInfo {
+  OB_UNIS_VERSION(1);
+public:
+  int init(const ObExecContext &exec_ctx);
+  int assign(const ObQCMonitoringInfo &other);
+  void reset();
+public:
+  common::ObString cur_sql_;
+  // in nested px situation, it is the current px coordinator's thread id
+  int64_t qc_tid_;
+  // no need to deserialize
+  static constexpr int64_t LIMIT_LENGTH = 100;
+  TO_STRING_KV(K_(cur_sql), K_(qc_tid));
+};
+
 // PX 端描述每个 SQC 的数据结构
 class ObPxSqcMeta
 {
@@ -317,6 +332,7 @@ public:
     partition_pruning_table_locations_.reset();
     access_external_table_files_.reset();
     allocator_.reset();
+    monitoring_info_.reset();
   }
   // SQC 端收到 InitSQC 消息后通过 data_channel 信息是否为空
   // 来判断 data channel 是否已经预分配好，是否要走轻量调度
@@ -347,6 +363,8 @@ public:
   ObP2PDhMapInfo &get_p2p_dh_map_info() { return p2p_dh_map_info_;};
   void set_sqc_count(int64_t sqc_cnt) { sqc_count_ = sqc_cnt; }
   int64_t get_sqc_count() const { return sqc_count_;}
+  ObQCMonitoringInfo &get_monitoring_info() { return monitoring_info_; }
+  const ObQCMonitoringInfo &get_monitoring_info() const { return monitoring_info_; }
   TO_STRING_KV(K_(need_report), K_(execution_id), K_(qc_id), K_(sqc_id), K_(dfo_id), K_(exec_addr), K_(qc_addr),
                K_(qc_ch_info), K_(sqc_ch_info),
                K_(task_count), K_(max_task_count), K_(min_task_count),
@@ -358,6 +376,7 @@ private:
   uint64_t qc_id_;
   int64_t sqc_id_;
   int64_t dfo_id_;
+  ObQCMonitoringInfo monitoring_info_;
   // The partition location information of the all table_scan op and dml op
   // used for px worker execution
   // no need serialize
@@ -479,7 +498,8 @@ public:
     p2p_dh_loc_(nullptr),
     need_p2p_info_(false),
     p2p_dh_map_info_(),
-    coord_info_ptr_(nullptr)
+    coord_info_ptr_(nullptr),
+    force_bushy_(false)
   {
   }
 
@@ -882,6 +902,7 @@ public:
       task_channel_(NULL),
       sqc_channel_(NULL),
       rc_(TASK_DEFAULT_RET_VALUE), // 小于等于 0 表示设置了 rc 值
+      das_retry_rc_(common::OB_SUCCESS),
       state_(0),
       task_co_id_(0),
       px_int_id_(),
@@ -892,7 +913,8 @@ public:
       interm_result_ids_(),
       tx_desc_(NULL),
       is_use_local_thread_(false),
-      fb_info_()
+      fb_info_(),
+      err_msg_()
   {
 
   }
@@ -935,6 +957,7 @@ public:
                K_(exec_addr),
                K_(qc_addr),
                K_(rc),
+               K_(das_retry_rc),
                K_(task_co_id),
                K_(px_int_id),
                K_(is_fulltree),
@@ -969,6 +992,9 @@ public:
   inline void set_result(int rc) { rc_ = rc; }
   inline bool has_result() const { return rc_ <= 0; }
   inline int get_result() const { return rc_; }
+  void set_das_retry_rc(int das_retry_rc)
+  { das_retry_rc_ = (das_retry_rc_ == common::OB_SUCCESS ? das_retry_rc : das_retry_rc_); }
+  int get_das_retry_rc() const { return das_retry_rc_; }
   void set_exec_addr(const common::ObAddr &addr) {   exec_addr_ = addr; }
   void set_sqc_addr(const common::ObAddr &addr) {   sqc_addr_ = addr; }
   void set_qc_addr(const common::ObAddr &addr) {   qc_addr_ = addr; }
@@ -985,6 +1011,8 @@ public:
   void set_use_local_thread(bool flag) { is_use_local_thread_ = flag; }
   bool is_use_local_thread() { return is_use_local_thread_; }
   ObExecFeedbackInfo &get_feedback_info() { return fb_info_; };
+  const ObPxUserErrorMsg &get_err_msg() const { return err_msg_; }
+  ObPxUserErrorMsg &get_err_msg() { return err_msg_; }
 public:
   // 小于等于0表示设置了rc 值, task default ret值为1
   static const int64_t TASK_DEFAULT_RET_VALUE = 1;
@@ -1002,6 +1030,7 @@ public:
   common::ObAddr exec_addr_; /* Task 的运行地址 */
   common::ObAddr qc_addr_;  /*记录 QC 的地址，用于中断*/
   int rc_;
+  int das_retry_rc_;
   volatile int32_t state_; // 被 task 线程设置
   volatile uint64_t task_co_id_; /* task 的协程 id */
   ObPxInterruptID px_int_id_;
@@ -1013,6 +1042,7 @@ public:
   transaction::ObTxDesc *tx_desc_; // transcation information
   bool is_use_local_thread_;
   ObExecFeedbackInfo fb_info_; //for feedback info
+  ObPxUserErrorMsg err_msg_; // for error msg & warning msg
 };
 
 class ObPxRpcInitTaskArgs
@@ -1089,7 +1119,7 @@ public:
   ObPhysicalPlan *des_phy_plan_;
   ObOpSpec *op_spec_root_;
   ObOperator *static_engine_root_;
-  ObPxTask *sqc_task_ptr_; // 指针指向 SQC SubCoord 中的对应 task 内存
+  ObPxTask *sqc_task_ptr_; // 指针指向 SQC Ctx task 数组中对应的 task
   ObIAllocator *des_allocator_;
   ObPxSqcHandler *sqc_handler_; // 指向 SQC Handler 内存
 };

@@ -51,6 +51,7 @@ public:
   int batch_rpc_shutdown();
   int unix_rpc_shutdown();
   void sql_nio_stop();
+  void rpc_stop();
   void wait();
   int stop();
 
@@ -95,7 +96,6 @@ private:
   ObSMHandler mysql_handler_;
   rootserver::ObIngressBWAllocService ingress_service_;
 
-
   rpc::frame::ObNetEasy net_;
   rpc::frame::ObReqTransport *rpc_transport_;
   rpc::frame::ObReqTransport *high_prio_rpc_transport_;
@@ -119,18 +119,18 @@ ObSrvNetworkFrame::get_xlator() {
 static int get_default_net_thread_count()
 {
   int cnt = 1;
-  int cpu_num = static_cast<int>(get_cpu_num());
+  int cpu_num = static_cast<int>(get_cpu_count());
 
   if (cpu_num <= 4) {
-    cnt = 2;
+    cnt = 1;
   } else if (cpu_num <= 8) {
-    cnt = 3;
+    cnt = 2;
   } else if (cpu_num <= 16) {
-    cnt = 5;
+    cnt = 4;
   } else if (cpu_num <= 32) {
     cnt = 7;
   } else {
-    cnt = max(8, static_cast<int>(get_cpu_num()) / 6);
+    cnt = max(8, cpu_num / 6);
   }
   return cnt;
 }

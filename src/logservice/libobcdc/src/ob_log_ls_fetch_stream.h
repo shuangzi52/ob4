@@ -116,7 +116,7 @@ public:
 
   void switch_state(State state) { ATOMIC_STORE(&state_, state); }
 
-  int get_upper_limit(int64_t &upper_limit_us);
+  int get_upper_limit(int64_t &upper_limit_ns);
 
   // Execution Statistics
   void do_stat();
@@ -151,6 +151,9 @@ private:
 
     NEED_SWITCH_SERVER           = 10,  // There is a higher priority server that actively switch
     DISCARDED                    = 11,  // Partition is discard
+
+    // Feedback
+    ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF        = 12,  //same as ARCHIVE_ITER_END_BUT_LS_NOT_EXIST_IN_PALF
   };
   static const char *print_kick_out_reason_(const KickOutReason reason);
   // Determine if the server needs to be blacklisted,
@@ -251,8 +254,8 @@ private:
   // handle if found misslog while read_log_
   //
   // @param [in] log_entry         LogEntry
-  // @param [in] org_missing_info  MissingLogInfo
-  // @param [in] tsi               logfetcher::TransStatInfo
+  // @param [in] missing_info      MissingLogInfo
+  // @param [in] tsi               TransStatInfo
   // @param [out] fail_reason      KickOutReason
   //
   // @retval OB_SUCCESS                   success
@@ -260,7 +263,19 @@ private:
   // @retval other error code             fail
   int handle_log_miss_(
       palf::LogEntry &log_entry,
-      IObCDCPartTransResolver::MissingLogInfo &org_missing_info,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info,
+      logfetcher::TransStatInfo &tsi,
+      volatile bool &stop_flag,
+      KickOutReason &fail_reason);
+  int handle_miss_record_or_state_log_(
+      FetchLogSRpc &fetch_log_srpc,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info,
+      logfetcher::TransStatInfo &tsi,
+      volatile bool &stop_flag,
+      KickOutReason &fail_reason);
+  int handle_miss_redo_log_(
+      FetchLogSRpc &fetch_log_srpc,
+      IObCDCPartTransResolver::MissingLogInfo &missing_info,
       logfetcher::TransStatInfo &tsi,
       volatile bool &stop_flag,
       KickOutReason &fail_reason);
@@ -274,8 +289,7 @@ private:
       const obrpc::ObCdcLSFetchLogResp &resp,
       int64_t &fetched_missing_log_cnt,
       logfetcher::TransStatInfo &tsi,
-      IObCDCPartTransResolver::MissingLogInfo &org_missing_info,
-      IObCDCPartTransResolver::MissingLogInfo &new_generated_miss_info);
+      IObCDCPartTransResolver::MissingLogInfo &missing_info);
   int alloc_fetch_log_srpc_(FetchLogSRpc *&fetch_log_srpc);
   void free_fetch_log_srpc_(FetchLogSRpc *fetch_log_srpc);
   // TODO @bohou handle missing log end

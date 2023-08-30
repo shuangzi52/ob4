@@ -49,7 +49,7 @@ int SSHandle<pcodeStruct>::get_more(typename pcodeStruct::Response &result)
   ObReqTransport::Result   r;
 
   if (OB_ISNULL(transport_)) {
-    RPC_OBRPC_LOG(INFO, "transport_ is NULL, use poc_rpc", K(sess_id), K(has_more_));
+    RPC_OBRPC_LOG(INFO, "transport_ is NULL, use poc_rpc", K(has_more_));
     const int64_t start_ts = common::ObTimeUtility::current_time();
     int64_t src_tenant_id = ob_get_tenant_id();
     auto &set = obrpc::ObRpcPacketSet::instance();
@@ -63,16 +63,16 @@ int SSHandle<pcodeStruct>::get_more(typename pcodeStruct::Response &result)
     sockaddr_in sock_addr;
     uint8_t thread_id = ObPocClientStub::balance_assign_tidx();
     uint64_t pnio_group_id = ObPocRpcServer::DEFAULT_PNIO_GROUP;
+    int pn_err = 0;
     // TODO:@fangwu.lcc map proxy.group_id_ to pnio_group_id
     if (OB_LS_FETCH_LOG2 == pcode_) {
       pnio_group_id = ObPocRpcServer::RATELIMIT_PNIO_GROUP;
     }
     if (OB_FAIL(rpc_encode_req(proxy_, pool, pcode_, NULL, opts_, pnio_req, pnio_req_sz, false, true, false, sessid_))) {
       RPC_LOG(WARN, "rpc encode req fail", K(ret));
-    } else if(!dst_.is_valid()) {
-      ret = common::OB_INVALID_ARGUMENT;
-      RPC_LOG(WARN, "invalid addr", K(ret));
-    } else if (OB_FAIL(pn_send(
+    } else if(OB_FAIL(ObPocClientStub::check_blacklist(dst_))) {
+      RPC_LOG(WARN, "check_blacklist failed", K(ret));
+    } else if (0 != (pn_err = pn_send(
         (pnio_group_id<<32) + thread_id,
         ObPocClientStub::obaddr2sockaddr(&sock_addr, dst_),
         pnio_req,
@@ -81,7 +81,8 @@ int SSHandle<pcodeStruct>::get_more(typename pcodeStruct::Response &result)
         start_ts + proxy_.timeout(),
         ObSyncRespCallback::client_cb,
         &cb))) {
-      RPC_LOG(WARN, "pnio post fail", K(ret));
+      ret = ObPocClientStub::translate_io_error(pn_err);
+      RPC_LOG(WARN, "pnio post fail", K(pn_err));
     } else if (OB_FAIL(cb.wait())) {
       RPC_LOG(WARN, "stream rpc execute fail", K(ret), K(dst_));
     } else if (NULL == (resp = cb.get_resp(resp_sz))) {
@@ -184,7 +185,7 @@ int SSHandle<pcodeStruct>::abort()
   ObReqTransport::Result   r;
 
   if (OB_ISNULL(transport_)) {
-    RPC_OBRPC_LOG(INFO, "transport_ is NULL, use poc_rpc", K(sess_id), K(has_more_));
+    RPC_OBRPC_LOG(INFO, "transport_ is NULL, use poc_rpc", K(has_more_));
     const int64_t start_ts = common::ObTimeUtility::current_time();
     int64_t src_tenant_id = ob_get_tenant_id();
     auto &set = obrpc::ObRpcPacketSet::instance();
@@ -198,16 +199,16 @@ int SSHandle<pcodeStruct>::abort()
     sockaddr_in sock_addr;
     uint8_t thread_id = ObPocClientStub::balance_assign_tidx();
     uint64_t pnio_group_id = ObPocRpcServer::DEFAULT_PNIO_GROUP;
+    int pn_err = 0;
     // TODO:@fangwu.lcc map proxy.group_id_ to pnio_group_id
     if (OB_LS_FETCH_LOG2 == pcode_) {
       pnio_group_id = ObPocRpcServer::RATELIMIT_PNIO_GROUP;
     }
     if (OB_FAIL(rpc_encode_req(proxy_, pool, pcode_, NULL, opts_, pnio_req, pnio_req_sz, false, false, true, sessid_))) {
       RPC_LOG(WARN, "rpc encode req fail", K(ret));
-    } else if(!dst_.is_valid()) {
-      ret = common::OB_INVALID_ARGUMENT;
-      RPC_LOG(WARN, "invalid addr", K(ret));
-    } else if (OB_FAIL(pn_send(
+    } else if(OB_FAIL(ObPocClientStub::check_blacklist(dst_))) {
+      RPC_LOG(WARN, "check_blacklist failed", K(ret));
+    } else if (0 != (pn_err = pn_send(
         (pnio_group_id<<32) + thread_id,
         ObPocClientStub::obaddr2sockaddr(&sock_addr, dst_),
         pnio_req,
@@ -216,7 +217,8 @@ int SSHandle<pcodeStruct>::abort()
         start_ts + proxy_.timeout(),
         ObSyncRespCallback::client_cb,
         &cb))) {
-      RPC_LOG(WARN, "pnio post fail", K(ret));
+      ret = ObPocClientStub::translate_io_error(pn_err);
+      RPC_LOG(WARN, "pnio post fail", K(pn_err));
     } else if (OB_FAIL(cb.wait())) {
       RPC_LOG(WARN, "stream rpc execute fail", K(ret), K(dst_));
     } else if (NULL == (resp = cb.get_resp(resp_sz))) {
@@ -292,25 +294,59 @@ int ObRpcProxy::AsyncCB<pcodeStruct>::decode(void *pkt)
   }
 
   if (OB_SUCC(ret)) {
-    ObRpcPacket  *rpkt  = reinterpret_cast<ObRpcPacket*>(pkt);
-    const char   *buf   = rpkt->get_cdata();
-    const int64_t len   = rpkt->get_clen();
-    int64_t       pos   = 0;
+    ObRpcPacket  *rpkt = reinterpret_cast<ObRpcPacket*>(pkt);
+    const char   *buf  = rpkt->get_cdata();
+    int64_t      len   = rpkt->get_clen();
+    int64_t      pos   = 0;
     UNIS_VERSION_GUARD(rpkt->get_unis_version());
+    char *uncompressed_buf = NULL;
 
     if (OB_FAIL(rpkt->verify_checksum())) {
       RPC_OBRPC_LOG(ERROR, "verify checksum fail", K(*rpkt), K(ret));
-    } else if (OB_FAIL(rcode_.deserialize(buf, len, pos))) {
-      RPC_OBRPC_LOG(WARN, "decode result code fail", K(*rpkt), K(ret));
-    } else if (rcode_.rcode_ != OB_SUCCESS) {
-      // RPC_OBRPC_LOG(WARN, "execute rpc fail", K_(rcode));
-    } else if (OB_FAIL(result_.deserialize(buf, len, pos))) {
-      RPC_OBRPC_LOG(WARN, "decode packet fail", K(ret));
-    } else {
-      //do nothing
+    }
+    if (OB_SUCC(ret)) {
+      const common::ObCompressorType &compressor_type = rpkt->get_compressor_type();
+      if (common::INVALID_COMPRESSOR != compressor_type) {
+        // uncompress
+        const int32_t original_len = rpkt->get_original_len();
+        common::ObCompressor *compressor = NULL;
+        int64_t dst_data_size = 0;
+        if (OB_FAIL(common::ObCompressorPool::get_instance().get_compressor(compressor_type, compressor))) {
+          RPC_OBRPC_LOG(WARN, "get_compressor failed", K(ret), K(compressor_type));
+        } else if (NULL == (uncompressed_buf =
+                                   static_cast<char *>(common::ob_malloc(original_len, common::ObModIds::OB_RPC)))) {
+          ret = common::OB_ALLOCATE_MEMORY_FAILED;
+          RPC_OBRPC_LOG(WARN, "Allocate memory failed", K(ret));
+        } else if (OB_FAIL(compressor->decompress(buf, len, uncompressed_buf, original_len, dst_data_size))) {
+          RPC_OBRPC_LOG(WARN, "decompress failed", K(ret));
+        } else if (dst_data_size != original_len) {
+          ret = common::OB_ERR_UNEXPECTED;
+          RPC_OBRPC_LOG(ERROR, "decompress len not match", K(ret), K(dst_data_size), K(original_len));
+        } else {
+          RPC_OBRPC_LOG(DEBUG, "uncompress result success", K(compressor_type), K(len), K(original_len));
+          // replace buf
+          buf = uncompressed_buf;
+          len = original_len;
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(rcode_.deserialize(buf, len, pos))) {
+        RPC_OBRPC_LOG(WARN, "decode result code fail", K(*rpkt), K(ret));
+      } else if (rcode_.rcode_ != OB_SUCCESS) {
+        // RPC_OBRPC_LOG(WARN, "execute rpc fail", K_(rcode));
+      } else if (OB_FAIL(result_.deserialize(buf, len, pos))) {
+        RPC_OBRPC_LOG(WARN, "decode packet fail", K(ret));
+      } else {
+        // do nothing
+      }
+    }
+    // free the uncompress buffer
+    if (NULL != uncompressed_buf) {
+      common::ob_free(uncompressed_buf);
+      uncompressed_buf = NULL;
     }
   }
-
   return ret;
 }
 template <class pcodeStruct>
@@ -392,10 +428,10 @@ int ObRpcProxy::rpc_call(ObRpcPacketCode pcode, const Input &args,
   ObReqTransport::Request req;
 
   if (OB_FAIL(ret)) {
-  } else if (payload > OB_MAX_RPC_PACKET_LENGTH) {
+  } else if (payload > get_max_rpc_packet_size()) {
     ret = OB_RPC_PACKET_TOO_LONG;
     RPC_OBRPC_LOG(WARN, "obrpc packet payload execced its limit",
-            K(payload), "limit", OB_MAX_RPC_PACKET_LENGTH,
+            K(payload), "limit", get_max_rpc_packet_size(),
             K(ret));
   } else if (OB_ISNULL(transport_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -442,7 +478,7 @@ int ObRpcProxy::rpc_call(ObRpcPacketCode pcode, const Input &args,
           ret = common::OB_ERR_UNEXPECTED;
           RPC_OBRPC_LOG(ERROR, "decompress len not match", K(ret), K(dst_data_size), K(original_len));
         } else {
-          RPC_OBRPC_LOG(DEBUG, "uncompress result success", K(compressor_type), K(len), K(original_len));
+          RPC_OBRPC_LOG(INFO, "uncompress result success", K(compressor_type), K(len), K(original_len));
           // replace buf
           buf = uncompressed_buf;
           len = original_len;
@@ -582,10 +618,10 @@ int ObRpcProxy::rpc_post(const typename pcodeStruct::Request &args,
   }
 
   if (OB_FAIL(ret)) {
-  } else if (payload > OB_MAX_RPC_PACKET_LENGTH) {
+  } else if (payload > get_max_rpc_packet_size()) {
     ret = OB_RPC_PACKET_TOO_LONG;
     RPC_OBRPC_LOG(WARN, "obrpc packet payload execced its limit",
-                  K(ret), K(payload), "limit", OB_MAX_RPC_PACKET_LENGTH);
+                  K(ret), K(payload), "limit", get_max_rpc_packet_size());
   } else if (OB_ISNULL(transport_)) {
     ret = OB_ERR_UNEXPECTED;
     RPC_OBRPC_LOG(WARN, "transport_ should not be NULL", K(ret), KP_(transport));

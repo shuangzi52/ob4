@@ -22,6 +22,7 @@
 #include "common/ob_queue_thread.h"                 // ObCond
 #include "ob_cdc_tablet_to_table_info.h"            // ObCDCTabletChangeInfo
 #include "storage/tx/ob_trans_define.h"             // ObTransID, ObLSLogInfoArray
+#include "storage/tx/ob_tx_big_segment_buf.h"       // ObTxBigSegmentBuf
 #include "storage/memtable/ob_memtable_mutator.h"   // ObMemtableMutatorRow, ObMemtableMutatorMeta
 #include "storage/blocksstable/ob_datum_row.h"      // ObRowDml
 #include "logservice/data_dictionary/ob_data_dict_storager.h"  // ObDataDictStorage
@@ -284,6 +285,7 @@ private:
       const TableSchemaInfo *tb_schema_info,
       const ObTimeZoneInfoWrap *tz_info_wrap,
       const bool enable_output_hidden_primary_key);
+  int deep_copy_encoded_column_value_(blocksstable::ObStorageDatum &datum);
   // 1. get column_id and column_schema_info for user table;
   // 2. get column_id for all_ddl_operation_table
   int get_column_info_(
@@ -464,7 +466,7 @@ public:
 
   ObLogEntryTask &get_redo_log_entry_task() { return log_entry_task_; }
 
-  int64_t get_row_seq_no() const { return row_.seq_no_; }
+  const transaction::ObTxSEQ get_row_seq_no() const { return row_.seq_no_; }
 
   bool is_callback() const { return 1 == is_callback_; }
   void mark_callback() { is_callback_ = 1; }
@@ -548,7 +550,7 @@ public:
   uint64_t get_op_tablegroup_id() const { return ddl_op_tablegroup_id_; }
   int64_t get_op_schema_version() const { return ddl_op_schema_version_; }
   uint64_t get_exec_tenant_id() const { return ddl_exec_tenant_id_; }
-  int64_t get_row_seq_no() const { return row_.seq_no_; }
+  const transaction::ObTxSEQ &get_row_seq_no() const { return row_.seq_no_; }
 
 public:
   // tennat_id(UINT64_MAX: 20) + schema_version(INT64_MAX:19)
@@ -795,13 +797,13 @@ public:
    * 1. lsn of rollback_to should push into all_recorded_lsns(ObTxRollbackToLog should has independent LogEntry)
    * 2. construct RollbackNode and push into rollback_list_
    * @param {LSN} &lsn lsn of ObTxRollbackToLog
-   * @param {int64_t} rollback_from
-   * @param {int64_t} rollback_to
+   * @param {ObTxSEQ} rollback_from
+   * @param {ObTxSEQ} rollback_to
    * @retval OB_ENTRY_EXIST: the tollback_to node already recorded
    * @retval OB_SUCCESS: op succ
    * @retval other error code: op fail by other reason
    */
-  int push_rollback_to_info(const palf::LSN &lsn, const int64_t rollback_from, const int64_t rollback_to);
+  int push_rollback_to_info(const palf::LSN &lsn, const transaction::ObTxSEQ &rollback_from, const transaction::ObTxSEQ &rollback_to);
 
   /// set PartTrans Commit Info
   /// @param [in] trace_id              app trace id
@@ -1091,6 +1093,7 @@ public:
   {
     return ! sorted_redo_list_.has_dispatched_but_unsorted_redo();
   }
+  transaction::ObTxBigSegmentBuf *get_segment_buf() { return &segment_buf_; }
   int push_multi_data_source_data(
       const palf::LSN &lsn,
       const transaction::ObTxBufferNodeArray &mds_data_arr,
@@ -1113,7 +1116,7 @@ public:
     return tls_id_.is_sys_log_stream() && ! multi_data_source_info_.is_valid();
   }
   const MultiDataSourceInfo &get_multi_data_source_info() const { return multi_data_source_info_; }
-  const share::ObLSAttr &get_ls_attr() const { return multi_data_source_info_.get_ls_attr(); }
+  const share::ObLSAttrArray &get_ls_attr_arr() const { return multi_data_source_info_.get_ls_attr_arr(); }
   DictTenantArray &get_dict_tenant_array() { return multi_data_source_info_.get_dict_tenant_array(); }
   DictDatabaseArray &get_dict_database_array() { return multi_data_source_info_.get_dict_database_array(); }
   DictTableArray &get_dict_table_array() { return multi_data_source_info_.get_dict_table_array(); }
@@ -1129,6 +1132,14 @@ public:
   // doesn't contains table_meta for specifed table, otherwise use table_meta in inc_data_dict.
   // NOTICE: ONLY AVALIABLE FOR DDL_TRANS.
   int get_table_meta_with_inc_dict(const uint64_t tenant_id, const uint64_t table_id, const datadict::ObDictTableMeta *&tb_meta);
+
+  // Check if the DDL transaction needs to be treated as a barrier.
+  //
+  // @param [out] is_not_barrier is not a barrier
+  // @param [out] op_type Schema operation type
+  int check_for_ddl_trans(
+      bool &is_not_barrier,
+      ObSchemaOperationType &op_type) const;
 
   TO_STRING_KV(
       "state", serve_state_,
@@ -1268,6 +1279,7 @@ private:
   // For MultiDataSource
   MultiDataSourceNodeArray  multi_data_source_node_arr_;    // array record MultiDataSourceNode
   MultiDataSourceInfo       multi_data_source_info_;        // MultiDataSourceInfo
+  transaction::ObTxBigSegmentBuf segment_buf_;              // ObTxBigSegmentBuf for Big Tx Log
 
   // checkpoint seq number
   //

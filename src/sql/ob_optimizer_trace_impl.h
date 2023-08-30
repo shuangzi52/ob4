@@ -37,6 +37,7 @@ struct JoinInfo;
 class OptTableMetas;
 class TableItem;
 class ObSQLSessionInfo;
+struct CandidatePlan;
 
 class ObOptimizerTraceImpl;
 
@@ -235,6 +236,7 @@ public:
 /***********************************************/
   int new_line();
   int append_lower(const char* msg);
+  int append_ptr(const void *ptr);
   int append();
   int append(const bool &value);
   int append(const char* msg);
@@ -244,6 +246,9 @@ public:
   int append(const uint32_t &value);
   int append(const double & value);
   int append(const ObObj& value);
+  int append(const OpParallelRule& rule);
+  int append(const ObTableLocationType& type);
+  int append(const ObPhyPlanType& type);
 /***********************************************/
 ////print plan info
 /***********************************************/
@@ -253,6 +258,8 @@ public:
   int append(const JoinPath *value);
   int append(const JoinInfo& info);
   int append(const TableItem *table);
+  int append(const ObShardingInfo *info);
+  int append(const CandidatePlan &plan);
 /***********************************************/
 ////print template type
 /***********************************************/
@@ -322,7 +329,8 @@ ObOptimizerTraceImpl::append(const T* expr)
   char *buf = NULL;
   int64_t buf_len = OB_MAX_SQL_LENGTH;
   int64_t pos = 0;
-  if (OB_ISNULL(buf = (char*)allocator_.alloc(buf_len))) {
+  common::ObArenaAllocator allocator("OptimizerTrace");
+  if (OB_ISNULL(buf = (char*)allocator.alloc(buf_len))) {
     ret = OB_ERR_UNEXPECTED;
     //LOG_WARN("failed to alloc buffer", K(ret));
   } else if (OB_NOT_NULL(expr)) {
@@ -346,8 +354,9 @@ ObOptimizerTraceImpl::append(const T* value)
   int ret = OB_SUCCESS;
   ObString sql;
   ObObjPrintParams print_params;
+  common::ObArenaAllocator allocator("OptimizerTrace");
   // TODO: @zhenling, use a valid schema guard in each query
-  if (OB_FAIL(ObSQLUtils::reconstruct_sql(allocator_,
+  if (OB_FAIL(ObSQLUtils::reconstruct_sql(allocator,
                                           value,
                                           sql,
                                           NULL,

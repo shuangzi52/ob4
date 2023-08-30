@@ -37,6 +37,11 @@
 #include "pl/ob_pl.h"
 #include "pl/ob_pl_package.h"
 #include "observer/ob_req_time_service.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_define.h"
+#include "sql/spm/ob_spm_controller.h"
+#include "sql/spm/ob_spm_evolution_plan.h"
+#endif
 #include "pl/pl_cache/ob_pl_cache_mgr.h"
 
 using namespace oceanbase::common;
@@ -153,6 +158,37 @@ struct ObGetKVEntryBySQLIDOp : public ObKVEntryTraverseOp
   common::ObString sql_id_;
 };
 
+#ifdef OB_BUILD_SPM
+struct ObGetPlanBaselineBySQLIDOp : public ObKVEntryTraverseOp
+{
+  explicit ObGetPlanBaselineBySQLIDOp(uint64_t db_id,
+                                      common::ObString sql_id,
+                                      LCKeyValueArray *key_val_list,
+                                      const CacheRefHandleID ref_handle)
+    : ObKVEntryTraverseOp(key_val_list, ref_handle),
+      db_id_(db_id),
+      sql_id_(sql_id)
+  {
+  }
+  virtual int check_entry_match(LibCacheKVEntry &entry, bool &is_match)
+  {
+    int ret = OB_SUCCESS;
+    is_match = false;
+    if (ObLibCacheNameSpace::NS_SPM == entry.first->namespace_) {
+      ObBaselineKey *key = static_cast<ObBaselineKey*>(entry.first);
+      if (db_id_ != common::OB_INVALID_ID && db_id_ != key->db_id_) {
+        // skip entry that has non-matched db_id
+      } else if (sql_id_ == key->sql_id_) {
+        is_match = true;
+      }
+    }
+    return ret;
+  }
+
+  uint64_t db_id_;
+  common::ObString sql_id_;
+};
+#endif
 
 struct ObGetPcvSetByTabNameOp : public ObKVEntryTraverseOp
 {
@@ -188,6 +224,36 @@ struct ObGetPcvSetByTabNameOp : public ObKVEntryTraverseOp
   common::ObString tab_name_;
 };
 
+#ifdef OB_BUILD_SPM
+struct ObGetEvolutionTaskPcvSetOp : public ObKVEntryTraverseOp
+{
+  explicit ObGetEvolutionTaskPcvSetOp(EvolutionPlanList *evo_task_list,
+                                      LCKeyValueArray *key_val_list,
+                                      const CacheRefHandleID ref_handle)
+    : ObKVEntryTraverseOp(key_val_list, ref_handle),
+      evo_task_list_(evo_task_list)
+  {
+  }
+
+  virtual int check_entry_match(LibCacheKVEntry &entry, bool &is_match)
+  {
+    int ret = common::OB_SUCCESS;
+    is_match = false;
+    if (entry.first->namespace_ == ObLibCacheNameSpace::NS_CRSR) {
+      ObPCVSet *node = static_cast<ObPCVSet*>(entry.second);
+      int64_t origin_count = evo_task_list_->count();
+      if (OB_FAIL(node->get_evolving_evolution_task(*evo_task_list_))) {
+        LOG_WARN("failed to get evolving evolution task", K(ret));
+      } else {
+        is_match = evo_task_list_->count() > origin_count;
+      }
+    }
+    return ret;
+  }
+
+  EvolutionPlanList *evo_task_list_;
+};
+#endif
 
 struct ObGetTableIdOp
 {
@@ -322,6 +388,10 @@ void ObPlanCache::destroy()
     if (OB_SUCCESS != (cache_evict_all_obj())) {
       SQL_PC_LOG_RET(WARN, OB_ERROR, "fail to evict all lib cache cache");
     }
+    if (root_context_ != NULL) {
+      DESTROY_CONTEXT(root_context_);
+      root_context_ = NULL;
+    }
     inited_ = false;
   }
 }
@@ -331,7 +401,13 @@ int ObPlanCache::init(int64_t hash_bucket, uint64_t tenant_id)
   int ret = OB_SUCCESS;
   if (!inited_) {
     ObPCMemPctConf default_conf;
-    if (OB_FAIL(co_mgr_.init(hash_bucket, tenant_id))) {
+    ObMemAttr attr(tenant_id, "PlanCache", ObCtxIds::PLAN_CACHE_CTX_ID);
+    lib::ContextParam param;
+    param.set_properties(lib::ADD_CHILD_THREAD_SAFE | lib::ALLOC_THREAD_SAFE)
+      .set_mem_attr(attr);
+    if (OB_FAIL(ROOT_CONTEXT->CREATE_CONTEXT(root_context_, param))) {
+      SQL_PC_LOG(WARN, "failed to create context", K(ret));
+    } else if (OB_FAIL(co_mgr_.init(hash_bucket, tenant_id))) {
       SQL_PC_LOG(WARN, "failed to init lib cache manager", K(ret));
     } else if (OB_FAIL(cache_key_node_map_.create(hash::cal_next_prime(hash_bucket),
                                                   ObModIds::OB_HASH_BUCKET_PLAN_CACHE,
@@ -357,6 +433,12 @@ int ObPlanCache::init(int64_t hash_bucket, uint64_t tenant_id)
       tenant_id_ = tenant_id;
       ref_handle_mgr_.set_tenant_id(tenant_id_);
       inited_ = true;
+    }
+    if (OB_FAIL(ret)) {
+      if (root_context_ != NULL) {
+        DESTROY_CONTEXT(root_context_);
+        root_context_ = NULL;
+      }
     }
   }
   return ret;
@@ -396,11 +478,8 @@ int ObPlanCache::check_after_get_plan(int tmp_ret,
   bool enable_udr = false;
   bool need_late_compilation = false;
   ObJITEnableMode jit_mode = ObJITEnableMode::OFF;
-  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
   ObPlanCacheCtx &pc_ctx = static_cast<ObPlanCacheCtx&>(ctx);
-  if (tenant_config.is_valid()) {
-    enable_udr = tenant_config->enable_user_defined_rewrite_rules;
-  }
+
   if (cache_obj != NULL && ObLibCacheNameSpace::NS_CRSR == cache_obj->get_ns()) {
     plan = static_cast<ObPhysicalPlan *>(cache_obj);
   }
@@ -411,7 +490,7 @@ int ObPlanCache::check_after_get_plan(int tmp_ret,
     } else if (OB_FAIL(pc_ctx.sql_ctx_.session_info_->get_jit_enabled_mode(jit_mode))) {
       LOG_WARN("failed to get jit mode");
     } else {
-      // do nothing
+      enable_udr = pc_ctx.sql_ctx_.session_info_->enable_udr();
     }
   }
   if (OB_SUCC(ret) && plan != NULL) {
@@ -547,11 +626,12 @@ int ObPlanCache::construct_multi_stmt_fast_parser_result(common::ObIAllocator &a
     ObFastParserResult trimmed_parser_result;
     for (int64_t i = 0; OB_SUCC(ret) && i < queries->count(); i++) {
       parser_result.reset();
+      ObString trimed_stmt = const_cast<ObString &>(queries->at(i)).trim();
       if (OB_FAIL(construct_fast_parser_result(allocator,
                                                pc_ctx,
-                                               queries->at(i),
+                                               trimed_stmt,
                                                parser_result))) {
-        LOG_WARN("failed to construct fast parser result", K(ret));
+        LOG_WARN("failed to construct fast parser result", K(ret), K(i), K(trimed_stmt));
       } else if (OB_FAIL(pc_ctx.multi_stmt_fp_results_.push_back(parser_result))) {
         LOG_WARN("failed to push back parser result", K(ret));
       } else if (i == 0 && enable_explain_batched_multi_statement) {
@@ -614,7 +694,8 @@ int ObPlanCache::construct_fast_parser_result(common::ObIAllocator &allocator,
         &(pc_ctx.exec_ctx_.get_physical_plan_ctx()->get_param_store_for_update());
     if (OB_FAIL(construct_plan_cache_key(*pc_ctx.sql_ctx_.session_info_,
                                          ObLibCacheNameSpace::NS_CRSR,
-                                         fp_result.pc_key_))) {
+                                         fp_result.pc_key_,
+                                         pc_ctx.sql_ctx_.is_protocol_weak_read_))) {
       LOG_WARN("failed to construct plan cache key", K(ret));
     } else if (enable_exact_mode) {
       (void)fp_result.pc_key_.name_.assign_ptr(raw_sql.ptr(), raw_sql.length());
@@ -622,14 +703,309 @@ int ObPlanCache::construct_fast_parser_result(common::ObIAllocator &allocator,
       FPContext fp_ctx(conn_coll);
       fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
       fp_ctx.sql_mode_ = sql_mode;
+      bool can_do_batch_insert = false;
+      ObString first_truncated_sql;
+      int64_t batch_count = 0;
       if (OB_FAIL(ObSqlParameterization::fast_parser(allocator,
                                                     fp_ctx,
                                                     raw_sql,
                                                     fp_result))) {
         LOG_WARN("failed to fast parser", K(ret), K(sql_mode), K(pc_ctx.raw_sql_));
-      } else { /*do nothing*/ }
+      } else if (OB_FAIL(check_can_do_insert_opt(allocator,
+                                                 pc_ctx,
+                                                 fp_result,
+                                                 can_do_batch_insert,
+                                                 batch_count,
+                                                 first_truncated_sql))) {
+        LOG_WARN("fail to do insert optimization", K(ret));
+      } else if (!can_do_batch_insert) {
+        // can't do batch insert
+      } else if (OB_FAIL(rebuild_raw_params(allocator,
+                                            pc_ctx,
+                                            fp_result,
+                                            batch_count))) {
+        LOG_WARN("fail to rebuild raw_param", K(ret), K(batch_count));
+      } else if (pc_ctx.insert_batch_opt_info_.multi_raw_params_.empty()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected multi_raw_params, can't do batch insert opt, but not need to return error",
+            K(batch_count), K(first_truncated_sql), K(pc_ctx.raw_sql_), K(fp_result));
+      } else if (OB_ISNULL(pc_ctx.insert_batch_opt_info_.multi_raw_params_.at(0))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null ptr, can't do batch insert opt, but not need to return error",
+            K(batch_count), K(first_truncated_sql), K(pc_ctx.raw_sql_), K(fp_result));
+      } else {
+        fp_result.raw_params_.reset();
+        fp_result.raw_params_.set_allocator(&allocator);
+        fp_result.raw_params_.set_capacity(pc_ctx.insert_batch_opt_info_.multi_raw_params_.at(0)->count());
+        if (OB_FAIL(fp_result.raw_params_.assign(*pc_ctx.insert_batch_opt_info_.multi_raw_params_.at(0)))) {
+          LOG_WARN("fail to assign raw_param", K(ret));
+        } else {
+          pc_ctx.sql_ctx_.set_is_do_insert_batch_opt(batch_count);
+          fp_result.pc_key_.name_.assign_ptr(first_truncated_sql.ptr(), first_truncated_sql.length());
+          LOG_DEBUG("print new fp_result.pc_key_.name_", K(fp_result.pc_key_.name_));
+        }
+      }
     }
   }
+  return ret;
+}
+
+// For insert into t1 values(1,1),(2,2),(3,3); After parameterization,
+// the SQL will become insert into t1 values(?,?),(?,?),(?,?);
+// After inspection, it is found that insert multi-values ​​batch optimization can be done,
+// and the SQL is truncated to insert into t1 values(?,?); If the SQL does not hit the plan from plan_cache,
+// hard parsing is required, then insert into t1 values(?,?); Revert to insert into t1 values(1,1);
+// This function is to complete the parameter reduction in parameterless SQL,
+// so that the original SQL can be used as a parser later
+// replace into statement and insert_up statement are same
+int ObPlanCache::restore_param_to_truncated_sql(ObPlanCacheCtx &pc_ctx)
+{
+  int ret = OB_SUCCESS;
+  char *buf = NULL;
+  int32_t pos = 0;
+  int64_t idx = 0;
+  const ObIArray<ObPCParam *> *raw_params = nullptr;
+  int64_t buff_len = pc_ctx.raw_sql_.length();
+  int64_t ins_params_count = pc_ctx.insert_batch_opt_info_.insert_params_count_;
+  ObString &no_param_sql = pc_ctx.fp_result_.pc_key_.name_;
+  if (pc_ctx.insert_batch_opt_info_.multi_raw_params_.empty()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected params count", K(ret), K(pc_ctx.insert_batch_opt_info_.multi_raw_params_.count()));
+  } else if (OB_ISNULL(raw_params = pc_ctx.insert_batch_opt_info_.multi_raw_params_.at(0))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ptr", K(ret), K(raw_params));
+  } else if (OB_ISNULL(buf = (char *)pc_ctx.allocator_.alloc(pc_ctx.raw_sql_.length()))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("buff is null", K(ret), K(pc_ctx.raw_sql_.length()));
+  } else if (raw_params->count() < ins_params_count) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected params count", K(ret), K(raw_params->count()), K(ins_params_count));
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < raw_params->count(); i++) {
+    ObPCParam *pc_param = nullptr;
+    if (OB_ISNULL(pc_param = raw_params->at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null ptr", K(ret), K(i), K(raw_params));
+    } else {
+      int32_t len = (int32_t)pc_param->node_->pos_ - idx;
+      LOG_TRACE("print raw_params", K(i), K(buff_len), K(len), K(idx), K(pc_param->node_->pos_),
+          K(ObString(pc_param->node_->text_len_, pc_param->node_->raw_text_)));
+      if (len == 0) {
+        // insert into t1 values(2-1,2-2); becomes insert into t1 values(??,??); after parameterization
+        // So this scenario len == 0 is needed
+        if (pc_param->node_->text_len_ > buff_len - pos) {
+          ret = OB_BUF_NOT_ENOUGH;
+          LOG_WARN("unexpected len", K(ret), K(i), K(buff_len), K(pc_param->node_->text_len_), K(pos), K(no_param_sql));
+        } else {
+          MEMCPY(buf + pos, pc_param->node_->raw_text_, pc_param->node_->text_len_);
+          pos += (int32_t)pc_param->node_->text_len_;
+          idx = (int32_t)pc_param->node_->pos_ + 1;
+        }
+      } else if (len > 0) {
+        if (len > buff_len - pos) {
+          ret = OB_BUF_NOT_ENOUGH;
+          LOG_WARN("unexpected len", K(ret), K(i), K(buff_len), K(idx), K(pos), K(no_param_sql));
+        } else if (pc_param->node_->text_len_ > (buff_len - pos - len)) {
+          ret = OB_BUF_NOT_ENOUGH;
+          LOG_WARN("unexpected len", K(ret), K(i), K(buff_len), K(idx), K(pc_param->node_->text_len_), K(pos), K(no_param_sql));
+        } else {
+          // copy sql text
+          // insert into t1 values(?,?);
+          // first times, it copy 'insert into t1 values('
+          MEMCPY(buf + pos, no_param_sql.ptr() + idx, len);
+          idx = (int32_t)pc_param->node_->pos_ + 1;
+          pos += len;
+          //copy raw param
+          MEMCPY(buf + pos, pc_param->node_->raw_text_, pc_param->node_->text_len_);
+          pos += (int32_t)pc_param->node_->text_len_;
+        }
+      }
+    }
+  }
+
+  if (OB_SUCCESS == ret) {
+    int32_t len = no_param_sql.length() - idx;
+    if (len > buff_len - pos) {
+      ret = OB_BUF_NOT_ENOUGH;
+      LOG_WARN("unexpected len", K(ret), K(buff_len), K(pos), K(idx), K(no_param_sql.length()), K(no_param_sql));
+    } else if (len > 0) {
+      MEMCPY(buf + pos, no_param_sql.ptr() + idx, len);
+      idx += len;
+      pos += len;
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    buf[pos] = ';';
+    pos++;
+    pc_ctx.insert_batch_opt_info_.new_reconstruct_sql_.assign_ptr(buf, pos);
+    LOG_TRACE("print new_truncated_sql", K(pc_ctx.insert_batch_opt_info_.new_reconstruct_sql_), K(pos));
+  }
+  return ret;
+}
+
+// For insert into t1 values(1,1),(2,2); after finishing fast_parser,
+// all the parameters will be extracted,and the parameter array becomes [1, 1, 2, 2]
+// But we will truncate the SQL to insert into t1 values(?,?);
+// so the parameter array needs to be changed to a two-dimensional matrix like {[1, 1], [2, 2]}
+// This function is to complete the conversion. At the same time, for the insert_up statement,
+// insert into t1 values(1,1),(2,2) on duplicate key update c1 = 3, c2 = 4;
+// After the SQL is truncated, the two parameters in the update part correspond to the pos_ in the truncated SQL
+//   that needs to be subtracted from the truncated part
+int ObPlanCache::rebuild_raw_params(common::ObIAllocator &allocator,
+                                    ObPlanCacheCtx &pc_ctx,
+                                    ObFastParserResult &fp_result,
+                                    int64_t row_count)
+{
+  int ret = OB_SUCCESS;
+  int64_t params_idx = 0;
+  ObSEArray<ObPCParam *, 8> update_raw_params;
+  int64_t insert_param_count = pc_ctx.insert_batch_opt_info_.insert_params_count_;
+  int64_t upd_param_count = pc_ctx.insert_batch_opt_info_.update_params_count_;
+  int64_t one_row_params_cnt = insert_param_count + upd_param_count;
+  int64_t upd_start_idx = row_count * insert_param_count;
+  int64_t sql_delta_length = pc_ctx.insert_batch_opt_info_.sql_delta_length_;
+  if (((row_count * insert_param_count) + upd_param_count) != fp_result.raw_params_.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected raw_params", K(ret),
+        K(row_count), K(insert_param_count), K(upd_param_count), K(fp_result.raw_params_.count()));
+  } else {
+    pc_ctx.insert_batch_opt_info_.multi_raw_params_.set_capacity(row_count);
+  }
+
+  for (int64_t i = upd_start_idx; OB_SUCC(ret) && i < fp_result.raw_params_.count(); i++) {
+    // As sql: insert into t1 values(1,1),(2,2) on duplicate key update c1 = 3, c2 = 4;
+    // After the SQL is truncated, the two parameters in the update part correspond to the pos_ in the truncated SQL
+    //  that needs to be subtracted from the truncated part, sql_delta_length is the length of truncated part.
+    ObPCParam *pc_param = fp_result.raw_params_.at(i);
+    if (OB_ISNULL(pc_param)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null ptr", K(ret), K(i));
+    } else if (FALSE_IT(pc_param->node_->pos_ = pc_param->node_->pos_ - sql_delta_length)) {
+      // For the parameters of the update part, pos_ needs to subtract the length of the truncated part
+    } else if (OB_FAIL(update_raw_params.push_back(pc_param))) {
+      LOG_WARN("fail to push back raw_param", K(ret), K(i));
+    }
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < row_count; i++) {
+    void *buf = nullptr;
+    ObRawParams *params_array = nullptr;
+    if (OB_ISNULL(buf = allocator.alloc(sizeof(ObRawParams)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc memory", K(ret), K(sizeof(ObRawParams)));
+    } else {
+      params_array = new(buf) ObRawParams(allocator);
+      params_array->set_capacity(one_row_params_cnt);
+    }
+
+    for (int64_t j = 0; OB_SUCC(ret) && j < insert_param_count; j++) {
+      if (params_idx >= fp_result.raw_params_.count()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected params_idx", K(ret), K(i), K(j), K(params_idx), K(fp_result.raw_params_));
+      } else if (OB_FAIL(params_array->push_back(fp_result.raw_params_.at(params_idx)))) {
+        LOG_WARN("fail to push back", K(ret), K(i), K(j), K(params_idx));
+      } else {
+        params_idx++;
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      if (0 != upd_param_count && OB_FAIL(append(*params_array, update_raw_params))) {
+        LOG_WARN("fail to append update raw params", K(ret));
+      } else if (OB_FAIL(pc_ctx.insert_batch_opt_info_.multi_raw_params_.push_back(params_array))) {
+        LOG_WARN("fail to push params array", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+bool ObPlanCache::can_do_insert_batch_opt(ObPlanCacheCtx &pc_ctx)
+{
+  bool bret = false;
+  ObSQLSessionInfo *session_info = nullptr;
+  if (OB_NOT_NULL(session_info = pc_ctx.sql_ctx_.session_info_)) {
+    if (!pc_ctx.sql_ctx_.is_batch_params_execute() &&
+        GCONF._sql_insert_multi_values_split_opt &&
+        !pc_ctx.sql_ctx_.get_enable_user_defined_rewrite() &&
+        !session_info->is_inner() &&
+        OB_BATCHED_MULTI_STMT_ROLLBACK != session_info->get_retry_info().get_last_query_retry_err()) {
+      bret = true;
+    } else {
+      LOG_TRACE("can't do insert batch optimization",
+          "is_arraybinding", pc_ctx.sql_ctx_.is_batch_params_execute(),
+          "is_open_switch", GCONF._sql_insert_multi_values_split_opt,
+          "is_inner_sql", session_info->is_inner(),
+          "udr", pc_ctx.sql_ctx_.get_enable_user_defined_rewrite(),
+          "last_ret", session_info->get_retry_info().get_last_query_retry_err(),
+          "curr_sql", pc_ctx.raw_sql_);
+    }
+  }
+  return bret;
+}
+
+int ObPlanCache::check_can_do_insert_opt(common::ObIAllocator &allocator,
+                                         ObPlanCacheCtx &pc_ctx,
+                                         ObFastParserResult &fp_result,
+                                         bool &can_do_batch,
+                                         int64_t &batch_count,
+                                         ObString &first_truncated_sql)
+{
+  int ret = OB_SUCCESS;
+  can_do_batch = false;
+  batch_count = 0;
+  if (fp_result.values_token_pos_ != 0 &&
+      can_do_insert_batch_opt(pc_ctx)) {
+    char *new_param_sql = nullptr;
+    int64_t new_param_sql_len = 0;
+    int64_t ins_params_count = 0;
+    int64_t upd_params_count = 0;
+    int64_t delta_length = 0;
+    ObSQLMode sql_mode = pc_ctx.sql_ctx_.session_info_->get_sql_mode();
+    ObCollationType conn_coll = pc_ctx.sql_ctx_.session_info_->get_local_collation_connection();
+    FPContext fp_ctx(conn_coll);
+    fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
+    fp_ctx.sql_mode_ = sql_mode;
+    ObFastParserMysql fp(allocator, fp_ctx);
+
+    if (OB_FAIL(fp.parser_insert_str(allocator,
+                                     fp_result.values_token_pos_,
+                                     fp_result.pc_key_.name_,
+                                     first_truncated_sql,
+                                     can_do_batch,
+                                     ins_params_count,
+                                     upd_params_count,
+                                     delta_length,
+                                     batch_count))) {
+      LOG_WARN("fail to parser insert string", K(ret), K(fp_result.pc_key_.name_));
+    } else if (!can_do_batch || ins_params_count <= 0) {
+      can_do_batch = false;
+      // Only the insert ... values ​​... statement will print this,after trying to do insert batch optimization failure
+      LOG_INFO("can not do batch insert opt", K(ret), K(can_do_batch), K(upd_params_count),
+                K(ins_params_count), K(batch_count), K(pc_ctx.raw_sql_));
+    } else if (batch_count <= 1) {
+      can_do_batch = false;
+    } else if (upd_params_count > 0 && delta_length <= 0) {
+      // Only the insert ... values ​​... on duplicate key update ... statement will print this log
+      // after trying to do insert batch optimization failure
+      can_do_batch = false;
+      LOG_INFO("can not do batch insert opt", K(ret), K(can_do_batch), K(ins_params_count), K(batch_count), K(pc_ctx.raw_sql_));
+    } else {
+      pc_ctx.insert_batch_opt_info_.insert_params_count_ = ins_params_count;
+      pc_ctx.insert_batch_opt_info_.update_params_count_ = upd_params_count;
+      pc_ctx.insert_batch_opt_info_.sql_delta_length_ = delta_length;
+    }
+  }
+
+  if (ret != OB_SUCCESS) {
+    // 这里边的无论什么报错，都可以被吞掉，只是报错后就不能再做batch优化
+    can_do_batch = false;
+    LOG_WARN("can't do insert batch optimization, cover the error code by design", K(ret), K(pc_ctx.raw_sql_));
+    ret = OB_SUCCESS;
+  }
+
   return ret;
 }
 
@@ -1003,6 +1379,20 @@ int ObPlanCache::cache_evict_plan_by_sql_id(uint64_t db_id, common::ObString sql
   return ret;
 }
 
+#ifdef OB_BUILD_SPM
+int ObPlanCache::cache_evict_baseline_by_sql_id(uint64_t db_id, common::ObString sql_id)
+{
+  int ret = OB_SUCCESS;
+  SQL_PC_LOG(TRACE, "cache evict plan baseline by sql id start");
+  LCKeyValueArray to_evict_keys;
+  ObGetPlanBaselineBySQLIDOp get_ids_op(db_id, sql_id, &to_evict_keys, PLAN_BASELINE_HANDLE);
+  if (OB_FAIL(foreach_cache_evict(get_ids_op))) {
+    SQL_PC_LOG(WARN, "failed to foreach cache evict", K(ret));
+  }
+  SQL_PC_LOG(TRACE, "cache evict plan baseline by sql id end");
+  return ret;
+}
+#endif
 
 int ObPlanCache::evict_plan_by_table_name(uint64_t database_id, ObString tab_name)
 {
@@ -1173,6 +1563,69 @@ int ObPlanCache::cache_evict_by_glitch_node()
 //   return ret;
 // }
 
+#ifdef OB_BUILD_SPM
+int ObPlanCache::load_plan_baseline(const obrpc::ObLoadPlanBaselineArg &arg, uint64_t &load_count)
+{
+  int ret = OB_SUCCESS;
+  common::ObSEArray<uint64_t, 4> plan_ids;
+  ObGlobalReqTimeService::check_req_timeinfo();
+  ObGetPlanIdBySqlIdOp plan_id_op(&plan_ids, arg.sql_id_, arg.with_plan_hash_, arg.plan_hash_value_);
+  load_count = 0;
+  if (OB_FAIL(co_mgr_.foreach_cache_obj(plan_id_op))) {
+    LOG_WARN("fail to traverse id2stat_map", K(ret));
+  } else {
+    ObPhysicalPlan *plan = NULL;
+    LOG_INFO("load plan baseline by sql ids", K(arg), K(plan_ids));
+    for (int64_t i = 0; i < plan_ids.count(); i++) {
+      uint64_t plan_id= plan_ids.at(i);
+      ObCacheObjGuard guard(LOAD_BASELINE_HANDLE);
+      int tmp_ret = ref_plan(plan_id, guard); //plan引用计数加1
+      plan = static_cast<ObPhysicalPlan*>(guard.cache_obj_);
+      if (OB_HASH_NOT_EXIST == tmp_ret) {
+        //do nothing;
+      } else if (OB_SUCCESS != tmp_ret || NULL == plan) {
+        LOG_WARN("get plan failed", K(tmp_ret), KP(plan));
+      } else {
+        LOG_INFO("load plan baseline by sql id", K(arg));
+        if (OB_FAIL(ObSpmController::load_baseline(arg, plan))) {
+          LOG_WARN("failed to load baseline", K(ret));
+        } else {
+          ++load_count;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObPlanCache::check_baseline_finish()
+{
+  int ret = OB_SUCCESS;
+  LCKeyValueArray hold_keys;
+  EvolutionPlanList evo_task_list;
+  ObGetEvolutionTaskPcvSetOp get_evo_op(&evo_task_list, &hold_keys, CHECK_EVOLUTION_PLAN_HANDLE);
+  ObGlobalReqTimeService::check_req_timeinfo();
+  if (OB_FAIL(cache_key_node_map_.foreach_refactored(get_evo_op))) {
+    LOG_WARN("traversing cache_key_node_map failed");
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < evo_task_list.count(); ++i) {
+      ObEvolutionPlan *evo_plan = evo_task_list.at(i);
+      if (OB_NOT_NULL(evo_plan) && evo_plan->get_is_evolving_flag()) {
+        evo_plan->check_task_need_finish();
+      }
+    }
+  }
+  //decrement reference count anyway
+  int64_t N = hold_keys.count();
+  for (int64_t i = 0; i < N; i++) {
+    if (NULL != hold_keys.at(i).node_) {
+      hold_keys.at(i).node_->dec_ref_count(get_evo_op.get_ref_handle());
+    }
+  }
+  return ret;
+}
+
+#endif
 
 // 计算plan_cache需要淘汰的pcv_set个数
 // ret = true表示执行正常，否则失败
@@ -1309,8 +1762,9 @@ int ObPlanCache::create_node_and_add_cache_obj(ObILibCacheKey *cache_key,
     ret = OB_INVALID_ARGUMENT;
     SQL_PC_LOG(WARN, "invalid argument", K(ret), K(cache_key), K(cache_obj));
   } else if (OB_FAIL(cn_factory_.create_cache_node(cache_key->namespace_,
-                                                        cache_node,
-                                                        tenant_id_))) {
+                                                   cache_node,
+                                                   tenant_id_,
+                                                   root_context_))) {
     SQL_PC_LOG(WARN, "failed to create cache node", K(ret), K_(cache_key->namespace), K_(tenant_id));
   } else {
     // reference count after constructing cache node
@@ -1785,7 +2239,8 @@ int ObPlanCache::construct_plan_cache_key(ObPlanCacheCtx &plan_ctx, ObLibCacheNa
     LOG_WARN("session info is null");
   } else if (OB_FAIL(construct_plan_cache_key(*session,
                                               ns,
-                                              plan_ctx.fp_result_.pc_key_))) {
+                                              plan_ctx.fp_result_.pc_key_,
+                                              plan_ctx.sql_ctx_.is_protocol_weak_read_))) {
     LOG_WARN("failed to construct plan cache key", K(ret));
   } else {
     plan_ctx.key_ = &(plan_ctx.fp_result_.pc_key_);
@@ -1795,7 +2250,8 @@ int ObPlanCache::construct_plan_cache_key(ObPlanCacheCtx &plan_ctx, ObLibCacheNa
 
 OB_INLINE int ObPlanCache::construct_plan_cache_key(ObSQLSessionInfo &session,
                                                     ObLibCacheNameSpace ns,
-                                                    ObPlanCacheKey &pc_key)
+                                                    ObPlanCacheKey &pc_key,
+                                                    bool is_weak)
 {
   int ret = OB_SUCCESS;
   uint64_t database_id = OB_INVALID_ID;
@@ -1804,8 +2260,8 @@ OB_INLINE int ObPlanCache::construct_plan_cache_key(ObSQLSessionInfo &session,
   pc_key.namespace_ = ns;
   pc_key.sys_vars_str_ = session.get_sys_var_in_pc_str();
   pc_key.config_str_ = session.get_config_in_pc_str();
+  pc_key.is_weak_read_ = is_weak;
   return ret;
-
 }
 
 int ObPlanCache::need_late_compile(ObPhysicalPlan *plan,
@@ -1849,7 +2305,7 @@ int ObPlanCache::add_stat_for_cache_obj(ObILibCacheCtx &ctx, ObILibCacheObject *
 int ObPlanCache::alloc_cache_obj(ObCacheObjGuard& guard, ObLibCacheNameSpace ns, uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(co_mgr_.alloc(guard, ns, tenant_id))) {
+  if (OB_FAIL(co_mgr_.alloc(guard, ns, tenant_id, root_context_))) {
     LOG_WARN("failed to alloc cache obj", K(ret));
   }
   return ret;
@@ -1950,12 +2406,16 @@ int ObPlanCache::flush_plan_cache()
   } else if (OB_FAIL(dump_deleted_objs<DUMP_SQL>(deleted_objs, safe_timestamp))) {
     SQL_PC_LOG(WARN, "failed to get deleted sql objs", K(ret));
   } else {
-    LOG_INFO("Deleted Cache Objs", K(deleted_objs));
-    for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
-      if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
-                                                          deleted_objs.at(i).obj_id_,
-                                                          this))) {
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = OB_E(EventTable::EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR) OB_SUCCESS;
+    if (OB_SUCCESS == tmp_ret) {
+      LOG_INFO("Deleted Cache Objs", K(deleted_objs));
+      for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
+        if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
+                                                            deleted_objs.at(i).obj_id_,
+                                                            this))) {
           LOG_WARN("failed to destroy cache obj", K(ret));
+        }
       }
     }
   }
@@ -1979,12 +2439,16 @@ int ObPlanCache::flush_plan_cache_by_sql_id(uint64_t db_id, common::ObString sql
   } else if (OB_FAIL(dump_deleted_objs<DUMP_SQL>(deleted_objs, safe_timestamp))) {
     SQL_PC_LOG(WARN, "failed to get deleted sql objs", K(ret));
   } else {
-    LOG_INFO("Deleted Cache Objs", K(deleted_objs));
-    for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
-      if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
-                                                          deleted_objs.at(i).obj_id_,
-                                                          this))) {
-          LOG_WARN("failed to destroy cache obj", K(ret));
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = OB_E(EventTable::EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR) OB_SUCCESS;
+    if (OB_SUCCESS == tmp_ret) {
+      LOG_INFO("Deleted Cache Objs", K(deleted_objs));
+      for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
+        if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
+                                                            deleted_objs.at(i).obj_id_,
+                                                            this))) {
+            LOG_WARN("failed to destroy cache obj", K(ret));
+        }
       }
     }
   }
@@ -2007,12 +2471,16 @@ int ObPlanCache::flush_lib_cache()
   } else if (OB_FAIL(dump_deleted_objs<DUMP_ALL>(deleted_objs, safe_timestamp))) {
     SQL_PC_LOG(WARN, "failed to get deleted sql objs", K(ret));
   } else {
-    LOG_INFO("Deleted Cache Objs", K(deleted_objs));
-    for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
-      if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
-                                                          deleted_objs.at(i).obj_id_,
-                                                          this))) {
-          LOG_WARN("failed to destroy cache obj", K(ret));
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = OB_E(EventTable::EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR) OB_SUCCESS;
+    if (OB_SUCCESS == tmp_ret) {
+      LOG_INFO("Deleted Cache Objs", K(deleted_objs));
+      for (int64_t i = 0; i < deleted_objs.count(); i++) { // ignore error code and continue
+        if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
+                                                            deleted_objs.at(i).obj_id_,
+                                                            this))) {
+            LOG_WARN("failed to destroy cache obj", K(ret));
+        }
       }
     }
   }
@@ -2033,12 +2501,16 @@ int ObPlanCache::flush_lib_cache_by_ns(const ObLibCacheNameSpace ns)
   } else if (OB_FAIL(dump_deleted_objs_by_ns(deleted_objs, safe_timestamp, ns))) {
     SQL_PC_LOG(ERROR, "failed to dump deleted objs by ns", K(ret));
   } else {
-    LOG_INFO("Deleted Cache Objs", K(deleted_objs));
-    for (int i = 0; i < deleted_objs.count(); i++) {  // ignore error code and continue
-      if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
-                                                          deleted_objs.at(i).obj_id_,
-                                                          this))) {
-        LOG_WARN("failed to destroy cache obj", K(ret));
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = OB_E(EventTable::EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR) OB_SUCCESS;
+    if (OB_SUCCESS == tmp_ret) {
+      LOG_INFO("Deleted Cache Objs", K(deleted_objs));
+      for (int i = 0; i < deleted_objs.count(); i++) {  // ignore error code and continue
+        if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
+                                                            deleted_objs.at(i).obj_id_,
+                                                            this))) {
+          LOG_WARN("failed to destroy cache obj", K(ret));
+        }
       }
     }
   }
@@ -2060,12 +2532,16 @@ int ObPlanCache::flush_pl_cache()
   } else if (OB_FAIL(dump_deleted_objs<DUMP_PL>(deleted_objs, safe_timestamp))) {
     SQL_PC_LOG(ERROR, "failed to dump deleted pl objs", K(ret));
   } else {
-    LOG_INFO("Deleted Cache Objs", K(deleted_objs));
-    for (int i = 0; i < deleted_objs.count(); i++) {  // ignore error code and continue
-      if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
-                                                          deleted_objs.at(i).obj_id_,
-                                                          this))) {
-        LOG_WARN("failed to destroy cache obj", K(ret));
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = OB_E(EventTable::EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR) OB_SUCCESS;
+    if (OB_SUCCESS == tmp_ret) {
+      LOG_INFO("Deleted Cache Objs", K(deleted_objs));
+      for (int i = 0; i < deleted_objs.count(); i++) {  // ignore error code and continue
+        if (OB_FAIL(ObCacheObjectFactory::destroy_cache_obj(true,
+                                                            deleted_objs.at(i).obj_id_,
+                                                            this))) {
+          LOG_WARN("failed to destroy cache obj", K(ret));
+        }
       }
     }
   }

@@ -165,7 +165,8 @@ public:
                               const ObString &routine_name,
                               const share::schema::ObRoutineType routine_type,
                               common::ObIArray<const share::schema::ObIRoutineInfo *> &routines,
-                              uint64_t udt_id = OB_INVALID_ID);
+                              uint64_t udt_id = OB_INVALID_ID,
+                              const pl::ObPLResolveCtx *resolve_ctx = NULL);
   static int check_routine_exists(const ObSQLSessionInfo *session_info,
                                   ObSchemaChecker *schema_checker,
                                   pl::ObPLBlockNS *secondary_namespace,
@@ -227,7 +228,8 @@ public:
                    const common::ObIArray<sql::ObRawExpr *> &expr_params,
                    const common::ObIArray<const share::schema::ObIRoutineInfo *> &routine_infos,
                    const share::schema::ObRoutineInfo *&routine_info);
-  static int get_routine(ObResolverParams &params,
+  static int get_routine(pl::ObPLPackageGuard &package_guard,
+                         ObResolverParams &params,
                          uint64_t tenant_id,
                          const ObString &current_database,
                          const ObString &db_name,
@@ -235,7 +237,9 @@ public:
                          const ObString &routine_name,
                          const share::schema::ObRoutineType routine_type,
                          const common::ObIArray<ObRawExpr *> &expr_params,
-                         const share::schema::ObRoutineInfo *&routine);
+                         const share::schema::ObRoutineInfo *&routine,
+                         const ObString &dblink_name = ObString(""),
+                         ObIAllocator *allocator = NULL);
   static int get_routine(const pl::ObPLResolveCtx &resolve_ctx,
                          uint64_t tenant_id,
                          const ObString &current_database,
@@ -259,7 +263,8 @@ public:
                                     const ParseNode &sp_access_name_node,
                                     ObString &db_name,
                                     ObString &package_name,
-                                    ObString &routine_name);
+                                    ObString &routine_name,
+                                    ObString &dblink_name);
   static int resolve_sp_name(ObSQLSessionInfo &session_info,
                              const ParseNode &sp_name_node,
                              ObString &db_name,
@@ -284,7 +289,7 @@ public:
   static int set_parallel_info(sql::ObSQLSessionInfo &session_info,
                                share::schema::ObSchemaGetterGuard &schema_guard,
                                ObRawExpr &expr,
-                               bool is_dml_stmt);
+                               bool &contain_select_stmt);
 
   static int resolve_external_symbol(common::ObIAllocator &allocator,
                                      sql::ObRawExprFactory &expr_factory,
@@ -343,6 +348,13 @@ public:
                            ObExprInfo *parents_expr_info,
                            const ObSQLMode mode,
                            bool is_from_pl = false);
+
+  static int set_string_val_charset(ObIAllocator &allocator,
+                                    ObObjParam &val,
+                                    ObString &charset,
+                                    ObObj &result_val,
+                                    bool is_strict_mode,
+                                    bool return_ret);
 
   static int resolve_data_type(const ParseNode &type_node,
                                const common::ObString &ident_name,
@@ -742,6 +754,8 @@ public:
                                             ObSQLSessionInfo &session_info,
                                             ObDataTypeCastParams &dtc_params);
   static bool is_expr_can_be_used_in_table_function(const ObRawExpr &expr);
+  static int check_keystore_status(const uint64_t tenant_id, ObSchemaChecker &schema_checker);
+  static int check_encryption_name(common::ObString &encryption_name, bool &need_encrypt);
 private:
   static int try_convert_to_unsiged(const ObExprResType restype,
                                     ObRawExpr& src_expr,

@@ -41,7 +41,7 @@ int ObExprOracleNullif::calc_result_type2(ObExprResType &type,
     //Oracle 不支持lob类型的 nullif比较
     exec_ctx = session->get_cur_exec_ctx();
     if (type1.is_null() || type1.is_lob()) {
-      if (OB_NOT_NULL(exec_ctx) && exec_ctx->is_ps_prepare_stage()) {
+      if (session->is_varparams_sql_prepare()) {
         type.set_null();
       } else {
         if (is_called_in_sql()) {
@@ -253,7 +253,7 @@ int ObExprOracleNullif::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_e
                                                       has_lob_header)));
     OX(rt_expr.inner_func_cnt_ = 1);
     OX(rt_expr.inner_functions_[0] = reinterpret_cast<void*>(cmp_func));
-    OX(rt_expr.eval_func_ = first_param_can_be_null_ ? eval_nullif : eval_nullif_not_null);
+    OX(rt_expr.eval_func_ = eval_nullif);
   }
   return ret;
 }

@@ -14,6 +14,7 @@
 #define OCEANBASE_LOG_FETCHER_RPC_H_
 
 #include "lib/net/ob_addr.h"              // ObAddr
+#include "lib/compress/ob_compress_util.h" // ObCompressorType
 #include "rpc/obrpc/ob_net_client.h"      // ObNetClient
 #include "rpc/obrpc/ob_rpc_packet.h"      // OB_LOG_OPEN_STREAM
 #include "rpc/obrpc/ob_rpc_proxy.h"       // ObRpcProxy
@@ -98,10 +99,12 @@ public:
 public:
   int init(
       const int64_t cluster_id,
+      const uint64_t self_tenant_id,
       const int64_t io_thread_num,
       const ObLogFetcherConfig &cfg);
   void destroy();
   int reload_ssl_config();
+  int update_compressor_type(const common::ObCompressorType &compressor_type);
 
 private:
   int init_client_id_();
@@ -109,12 +112,14 @@ private:
 private:
   bool                is_inited_;
   int64_t             cluster_id_;
+  uint64_t            self_tenant_id_;
   obrpc::ObNetClient  net_client_;
   uint64_t            last_ssl_info_hash_;
   int64_t             ssl_key_expired_time_;
   ObCdcRpcId          client_id_;
   const ObLogFetcherConfig  *cfg_;
   char external_info_val_[OB_MAX_CONFIG_VALUE_LEN];
+  common::ObCompressorType compressor_type_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLogRpc);

@@ -443,6 +443,7 @@ int ObInsertResolver::resolve_insert_field(const ParseNode &insert_into, TableIt
         //oracle临时表各session不会创建自己的私有对象只能在数据增加时设置标记
         session_info_->set_has_temp_table_flag();
         set_is_oracle_tmp_table(true);
+        set_oracle_tmp_table_type(table_schema->is_oracle_sess_tmp_table() ? 0 : 1);
       }
     }
   }
@@ -507,6 +508,12 @@ int ObInsertResolver::resolve_insert_assign(const ParseNode &assign_list)
       if (OB_FAIL(append(insert_stmt->get_insert_table_info().values_vector_, value_row))) {
         LOG_WARN("failed to append value row", K(ret));
       }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(check_need_match_all_params(insert_stmt->get_insert_table_info().values_desc_,
+                                            insert_stmt->get_query_ctx()->need_match_all_params_))) {
+      LOG_WARN("check need match all params failed", K(ret));
     }
   }
   const ObIArray<ObColumnRefRawExpr*> &dep_cols = insert_stmt->get_insert_table_info().part_generated_col_dep_cols_;
@@ -1071,9 +1078,13 @@ int ObInsertResolver::try_expand_returning_exprs()
     CK(column_convert.count() == table_columns.count());
     for (int64_t i = 0; OB_SUCC(ret) && i < insert_stmt->get_returning_exprs().count(); i++) {
       for (int64_t j = 0; OB_SUCC(ret) && j < table_columns.count(); j++) {
-        OZ(ObRawExprUtils::replace_ref_column(insert_stmt->get_returning_exprs().at(i),
+        if (table_columns.at(j)->is_xml_column()) {
+          // do nothing and will rewrite in trnsform stage
+        } else {
+          OZ(ObRawExprUtils::replace_ref_column(insert_stmt->get_returning_exprs().at(i),
                                               table_columns.at(j),
                                               column_convert.at(j)));
+        }
       }
     }
   }

@@ -1,7 +1,14 @@
-// Copyright (c) 2018-present Alibaba Inc. All Rights Reserved.
-// Author:
-//   Junquan Chen <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #ifndef OB_DIRECT_LOAD_MULTI_MAP_H_
 #define OB_DIRECT_LOAD_MULTI_MAP_H_
 
@@ -43,7 +50,7 @@ public:
     ret = map_.get_refactored(key, bag);
     if (ret == common::OB_HASH_NOT_EXIST) {
       ret = OB_SUCCESS;
-      bag = OB_NEW(common::ObArray<Value>, "TLD_MM_bag");
+      bag = OB_NEW(common::ObArray<Value>, "TLD_MM_bag", OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator("TLD_MM_bagi", MTL_ID()));
       if (OB_FAIL(map_.set_refactored(key, bag))) {
         STORAGE_LOG(WARN, "fail to put bag", KR(ret));
       }

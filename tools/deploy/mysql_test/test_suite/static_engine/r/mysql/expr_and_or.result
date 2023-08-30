@@ -20,11 +20,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int AND t1.col_null]), filter(nil), rowset=256
+  0 - output([t1.col_int AND t1.col_null]), filter(nil), rowset=16
       access([t1.col_int], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -40,11 +40,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null AND t1.col_int]), filter(nil), rowset=256
+  0 - output([t1.col_null AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -61,11 +61,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_int AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_int], [t1.col_varchar]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -83,11 +83,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_varchar], [t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -106,11 +106,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_int AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_int], [t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -126,11 +126,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_varchar_num], [t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -147,11 +147,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int AND 0]), filter(nil), rowset=256
+  0 - output([t1.col_int AND 0]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -167,11 +167,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([0 AND t1.col_int]), filter(nil), rowset=256
+  0 - output([0 AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -189,11 +189,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null AND t1.col_null]), filter(nil), rowset=256
+  0 - output([t1.col_null AND t1.col_null]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -209,11 +209,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_null AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -229,11 +229,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND t1.col_null]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND t1.col_null]), filter(nil), rowset=16
       access([t1.col_varchar_num], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -250,11 +250,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_null AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_varchar]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -272,11 +272,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND t1.col_null]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND t1.col_null]), filter(nil), rowset=16
       access([t1.col_varchar], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -295,11 +295,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null AND 0]), filter(nil), rowset=256
+  0 - output([t1.col_null AND 0]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -317,11 +317,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND 0]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND 0]), filter(nil), rowset=16
       access([t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -337,11 +337,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND 0]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND 0]), filter(nil), rowset=16
       access([t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -359,11 +359,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_int AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -379,11 +379,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -400,11 +400,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar, DOUBLE(-1, -1)) AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_varchar]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -422,11 +422,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) AND cast(t1.col_varchar, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_varchar]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -442,11 +442,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) AND cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -463,11 +463,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) AND cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -489,11 +489,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int OR t1.col_int]), filter(nil), rowset=256
+  0 - output([t1.col_int OR t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -509,11 +509,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_zero OR t1.col_zero]), filter(nil), rowset=256
+  0 - output([t1.col_zero OR t1.col_zero]), filter(nil), rowset=16
       access([t1.col_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -529,11 +529,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_zero, DOUBLE(-1, -1)) OR cast(t1.col_varchar_zero, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_zero, DOUBLE(-1, -1)) OR cast(t1.col_varchar_zero, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_varchar_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -551,11 +551,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR t1.col_null]), filter(nil), rowset=256
+  0 - output([t1.col_null OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -571,11 +571,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int OR t1.col_null]), filter(nil), rowset=256
+  0 - output([t1.col_int OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_int], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -591,11 +591,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR t1.col_int]), filter(nil), rowset=256
+  0 - output([t1.col_null OR t1.col_int]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -612,11 +612,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_zero OR t1.col_null]), filter(nil), rowset=256
+  0 - output([t1.col_zero OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_zero], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -632,11 +632,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR t1.col_zero]), filter(nil), rowset=256
+  0 - output([t1.col_null OR t1.col_zero]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -653,11 +653,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_num, DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_varchar_num], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -673,11 +673,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_null OR cast(t1.col_varchar_num, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_varchar_num]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -694,11 +694,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_varchar_zero, DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=256
+  0 - output([cast(t1.col_varchar_zero, DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_varchar_zero], [t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -714,11 +714,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR cast(t1.col_varchar_zero, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_null OR cast(t1.col_varchar_zero, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_varchar_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -736,11 +736,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_null OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_null OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -756,11 +756,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -777,11 +777,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_int OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_int OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -797,11 +797,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_int]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -818,11 +818,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.col_zero OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([t1.col_zero OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -838,11 +838,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_zero]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) OR t1.col_zero]), filter(nil), rowset=16
       access([t1.col_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -859,11 +859,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t1.col_empty_str, DOUBLE(-1, -1)) OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([cast(t1.col_empty_str, DOUBLE(-1, -1)) OR cast('', DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_empty_str]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -881,11 +881,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 AND 2 AND 3 AND t1.col_int]), filter(nil), rowset=256
+  0 - output([1 AND 2 AND 3 AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -901,11 +901,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 AND t1.col_null AND 3 AND t1.col_int]), filter(nil), rowset=256
+  0 - output([1 AND t1.col_null AND 3 AND t1.col_int]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -921,11 +921,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 AND t1.col_null AND 3 AND t1.col_zero]), filter(nil), rowset=256
+  0 - output([1 AND t1.col_null AND 3 AND t1.col_zero]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_zero]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -941,11 +941,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 AND t1.col_null AND 3 AND cast(t1.col_empty_str, DOUBLE(-1, -1))]), filter(nil), rowset=256
+  0 - output([1 AND t1.col_null AND 3 AND cast(t1.col_empty_str, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t1.col_null], [t1.col_empty_str]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -963,11 +963,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 OR 2 OR t1.col_int]), filter(nil), rowset=256
+  0 - output([1 OR 2 OR t1.col_int]), filter(nil), rowset=16
       access([t1.col_int]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -983,11 +983,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([1 OR 2 OR t1.col_null]), filter(nil), rowset=256
+  0 - output([1 OR 2 OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1003,11 +1003,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast('', DOUBLE(-1, -1)) OR 0 OR t1.col_null]), filter(nil), rowset=256
+  0 - output([cast('', DOUBLE(-1, -1)) OR 0 OR t1.col_null]), filter(nil), rowset=16
       access([t1.col_null]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1050,11 +1050,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c1], [t1.c1 AND t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c1], [t1.c1 AND t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1069,11 +1069,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c1], [t1.c1 OR t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c1], [t1.c1 OR t1.c1]), filter(nil), rowset=16
       access([t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1088,11 +1088,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c2], [t1.c1 AND t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c2], [t1.c1 AND t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1107,11 +1107,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c2], [t1.c1 OR t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c2], [t1.c1 OR t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1126,11 +1126,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c3], [t1.c1 AND t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c3], [t1.c1 AND t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1145,11 +1145,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c3], [t1.c1 OR t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c1], [t1.c3], [t1.c1 OR t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1164,11 +1164,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c1], [t1.c2 AND t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c1], [t1.c2 AND t1.c1]), filter(nil), rowset=16
       access([t1.c2], [t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1183,11 +1183,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c1], [t1.c2 OR t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c1], [t1.c2 OR t1.c1]), filter(nil), rowset=16
       access([t1.c2], [t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1202,11 +1202,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c2], [t1.c2 AND t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c2], [t1.c2 AND t1.c2]), filter(nil), rowset=16
       access([t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1221,11 +1221,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c2], [t1.c2 OR t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c2], [t1.c2 OR t1.c2]), filter(nil), rowset=16
       access([t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1240,11 +1240,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c3], [t1.c2 AND t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c3], [t1.c2 AND t1.c3]), filter(nil), rowset=16
       access([t1.c2], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1259,11 +1259,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c2], [t1.c3], [t1.c2 OR t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c2], [t1.c3], [t1.c2 OR t1.c3]), filter(nil), rowset=16
       access([t1.c2], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1278,11 +1278,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c1], [t1.c3 AND t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c1], [t1.c3 AND t1.c1]), filter(nil), rowset=16
       access([t1.c3], [t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1297,11 +1297,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c1], [t1.c3 OR t1.c1]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c1], [t1.c3 OR t1.c1]), filter(nil), rowset=16
       access([t1.c3], [t1.c1]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1316,11 +1316,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c2], [t1.c3 AND t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c2], [t1.c3 AND t1.c2]), filter(nil), rowset=16
       access([t1.c3], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1335,11 +1335,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c2], [t1.c3 OR t1.c2]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c2], [t1.c3 OR t1.c2]), filter(nil), rowset=16
       access([t1.c3], [t1.c2]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1354,11 +1354,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c3], [t1.c3 AND t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c3], [t1.c3 AND t1.c3]), filter(nil), rowset=16
       access([t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
@@ -1373,11 +1373,11 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |1       |2           |
+|0 |TABLE FULL SCAN|t1  |1       |4           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c3], [t1.c3], [t1.c3 OR t1.c3]), filter(nil), rowset=256
+  0 - output([t1.c3], [t1.c3], [t1.c3 OR t1.c3]), filter(nil), rowset=16
       access([t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false,
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true

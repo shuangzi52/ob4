@@ -11,6 +11,7 @@
  */
 
 #define USING_LOG_PREFIX RPC_OBMYSQL
+#include <openssl/ssl.h>
 #include "observer/mysql/obsm_conn_callback.h"
 #include "rpc/obmysql/ob_sql_sock_session.h"
 #include "rpc/obmysql/obsm_struct.h"
@@ -28,6 +29,22 @@ using namespace common;
 using namespace observer;
 namespace obmysql
 {
+
+uint64_t ob_calculate_tls_version_option(const ObString &tls_min_version)
+{
+  uint64_t tls_option = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3;
+  if (0 == tls_min_version.case_compare("NONE")) {
+  } else if (0 == tls_min_version.case_compare("TLSV1")) {
+    //no need to set because OPENSSL support all protocol by default
+  } else if (0 == tls_min_version.case_compare("TLSV1.1")) {
+    tls_option |= SSL_OP_NO_TLSv1;
+  } else if (0 == tls_min_version.case_compare("TLSV1.2")) {
+    tls_option |= (SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
+  } else if (0 == tls_min_version.case_compare("TLSV1.3")) {
+    tls_option |= (SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2);
+  }
+  return tls_option;
+}
 
 static int create_scramble_string(char *scramble_buf, const int64_t buf_len, common::ObMysqlRandom &thread_rand)
 {
@@ -117,13 +134,11 @@ int ObSMConnectionCallback::init(ObSqlSockSession& sess, ObSMConnection& conn)
   } else if (OB_FAIL(send_handshake(sess, hsp))) {
     LOG_WARN("send handshake fail", K(ret), K(sess.client_addr_));
   } else {
+    sess.sql_session_id_ = conn.sessid_;
+    uint64_t tls_version_option = ob_calculate_tls_version_option(
+                                   GCONF.sql_protocol_min_tls_version.str());
+    sess.set_tls_version_option(tls_version_option);
     LOG_INFO("sm conn init succ", K(conn.sessid_), K(sess.client_addr_));
-  }
-  if (OB_SUCCESS != ret && OB_SUCCESS == conn.ret_) {
-    int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = GCTX.session_mgr_->mark_sessid_unused(conn.sessid_))) {
-      LOG_ERROR("fail to mark sessid unused", K(tmp_ret), K(conn.sessid_));
-    }
   }
 
   //如果当前function发生错误，应该在当前function中进行mark_sessid_unused
@@ -149,61 +164,65 @@ void ObSMConnectionCallback::destroy(ObSMConnection& conn)
 {
   int ret = OB_SUCCESS;
   bool is_need_clear = false;
-  sql::ObDisconnectState disconnect_state;
+  sql::ObDisconnectState disconnect_state = sql::ObDisconnectState::DIS_INIT;
   ObCurTraceId::TraceId trace_id;
-  if (conn.is_sess_alloc_ && !conn.is_sess_free_) {
-    {
-      int tmp_ret = OB_SUCCESS;
-      sql::ObSQLSessionInfo *sess_info = NULL;
-      sql::ObSessionGetterGuard guard(*GCTX.session_mgr_, conn.sessid_);
-      if (OB_UNLIKELY(OB_SUCCESS != (tmp_ret = guard.get_session(sess_info)))) {
-        LOG_WARN_RET(tmp_ret, "fail to get session", K(tmp_ret), K(conn.sessid_),
-                "proxy_sessid", conn.proxy_sessid_);
-      } else if (OB_ISNULL(sess_info)) {
-        tmp_ret = OB_ERR_UNEXPECTED;
-        LOG_WARN_RET(tmp_ret, "session info is NULL", K(tmp_ret), K(conn.sessid_),
-                "proxy_sessid", conn.proxy_sessid_);
+  if (conn.is_sess_alloc_) {
+    if (!conn.is_sess_free_) {
+      {
+        int tmp_ret = OB_SUCCESS;
+        sql::ObSQLSessionInfo *sess_info = NULL;
+        sql::ObSessionGetterGuard guard(*GCTX.session_mgr_, conn.sessid_);
+        if (OB_UNLIKELY(OB_SUCCESS != (tmp_ret = guard.get_session(sess_info)))) {
+          LOG_WARN_RET(tmp_ret, "fail to get session", K(tmp_ret), K(conn.sessid_),
+                  "proxy_sessid", conn.proxy_sessid_);
+        } else if (OB_ISNULL(sess_info)) {
+          tmp_ret = OB_ERR_UNEXPECTED;
+          LOG_WARN_RET(tmp_ret, "session info is NULL", K(tmp_ret), K(conn.sessid_),
+                  "proxy_sessid", conn.proxy_sessid_);
+        } else {
+          disconnect_state = sess_info->get_disconnect_state();
+          trace_id = sess_info->get_current_trace_id();
+        }
+      }
+      sql::ObFreeSessionCtx ctx;
+      ctx.tenant_id_ = conn.tenant_id_;
+      ctx.sessid_ = conn.sessid_;
+      ctx.proxy_sessid_ = conn.proxy_sessid_;
+      ctx.has_inc_active_num_ = conn.has_inc_active_num_;
+
+      //free session in task
+      ObSrvTask *task = OB_NEW(ObDisconnectTask,
+                                ObModIds::OB_RPC,
+                                ctx);
+      if (OB_UNLIKELY(NULL == task)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else if (OB_UNLIKELY(NULL == conn.tenant_)) {
+        ret = OB_TENANT_NOT_EXIST;
+      } else if (OB_FAIL(conn.tenant_->recv_request(*task))) {
+        LOG_WARN("push disconnect task fail", K(conn.sessid_),
+                  "proxy_sessid", conn.proxy_sessid_, K(ret));
+        ob_delete(task);
+      }
+      // free session locally
+      if (OB_FAIL(ret)) {
+        ObMPDisconnect disconnect_processor(ctx);
+        rpc::frame::ObReqProcessor *processor = static_cast<rpc::frame::ObReqProcessor *>(&disconnect_processor);
+        if (OB_FAIL(processor->run())) {
+          LOG_WARN("free session fail and related session id can not be reused", K(ret), K(ctx));
+        }
+      }
+   }
+  } else {
+    if (OB_UNLIKELY(OB_FAIL(sql::ObSQLSessionMgr::is_need_clear_sessid(&conn, is_need_clear)))) {
+      LOG_ERROR("fail to jugde need clear", K(ret));
+    } else if (is_need_clear) {
+      if (OB_FAIL(GCTX.session_mgr_->mark_sessid_unused(conn.sessid_))) {
+        LOG_ERROR("fail to mark sessid unused", K(ret), K(conn.sessid_),
+                  "proxy_sessid", conn.proxy_sessid_, "server_id", GCTX.server_id_);
       } else {
-        disconnect_state = sess_info->get_disconnect_state();
-        trace_id = sess_info->get_current_trace_id();
+        LOG_INFO("mark session id unused", K(conn.sessid_));
       }
     }
-    sql::ObFreeSessionCtx ctx;
-    ctx.tenant_id_ = conn.tenant_id_;
-    ctx.sessid_ = conn.sessid_;
-    ctx.proxy_sessid_ = conn.proxy_sessid_;
-    ctx.has_inc_active_num_ = conn.has_inc_active_num_;
-
-    //free session in task
-    ObSrvTask *task = OB_NEW(ObDisconnectTask,
-                              ObModIds::OB_RPC,
-                              ctx);
-    if (OB_UNLIKELY(NULL == task)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-    } else if (OB_UNLIKELY(NULL == conn.tenant_)) {
-      ret = OB_TENANT_NOT_EXIST;
-    } else if (OB_FAIL(conn.tenant_->recv_request(*task))) {
-      LOG_WARN("push disconnect task fail", K(conn.sessid_),
-                "proxy_sessid", conn.proxy_sessid_, K(ret));
-      ob_delete(task);
-    }
-    // free session locally
-    if (OB_FAIL(ret)) {
-      ObMPDisconnect disconnect_processor(ctx);
-      rpc::frame::ObReqProcessor *processor = static_cast<rpc::frame::ObReqProcessor *>(&disconnect_processor);
-      if (OB_FAIL(processor->run())) {
-        LOG_WARN("free session fail", K(ctx));
-      } else {
-        LOG_INFO("free session successfully", K(conn.sessid_),
-                  "proxy_sessid", conn.proxy_sessid_, K(ctx));
-      }
-    }
-  }
-
-  if (OB_UNLIKELY(OB_FAIL(sql::ObSQLSessionMgr::is_need_clear_sessid(&conn, is_need_clear)))) {
-    LOG_ERROR("fail to jugde need clear", K(ret));
-  } else if (is_need_clear) {
-    GCTX.session_mgr_->mark_sessid_unused(conn.sessid_);
   }
 
   sm_conn_unlock_tenant(conn);
@@ -217,6 +236,7 @@ void ObSMConnectionCallback::destroy(ObSMConnection& conn)
            "from_java_client", conn.is_java_client_,
            "c/s protocol", get_cs_protocol_type_name(conn.get_cs_protocol_type()),
            "is_need_clear_sessid_", conn.is_need_clear_sessid_,
+           "is_sess_alloc_", conn.is_sess_alloc_,
            K(ret),
            K(trace_id),
            K(conn.pkt_rec_wrapper_),

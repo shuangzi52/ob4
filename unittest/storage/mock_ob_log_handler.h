@@ -82,6 +82,12 @@ public:
     return OB_SUCCESS;
   }
 
+  virtual int get_append_mode_initial_scn(SCN &initial_scn) const
+  {
+    UNUSED(initial_scn);
+    return OB_SUCCESS;
+  }
+
   virtual int change_access_mode(const int64_t mode_version,
                                  const AccessMode &access_mode,
                                  const share::SCN &ref_scn)
@@ -270,6 +276,11 @@ public:
   {
     return OB_SUCCESS;
   }
+  int get_leader_config_version(palf::LogConfigVersion &config_version) const
+  {
+    UNUSED(config_version);
+    return OB_SUCCESS;
+  }
   int change_replica_num(const common::ObMemberList &member_list,
                          const int64_t curr_replica_num,
                          const int64_t new_replica_num,
@@ -284,11 +295,10 @@ public:
   }
   int add_member(const common::ObMember &member,
                  const int64_t paxos_replica_num,
+                 const palf::LogConfigVersion &config_version,
                  const int64_t timeout_ns)
   {
-    UNUSED(member);
-    UNUSED(paxos_replica_num);
-    UNUSED(timeout_ns);
+    UNUSEDx(member, paxos_replica_num, config_version, timeout_ns);
     return OB_SUCCESS;
   }
   int remove_member(const common::ObMember &member,
@@ -302,10 +312,12 @@ public:
   }
   int replace_member(const common::ObMember &added_member,
                      const common::ObMember &removed_member,
+                     const palf::LogConfigVersion &config_version,
                      const int64_t timeout_ns)
   {
     UNUSED(added_member);
     UNUSED(removed_member);
+    UNUSED(config_version);
     UNUSED(timeout_ns);
     return OB_SUCCESS;
   }
@@ -327,20 +339,33 @@ public:
     return ret;
   }
 
-  int replace_learner(const common::ObMember &added_learner,
-                      const common::ObMember &removed_learner,
-                      const int64_t timeout_us)
+  int replace_learners(const common::ObMemberList &added_learners,
+                       const common::ObMemberList &removed_learners,
+                       const int64_t timeout_us)
   {
     int ret = OB_SUCCESS;
-    UNUSEDx(added_learner, removed_learner, timeout_us);
+    UNUSEDx(added_learners, removed_learners, timeout_us);
     return ret;
   }
 
+  int replace_member_with_learner(const common::ObMember &added_member,
+                                  const common::ObMember &removed_member,
+                                  const palf::LogConfigVersion &config_version,
+                                  const int64_t timeout_us)
+  {
+    int ret = OB_SUCCESS;
+    UNUSEDx(added_member, removed_member, timeout_us);
+    return ret;
+  }
+
+
   int switch_learner_to_acceptor(const common::ObMember &learner,
                                  const int64_t new_replica_num,
+                                 const palf::LogConfigVersion &config_version,
                                  const int64_t timeout_us)
   {
     int ret = OB_SUCCESS;
+    UNUSED(config_version);
     UNUSEDx(learner, new_replica_num, timeout_us);
     return ret;
   }
@@ -374,10 +399,9 @@ public:
     UNUSEDx(upgrade_servers, timeout_us);
     return OB_SUCCESS;
   }
-  int is_valid_member(const common::ObAddr &addr, bool &is_valid) const
+  int get_member_gc_stat(const common::ObAddr &addr, bool &is_valid_member, obrpc::LogMemberGCStat &stat) const
   {
-    UNUSED(addr);
-    UNUSED(is_valid);
+    UNUSEDx(addr, is_valid_member, stat);
     return OB_SUCCESS;
   }
   int set_region(const common::ObRegion &region)
@@ -397,6 +421,25 @@ public:
 
   int restore_submit_replay_log()
   {
+    return OB_SUCCESS;
+  }
+
+  int try_lock_config_change(const int64_t lock_owner, const int64_t timeout_us)
+  {
+    UNUSED(lock_owner);
+    UNUSED(timeout_us);
+    return OB_SUCCESS;
+  }
+  int unlock_config_change(const int64_t lock_owner, const int64_t timeout_us)
+  {
+    UNUSED(lock_owner);
+    UNUSED(timeout_us);
+    return OB_SUCCESS;
+  }
+  int get_config_change_lock_stat(int64_t &lock_owner, bool &is_locked)
+  {
+    lock_owner = palf::OB_INVALID_CONFIG_CHANGE_LOCK_OWNER;
+    is_locked = false;
     return OB_SUCCESS;
   }
 

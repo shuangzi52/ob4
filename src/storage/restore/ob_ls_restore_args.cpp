@@ -20,8 +20,10 @@ ObTenantRestoreCtx::ObTenantRestoreCtx()
   : job_id_(0),
     restore_type_(),
     restore_scn_(),
+    consistent_scn_(),
     tenant_id_(0),
     backup_cluster_version_(0),
+    backup_data_version_(0),
     backup_set_list_(),
     backup_piece_list_()
 {
@@ -50,8 +52,10 @@ int ObTenantRestoreCtx::assign(const ObTenantRestoreCtx &args)
     job_id_ = args.get_job_id();
     restore_type_ = args.get_restore_type();
     restore_scn_ = args.get_restore_scn();
+    consistent_scn_ = args.get_consistent_scn();
     tenant_id_ = args.get_tenant_id();
     backup_cluster_version_ = args.get_backup_cluster_version();
+    backup_data_version_ = args.get_backup_data_version();
   }
   return ret;
 }

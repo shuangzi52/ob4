@@ -19,6 +19,7 @@
 #include "share/stat/ob_dbms_stats_lock_unlock.h"
 #include "share/stat/ob_dbms_stats_utils.h"
 #include "share/stat/ob_opt_stat_manager.h"
+#include "share/stat/ob_opt_stat_monitor_manager.h"
 
 //#define COMPUTE_FREQUENCY_HISTOGRAM
 //   "SELECT /*+NO_USE_PX*/ col, sum(val) over (order by col rows between unbounded preceding and current row) "
@@ -60,6 +61,8 @@ int ObAnalyzeExecutor::execute(ObExecContext &ctx, ObAnalyzeStmt &stmt)
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "analyze table during restore or standby cluster");
   } else if (OB_FAIL(stmt.fill_table_stat_param(ctx, param))) {
     LOG_WARN("failed to fill table stat param", K(ret));
+  } else if (OB_FAIL(pl::ObDbmsStats::process_not_size_manual_column(ctx, param))) {
+    LOG_WARN("failed to process not size_manual column", K(ret));
   } else if (!stmt.is_delete_histogram()) {
     int64_t task_cnt = 1;
     int64_t seq_id = 1;
@@ -71,11 +74,13 @@ int ObAnalyzeExecutor::execute(ObExecContext &ctx, ObAnalyzeStmt &stmt)
     } else {
       ObOptStatGatherStat gather_stat(task_info);
       ObOptStatGatherStatList::instance().push(gather_stat);
-      ObOptStatRunningMonitor running_monitor(ctx.get_allocator(), start_time, param.allocator_->total(), gather_stat);
+      ObOptStatRunningMonitor running_monitor(ctx.get_allocator(), start_time, param.allocator_->used(), gather_stat);
       if (OB_FAIL(running_monitor.add_table_info(param))) {
         LOG_WARN("failed to add table info", K(ret));
       } else if (OB_FAIL(ObDbmsStatsLockUnlock::check_stat_locked(ctx, param))) {
         LOG_WARN("failed check stat locked", K(ret));
+      } else if (OB_FAIL(ObOptStatMonitorManager::flush_database_monitoring_info(ctx, false, true))) {
+        LOG_WARN("failed to do flush database monitoring info", K(ret));
       } else if (OB_FAIL(ObDbmsStatsExecutor::gather_table_stats(ctx, param))) {
         LOG_WARN("failed to gather table stats", K(ret));
       } else if (OB_FAIL(pl::ObDbmsStats::update_stat_cache(session->get_rpc_tenant_id(), param))) {

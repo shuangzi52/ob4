@@ -20,6 +20,7 @@
 #include "lib/mysqlclient/ob_mysql_proxy.h"
 #include "lib/string/ob_sql_string.h"
 #include "share/scn.h"
+#include "rootserver/ob_rs_event_history_table_operator.h"
 namespace oceanbase
 {
 namespace common
@@ -32,17 +33,35 @@ namespace sqlclient
 {
 class ObMySQLResult;
 }
+
 }
 namespace share
 {
 class ObLSID;
 struct ObLSStatusInfo;
-/**
- * @description:
- *    In order to let switchover switch the accessmode of all LS correctly,
- *    when creating, deleting, and updating LS status,
- *    it needs to be mutually exclusive with switchover status of __all_tenant_info
- */
+#define ALL_LS_EVENT_ADD(tenant_id, ls_id, event, ret, sql, args...)\
+  do {\
+    const int64_t MAX_VALUE_LENGTH = 512; \
+    char VALUE[MAX_VALUE_LENGTH] = {""}; \
+    int64_t pos = 0; \
+    common::ObCurTraceId::TraceId *trace_id = ObCurTraceId::get_trace_id();\
+    common::databuff_print_kv(VALUE, MAX_VALUE_LENGTH, pos, ##args, KPC(trace_id)); \
+    ROOTSERVICE_EVENT_ADD("LS", event, "tenant_id", tenant_id, "ls_id", ls_id,\
+        "ret", ret, "sql", ObHexEscapeSqlStr(sql.string()),\
+        "", NULL, "", NULL, ObHexEscapeSqlStr(VALUE));\
+  } while (0)
+
+#define LS_EVENT_ADD(tenant_id, ls_id, event, ret, paxos_cnt, success_cnt, args...)\
+  do {\
+    const int64_t MAX_VALUE_LENGTH = 512; \
+    char VALUE[MAX_VALUE_LENGTH] = {""}; \
+    int64_t pos = 0; \
+    common::ObCurTraceId::TraceId *trace_id = ObCurTraceId::get_trace_id();\
+    common::databuff_print_kv(VALUE, MAX_VALUE_LENGTH, pos, ##args, KPC(trace_id)); \
+    ROOTSERVICE_EVENT_ADD("LS", event, "tenant_id", tenant_id, "ls_id", ls_id,\
+        "ret", ret, "success_cnt", success_cnt, "paxos_cnt", paxos_cnt, "", NULL, ObHexEscapeSqlStr(VALUE));\
+  } while (0)
+
 
 enum ObLSStatus
 {
@@ -55,7 +74,16 @@ enum ObLSStatus
   OB_LS_WAIT_OFFLINE,
   OB_LS_CREATE_ABORT,
   OB_LS_PRE_TENANT_DROPPING,//only for sys ls
+  OB_LS_DROPPED,//for __all_ls
+  OB_LS_MAX_STATUS,
 };
+
+/**
+ * @description:
+ *    In order to let switchover switch the accessmode of all LS correctly,
+ *    when creating, deleting, and updating LS status,
+ *    it needs to be mutually exclusive with switchover status of __all_tenant_info
+ */
 
 /*
  *log stream lifetime description:
@@ -241,7 +269,44 @@ int ObLSTemplateOperator::exec_write(const uint64_t &tenant_id,
   return ret;
 }
 
+#define DEFINE_IN_TRANS_FUC(func_name, ...)\
+int func_name ##_in_trans(__VA_ARGS__, ObMySQLTransaction &trans);\
+int func_name(__VA_ARGS__);
 
+#define DEFINE_IN_TRANS_FUC1(func_name, ...)\
+static int func_name ##_in_trans(__VA_ARGS__, ObMySQLTransaction &trans);\
+static int func_name(__VA_ARGS__, ObISQLClient *proxy);
+
+#define TAKE_IN_TRANS(func_name, proxy, exec_tenant_id, ...)\
+do {\
+  ObMySQLTransaction trans; \
+  if (FAILEDx(trans.start(proxy, exec_tenant_id))) {\
+    SHARE_LOG(WARN, "failed to start trans", KR(ret), K(exec_tenant_id));\
+  } else if (OB_FAIL(func_name##_in_trans(__VA_ARGS__, trans))) {\
+    SHARE_LOG(WARN, "failed to do it in trans", KR(ret));\
+  }\
+  if (trans.is_started()) {\
+    int tmp_ret = OB_SUCCESS;\
+    if (OB_SUCCESS != (tmp_ret = trans.end(OB_SUCC(ret)))) {\
+      SHARE_LOG(WARN, "failed to commit trans", KR(ret), KR(tmp_ret));\
+      ret = OB_SUCC(ret) ? tmp_ret : ret;\
+    }\
+  }\
+} while (0)
+
+#define START_TRANSACTION(proxy, exec_tenant_id)                          \
+  ObMySQLTransaction trans;                                               \
+  if (FAILEDx(trans.start(proxy, exec_tenant_id))) {                      \
+    SHARE_LOG(WARN, "failed to start trans", KR(ret), K(exec_tenant_id)); \
+  }
+#define END_TRANSACTION(trans)\
+  if (trans.is_started()) {\
+    int tmp_ret = OB_SUCCESS;\
+    if (OB_TMP_FAIL(trans.end(OB_SUCC(ret)))) {\
+      ret = OB_SUCC(ret) ? tmp_ret : ret;\
+      SHARE_LOG(WARN, "failed to end trans", KR(ret), K(tmp_ret));\
+    }\
+  }
 }
 }
 

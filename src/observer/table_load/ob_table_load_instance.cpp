@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -40,7 +48,9 @@ void ObTableLoadInstance::destroy()
   if (nullptr != table_ctx_) {
     if (OB_FAIL(ObTableLoadService::remove_ctx(table_ctx_))) {
       LOG_WARN("table ctx may remove by service", KR(ret), KP(table_ctx_));
-    } else if (!is_committed_) {
+    }
+    if (!is_committed_) {
+      // must abort here, abort redef table need exec_ctx session_info
       ObTableLoadCoordinator::abort_ctx(table_ctx_);
     }
     ObTableLoadService::put_ctx(table_ctx_);
@@ -56,21 +66,25 @@ int ObTableLoadInstance::init(ObTableLoadParam &param, const ObIArray<int64_t> &
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObTableLoadInstance init twice", KR(ret), KP(this));
-  } else if (OB_UNLIKELY(nullptr == execute_ctx->exec_ctx_)) {
+  } else if (OB_UNLIKELY(!param.is_valid() || !execute_ctx->is_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", KR(ret), K(param), K(execute_ctx));
+    LOG_WARN("invalid args", KR(ret), K(param), KPC(execute_ctx));
   } else {
     execute_ctx_ = execute_ctx;
-    allocator_ = execute_ctx->allocator_;
+    allocator_ = execute_ctx->get_allocator();
     if (OB_FAIL(param.normalize())) {
       LOG_WARN("fail to normalize param", KR(ret));
+    }
+    // check tenant
+    else if (OB_FAIL(ObTableLoadService::check_tenant())) {
+      LOG_WARN("fail to check tenant", KR(ret), K(param.tenant_id_));
     }
     // check support
     else if (OB_FAIL(ObTableLoadService::check_support_direct_load(param.table_id_))) {
       LOG_WARN("fail to check support direct load", KR(ret), K(param.table_id_));
     }
     // create table ctx
-    else if (OB_FAIL(create_table_ctx(param, idx_array, execute_ctx_->exec_ctx_->get_my_session()))) {
+    else if (OB_FAIL(create_table_ctx(param, idx_array))) {
       LOG_WARN("fail to create table ctx", KR(ret));
     }
     // begin
@@ -91,11 +105,11 @@ int ObTableLoadInstance::init(ObTableLoadParam &param, const ObIArray<int64_t> &
 }
 
 int ObTableLoadInstance::create_table_ctx(ObTableLoadParam &param,
-                                          const ObIArray<int64_t> &idx_array,
-                                          sql::ObSQLSessionInfo *session_info)
+                                          const ObIArray<int64_t> &idx_array)
 {
   int ret = OB_SUCCESS;
   ObTableLoadTableCtx *table_ctx = nullptr;
+  ObSQLSessionInfo *session_info = execute_ctx_->get_session_info();
   ObTableLoadDDLParam ddl_param;
   // start redef table
   ObTableLoadRedefTableStartArg start_arg;
@@ -122,8 +136,7 @@ int ObTableLoadInstance::create_table_ctx(ObTableLoadParam &param,
       LOG_WARN("fail to alloc table ctx", KR(ret), K(param));
     } else if (OB_FAIL(table_ctx->init(param, ddl_param, session_info))) {
       LOG_WARN("fail to init table ctx", KR(ret));
-    } else if (OB_FAIL(ObTableLoadCoordinator::init_ctx(table_ctx, idx_array,
-                                                        session_info->get_priv_user_id()))) {
+    } else if (OB_FAIL(ObTableLoadCoordinator::init_ctx(table_ctx, idx_array, execute_ctx_))) {
       LOG_WARN("fail to coordinator init ctx", KR(ret));
     } else if (OB_FAIL(ObTableLoadService::add_ctx(table_ctx))) {
       LOG_WARN("fail to add ctx", KR(ret));
@@ -303,7 +316,7 @@ int ObTableLoadInstance::commit(ObTableLoadResultInfo &result_info)
       LOG_WARN("fail to check merged", KR(ret));
     }
     // commit
-    else if (OB_FAIL(coordinator.commit(execute_ctx_->exec_ctx_, result_info))) {
+    else if (OB_FAIL(coordinator.commit(result_info))) {
       LOG_WARN("fail to commit", KR(ret));
     } else {
       is_committed_ = true;
@@ -333,7 +346,7 @@ int ObTableLoadInstance::px_commit_data()
       LOG_WARN("fail to check merged", KR(ret));
     }
     // commit
-    else if (OB_FAIL(coordinator.px_commit_data(execute_ctx_->exec_ctx_))) {
+    else if (OB_FAIL(coordinator.px_commit_data())) {
       LOG_WARN("fail to do px_commit_data", KR(ret));
     }
   }

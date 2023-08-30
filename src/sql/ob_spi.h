@@ -19,6 +19,9 @@
 #include "sql/engine/basic/ob_ra_row_store.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/ob_result_set.h"
+#ifdef OB_BUILD_ORACLE_PL
+#include "pl/dblink/ob_pl_dblink_info.h"
+#endif
 namespace oceanbase
 {
 namespace observer
@@ -43,11 +46,19 @@ struct ObSPICursor
   ObSPICursor(ObIAllocator &allocator) :
     row_store_(), row_desc_(), allocator_(&allocator), cur_(0), fields_(allocator) {}
 
+  ~ObSPICursor()
+  {
+    for (int64_t i = 0; i < complex_objs_.count(); ++i) {
+      (void)(pl::ObUserDefinedType::destruct_obj(complex_objs_.at(i)));
+    }
+  }
+
   ObRARowStore row_store_;
   ObArray<ObDataType> row_desc_; //ObRowStore里数据自带的Meta可能是T_NULL，所以这里自备一份
   ObIAllocator* allocator_;
   int64_t cur_;
   common::ColumnsFieldArray fields_;
+  ObArray<ObObj> complex_objs_;
 };
 
 struct ObSPIOutParams
@@ -103,7 +114,7 @@ public:
       need_end_nested_stmt_(EST_NEED_NOT),
       mem_context_(nullptr),
       mem_context_destroy_guard_(mem_context_),
-      allocator_(ObModIds::OB_PL_TEMP),
+      allocator_(ObModIds::OB_PL_TEMP, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       result_set_(NULL),
       sql_ctx_(),
       schema_guard_(share::schema::ObSchemaMgrItem::MOD_SPI_RESULT_SET),
@@ -187,7 +198,8 @@ private:
   int end_nested_session(ObSQLSessionInfo &session);
   int alloc_saved_value(sql::ObSQLSessionInfo::StmtSavedValue *&session_value);
 public:
-  static int check_nested_stmt_legal(ObExecContext &exec_ctx, stmt::StmtType stmt_type, bool for_update = false);
+  static int is_set_global_var(ObSQLSessionInfo &session, const ObString &sql, bool &has_global_variable);
+  static int check_nested_stmt_legal(ObExecContext &exec_ctx, const ObString &sql, stmt::StmtType stmt_type, bool for_update = false);
   int start_trans(ObExecContext &ctx);
   int set_cursor_env(ObSQLSessionInfo &session);
   int reset_cursor_env(ObSQLSessionInfo &session);
@@ -195,7 +207,7 @@ public:
                         stmt::StmtType type = stmt::StmtType::T_NONE,
                         bool is_for_update = false);
   void end_cursor_stmt(pl::ObPLExecCtx *pl_ctx, int &result);
-  int start_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, stmt::StmtType stmt_type, bool for_update);
+  int start_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, const ObString &sql, stmt::StmtType stmt_type, bool for_update);
   void end_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, int &result);
 private:
   bool is_inited_;
@@ -237,6 +249,7 @@ public:
     ObString ps_sql_; // sql prepare过后的参数化sql
     bool is_bulk_;
     bool has_dup_column_name_;
+    bool has_link_table_;
   };
 
   struct PLPrepareCtx
@@ -328,6 +341,12 @@ public:
                                       int64_t expr_idx,
                                       ObObjParam *result);
 
+  static int spi_calc_package_expr_v1(const pl::ObPLResolveCtx &resolve_ctx,
+                                      sql::ObExecContext &exec_ctx,
+                                      ObIAllocator &allocator,
+                                      uint64_t package_id,
+                                      int64_t expr_idx,
+                                      ObObjParam *result);
   static int spi_calc_package_expr(pl::ObPLExecCtx *ctx,
                            uint64_t package_id,
                            int64_t expr_idx,
@@ -555,6 +574,13 @@ public:
 
   static int spi_sub_nestedtable(pl::ObPLExecCtx *ctx, int64_t src_idx, int64_t dst_idx, int32_t lower, int32_t upper);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_extend_assoc_array(int64_t tenant_id,
+                                    const pl::ObPLINS *ns,
+                                    ObIAllocator &allocator,
+                                    pl::ObPLAssocArray &assoc_array,
+                                    int64_t n);
+#endif
   static int spi_get_package_allocator(pl::ObPLExecCtx *ctx, uint64_t package_id, ObIAllocator *&allocator);
 
   static int spi_copy_datum(pl::ObPLExecCtx *ctx,
@@ -664,6 +690,11 @@ public:
   static int spi_update_package_change_info(
     pl::ObPLExecCtx *ctx, uint64_t package_id, uint64_t var_idx);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_copy_opaque(
+      pl::ObPLExecCtx *ctx, ObIAllocator *allocator,
+      pl::ObPLOpaque &src, pl::ObPLOpaque *&dest, uint64_t package_id = OB_INVALID_ID);
+#endif
   static int spi_check_composite_not_null(ObObjParam *v);
 
   static int spi_update_location(pl::ObPLExecCtx *ctx, uint64_t location);
@@ -679,6 +710,23 @@ public:
   static void adjust_pl_status_for_xa(sql::ObExecContext &ctx, int &result);
   static int fill_cursor(ObResultSet &result_set, ObSPICursor *cursor);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_execute_dblink(pl::ObPLExecCtx *ctx,
+                                uint64_t dblink_id,
+                                uint64_t package_id,
+                                uint64_t proc_id,
+                                ParamStore &params);
+  static int spi_execute_dblink(ObExecContext &exec_ctx,
+                                ObIAllocator &allocator,
+                                const pl::ObPLDbLinkInfo *dblink_info,
+                                const ObRoutineInfo *routine_info,
+                                ParamStore &params);
+  static int spi_after_execute_dblink(ObSQLSessionInfo *session,
+                                      const ObRoutineInfo *routine_info,
+                                      ObIAllocator &allocator,
+                                      ParamStore &params,
+                                      ParamStore &exec_params);
+#endif
 private:
   static int recreate_implicit_savapoint_if_need(pl::ObPLExecCtx *ctx, int &result);
   static int recreate_implicit_savapoint_if_need(sql::ObExecContext &ctx, int &result);
@@ -893,6 +941,11 @@ private:
                           const ObDataType *return_types,
                           int64_t return_type_count,
                           bool is_type_record = false);
+  static int check_and_copy_composite(ObObj &result,
+                                      ObObj &src,
+                                      ObIAllocator &allocator,
+                                      pl::ObPLType type,
+                                      uint64_t dst_udt_id);
 
   static int get_package_var_info_by_expr(const ObSqlExpression *expr,
                                           uint64_t &package_id,
@@ -920,8 +973,8 @@ private:
                                 ObIArray<ObDataType> &row_desc,
                                 bool is_type_record);
 
-  static int store_datums(ObObj &dest_addr, const ObIArray<ObObj> &result,
-                          ObIAllocator *alloc, bool is_schema_object);
+  static int store_datums(ObObj &dest_addr, ObIArray<ObObj> &result,
+                          ObIAllocator *alloc, ObSQLSessionInfo *session_info, bool is_schema_object);
 
   static int store_datum(int64_t &current_addr, const ObObj &obj);
 

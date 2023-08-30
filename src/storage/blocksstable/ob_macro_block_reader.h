@@ -88,9 +88,20 @@ public:
       bool &is_compressed,
       const bool need_deep_copy = false,
       ObIAllocator *ext_allocator = nullptr);
+#ifdef OB_BUILD_TDE_SECURITY
+  int decrypt_buf(
+      const ObMicroBlockDesMeta &deserialize_meta,
+      const char *buf,
+      const int64_t size,
+      const char *&decrypt_buf,
+      int64_t &decrypt_size);
+#endif
 private:
   int alloc_buf(const int64_t req_size, char *&buf, int64_t &buf_size);
   int alloc_buf(ObIAllocator &allocator, const int64_t buf_size, char *&buf);
+#ifdef OB_BUILD_TDE_SECURITY
+  int init_encrypter_if_needed();
+#endif
 
 private:
   common::ObCompressor *compressor_;
@@ -129,7 +140,7 @@ private:
       const bool is_index_block,
       ObMacroBlockRowBareIterator &macro_bare_iter);
   int dump_sstable_micro_data(const ObMicroBlockData &micro_data, const bool is_index_block);
-  int dump_column_info(const int64_t col_cnt);
+  int dump_column_info(const int64_t col_cnt, const int64_t type_array_col_cnt);
   bool check_need_print(const uint64_t tablet_id, const int64_t scn);
 private:
   // raw data
@@ -151,6 +162,7 @@ private:
   char *hex_print_buf_;
   bool is_trans_sstable_;
   bool is_inited_;
+  int64_t column_type_array_cnt_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSSTableDataBlockReader);
 };

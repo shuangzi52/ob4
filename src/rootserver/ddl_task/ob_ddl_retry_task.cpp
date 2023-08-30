@@ -242,8 +242,7 @@ int ObDDLRetryTask::prepare(const ObDDLTaskStatus next_task_status)
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  }
-  if (OB_FAIL(switch_status(next_task_status, true, ret))) {
+  } else if (OB_FAIL(switch_status(next_task_status, true, ret))) {
     LOG_WARN("fail to switch status", K(ret));
   }
   return ret;
@@ -538,10 +537,6 @@ int ObDDLRetryTask::check_health()
     LOG_WARN("refresh status failed", K(ret));
   } else if (OB_FAIL(refresh_schema_version())) {
     LOG_WARN("refresh schema version failed", K(ret));
-  }
-  if (ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)
-      || ObDDLTaskStatus::SUCCESS == static_cast<ObDDLTaskStatus>(task_status_)) {
-    ret = OB_SUCCESS; // allow clean up
   }
   return ret;
 }

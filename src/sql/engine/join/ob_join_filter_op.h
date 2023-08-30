@@ -124,7 +124,7 @@ public:
   void set_px_sequence_id(int64_t id) { px_sequence_id_ = id; }
   int64_t get_px_sequence_id() { return px_sequence_id_; }
   int load_runtime_config(const ObJoinFilterSpec &spec, ObExecContext &ctx);
-  void init_register_dm_info(ObDetectableId id, common::ObAddr addr)
+  void init_register_dm_info(const ObDetectableId &id, const common::ObAddr &addr)
   {
     register_dm_info_.detectable_id_ = id;
     register_dm_info_.addr_ = addr;
@@ -194,8 +194,7 @@ public:
   int64_t filter_len_;
   ExprFixedArray join_keys_;
   common::ObHashFuncs hash_funcs_;
-  ObCmpFuncs null_first_cmp_funcs_;
-  ObCmpFuncs null_last_cmp_funcs_;
+  ObCmpFuncs cmp_funcs_;
   JoinFilterSharedType filter_shared_type_;
   ObExpr *calc_tablet_id_expr_;
   common::ObFixedArray<ObRuntimeFilterInfo, common::ObIAllocator> rf_infos_;
@@ -221,6 +220,7 @@ public:
   virtual int inner_rescan() override;
   virtual int inner_get_next_row() override;
   virtual int inner_get_next_batch(const int64_t max_row_cnt) override; // for batch
+  virtual int inner_drain_exch() override;
   virtual void destroy() override {
     lucky_devil_champions_.reset();
     local_rf_msgs_.reset();
@@ -250,6 +250,7 @@ private:
   int init_local_msg_from_shared_msg(ObP2PDatahubMsgBase &msg);
   int release_local_msg();
   int release_shared_msg();
+  int mark_not_need_send_bf_msg();
 private:
   static const int64_t ADAPTIVE_BF_WINDOW_ORG_SIZE = 4096;
   static constexpr double ACCEPTABLE_FILTER_RATE = 0.98;

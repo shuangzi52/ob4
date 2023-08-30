@@ -74,21 +74,12 @@ namespace TGDefIDs {
   };
 }
 
-enum class TGScope
-{
-  INVALID,
-  TG_STATIC,
-  TG_DYNAMIC,
-};
-
 enum class TGType
 {
   INVALID,
   REENTRANT_THREAD_POOL,
   THREAD_POOL,
-  OB_THREAD_POOL,
   TIMER,
-  TIMER_GROUP,
   QUEUE_THREAD,
   DEDUP_QUEUE,
   ASYNC_TASK_QUEUE,
@@ -99,10 +90,8 @@ class TGCommonAttr
 {
 public:
   const char *name_;
-  const char *desc_;
-  enum TGScope scope_;
   enum TGType type_;
-  TO_STRING_KV(KCSTRING_(name), KCSTRING_(desc), K_(scope), K_(type));
+  TO_STRING_KV(KCSTRING_(name), K_(type));
 };
 
 class ITG;
@@ -118,7 +107,6 @@ public:
   virtual ~TGHelper() {}
   virtual void tg_create_cb(int) = 0;
   virtual void tg_destroy_cb(int) = 0;
-  virtual uint64_t id() const = 0;
 };
 
 extern TGHelper *&get_tenant_tg_helper();
@@ -127,7 +115,7 @@ extern void set_tenant_tg_helper(TGHelper *tg_helper);
 class ITG
 {
 public:
-  ITG() : tg_helper_(nullptr), tg_cgroup_(lib::ThreadCGroup::INVALID_CGROUP) {}
+  ITG() : tg_helper_(nullptr) {}
   virtual ~ITG() {}
   int64_t get_tenant_id() const
   { return NULL == tg_helper_ ? common::OB_SERVER_TENANT_ID : tg_helper_->id(); }
@@ -177,15 +165,15 @@ public:
     UNUSED(task);
     return common::OB_NOT_SUPPORTED;
   }
-  virtual int schedule(common::ObTimerTask &task, const int64_t delay, bool repeate = false)
+  virtual int schedule(common::ObTimerTask &task, const int64_t delay, bool repeate = false, bool immediate = false)
   {
-    UNUSEDx(task, delay, repeate);
+    UNUSEDx(task, delay, repeate, immediate);
     return common::OB_NOT_SUPPORTED;
   }
   virtual int schedule(int idx, common::ObTimerTask &task,
-                       const int64_t delay, bool repeate = false)
+                       const int64_t delay, bool repeate = false, bool immediate = false)
   {
-    UNUSEDx(idx, task, delay, repeate);
+    UNUSEDx(idx, task, delay, repeate, immediate);
     return common::OB_NOT_SUPPORTED;
   }
   virtual int task_exist(const common::ObTimerTask &task, bool &exist)
@@ -202,12 +190,21 @@ public:
   {
     return common::OB_NOT_SUPPORTED;
   }
+  virtual int cancel_task(const common::ObTimerTask &task)
+  {
+    UNUSED(task);
+    return common::OB_NOT_SUPPORTED;
+  }
+  virtual int wait_task(const common::ObTimerTask &task)
+  {
+    UNUSED(task);
+    return common::OB_NOT_SUPPORTED;
+  }
   virtual void set_queue_size(const int64_t qsize)
   {
     UNUSED(qsize);
   }
   TGHelper *tg_helper_;
-  lib::ThreadCGroup tg_cgroup_;
   TGCommonAttr attr_;
 };
 
@@ -230,14 +227,16 @@ public:
   TGRunnable *runnable_ = nullptr;
 
 };
-template<>
-class TG<TGType::REENTRANT_THREAD_POOL> : public ITG
+class TG_REENTRANT_THREAD_POOL : public ITG
 {
 public:
-  TG(ThreadCountPair pair)
+  TG_REENTRANT_THREAD_POOL(ThreadCountPair pair)
     : thread_cnt_(pair.get_thread_cnt())
   {}
-  ~TG() { destroy(); }
+  TG_REENTRANT_THREAD_POOL(int64_t thread_cnt)
+    : thread_cnt_(thread_cnt)
+  {}
+  ~TG_REENTRANT_THREAD_POOL() { destroy(); }
   int thread_cnt() override { return (int)thread_cnt_; }
   int set_thread_cnt(int64_t thread_cnt)
   {
@@ -294,7 +293,7 @@ public:
     } else if(nullptr == th_->runnable_) {
       ret = common::OB_ERR_UNEXPECTED;
     } else {
-      th_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      th_->set_run_wrapper(tg_helper_);
       ret = th_->create(thread_cnt_, attr_.name_);
     }
     return ret;
@@ -338,14 +337,16 @@ public:
   TGRunnable *runnable_ = nullptr;
 };
 
-template<>
-class TG<TGType::THREAD_POOL> : public ITG
+class TG_THREAD_POOL : public ITG
 {
 public:
-  TG(ThreadCountPair pair)
+  TG_THREAD_POOL(ThreadCountPair pair)
     : thread_cnt_(pair.get_thread_cnt())
   {}
-  ~TG() { destroy(); }
+  TG_THREAD_POOL(int64_t thread_cnt)
+    : thread_cnt_(thread_cnt)
+  {}
+  ~TG_THREAD_POOL() { destroy(); }
   int thread_cnt() override { return (int)thread_cnt_; }
   int set_thread_cnt(int64_t thread_cnt)
   {
@@ -380,7 +381,7 @@ public:
     } else {
       th_->runnable_->set_stop(false);
       th_->set_thread_count(thread_cnt_);
-      th_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      th_->set_run_wrapper(tg_helper_);
       ret = th_->start();
     }
     return ret;
@@ -433,15 +434,18 @@ public:
   TGTaskHandler *handler_ = nullptr;
 };
 
-template<>
-class TG<TGType::QUEUE_THREAD> : public ITG
+class TG_QUEUE_THREAD : public ITG
 {
 public:
-  TG(ThreadCountPair pair, const int64_t task_num_limit)
+  TG_QUEUE_THREAD(ThreadCountPair pair, const int64_t task_num_limit)
     : thread_num_(pair.get_thread_cnt()),
       task_num_limit_(task_num_limit)
   {}
-  ~TG() { destroy(); }
+  TG_QUEUE_THREAD(int64_t thread_num, const int64_t task_num_limit)
+    : thread_num_(thread_num),
+      task_num_limit_(task_num_limit)
+  {}
+  ~TG_QUEUE_THREAD() { destroy(); }
   int thread_cnt() override { return (int)thread_num_; }
   int set_thread_cnt(int64_t thread_cnt) override
   {
@@ -463,7 +467,7 @@ public:
     } else {
       qth_ = new (buf_) MySimpleThreadPool();
       qth_->handler_ = &handler;
-      qth_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      qth_->set_run_wrapper(tg_helper_);
       ret = qth_->init(thread_num_, task_num_limit_, attr_.name_, tenant_id);
     }
     return ret;
@@ -550,14 +554,16 @@ public:
   TGTaskHandler *handler_ = nullptr;
 };
 
-template<>
-class TG<TGType::MAP_QUEUE_THREAD> : public ITG
+class TG_MAP_QUEUE_THREAD : public ITG
 {
 public:
-  TG(ThreadCountPair pair)
+  TG_MAP_QUEUE_THREAD(ThreadCountPair pair)
     : thread_num_(pair.get_thread_cnt())
   {}
-  ~TG() { destroy(); }
+  TG_MAP_QUEUE_THREAD(int64_t thread_num)
+    : thread_num_(thread_num)
+  {}
+  ~TG_MAP_QUEUE_THREAD() { destroy(); }
   int thread_cnt() override { return (int)thread_num_; }
   int set_thread_cnt(int64_t thread_cnt) override
   {
@@ -579,7 +585,7 @@ public:
     } else {
       qth_ = new (buf_) MyMapQueueThreadPool();
       qth_->handler_ = &handler;
-      qth_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      qth_->set_run_wrapper(tg_helper_);
       ret = qth_->init(tenant_id, thread_num_, attr_.name_);
     }
     return ret;
@@ -605,6 +611,7 @@ public:
   {
     if (qth_ != nullptr) {
       qth_->wait();
+      destroy();
     }
   }
   void destroy()
@@ -632,11 +639,10 @@ private:
   int64_t thread_num_;
 };
 
-template<>
-class TG<TGType::DEDUP_QUEUE> : public ITG
+class TG_DEDUP_QUEUE : public ITG
 {
 public:
-  TG(ThreadCountPair pair,
+  TG_DEDUP_QUEUE(ThreadCountPair pair,
      const int64_t queue_size = ObDedupQueue::TASK_QUEUE_SIZE,
      const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
      const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
@@ -651,7 +657,22 @@ public:
        page_size_(page_size),
        label_(label)
   {}
-  ~TG() { destroy(); }
+  TG_DEDUP_QUEUE(int64_t thread_num,
+     const int64_t queue_size = ObDedupQueue::TASK_QUEUE_SIZE,
+     const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
+     const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
+     const int64_t hold_mem_limit = ObDedupQueue::HOLD_LIMIT,
+     const int64_t page_size = ObDedupQueue::PAGE_SIZE,
+     const char *label = nullptr)
+    :  thread_num_(thread_num),
+       queue_size_(queue_size),
+       task_map_size_(task_map_size),
+       total_mem_limit_(total_mem_limit),
+       hold_mem_limit_(hold_mem_limit),
+       page_size_(page_size),
+       label_(label)
+  {}
+  ~TG_DEDUP_QUEUE() { destroy(); }
   int thread_cnt() override { return (int)thread_num_; }
   int set_thread_cnt(int64_t thread_cnt) override
   {
@@ -671,7 +692,7 @@ public:
       ret = common::OB_ERR_UNEXPECTED;
     } else {
       qth_ = new (buf_) common::ObDedupQueue();
-      qth_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      qth_->set_run_wrapper(tg_helper_);
       if (OB_FAIL(qth_->init(thread_num_,
                              attr_.name_,
                              queue_size_,
@@ -735,14 +756,13 @@ private:
   const char *label_;
 };
 
-template<>
-class TG<TGType::TIMER> : public ITG
+class TG_TIMER : public ITG
 {
 public:
-  TG(int64_t max_task_num = 32)
+  TG_TIMER(int64_t max_task_num = 32)
     : max_task_num_(max_task_num)
   {}
-  ~TG() { destroy(); }
+  ~TG_TIMER() { destroy(); }
   int thread_cnt() override { return 1; }
   int set_thread_cnt(int64_t thread_cnt) override
   {
@@ -757,7 +777,7 @@ public:
       ret = common::OB_ERR_UNEXPECTED;
     } else {
       timer_ = new (buf_) common::ObTimer(max_task_num_);
-      timer_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      timer_->set_run_wrapper(tg_helper_);
       if (OB_FAIL(timer_->init(attr_.name_,
                                ObMemAttr(get_tenant_id(), "TGTimer")))) {
         OB_LOG(WARN, "init failed", K(ret));
@@ -779,13 +799,13 @@ public:
     }
   }
 
-  int schedule(common::ObTimerTask &task, const int64_t delay, bool repeate = false) override
+  int schedule(common::ObTimerTask &task, const int64_t delay, bool repeate = false, bool immediate = false) override
   {
     int ret = common::OB_SUCCESS;
     if (OB_ISNULL(timer_)) {
       ret = common::OB_ERR_UNEXPECTED;
     } else {
-      ret = timer_->schedule(task, delay, repeate);
+      ret = timer_->schedule(task, delay, repeate, immediate);
     }
     return ret;
   }
@@ -819,6 +839,26 @@ public:
     }
     return ret;
   }
+  int cancel_task(const common::ObTimerTask &task) override
+  {
+    int ret = common::OB_SUCCESS;
+    if (OB_ISNULL(timer_)) {
+      ret = common::OB_ERR_UNEXPECTED;
+    } else {
+      ret = timer_->cancel_task(task);
+    }
+    return ret;
+  }
+  int wait_task(const common::ObTimerTask &task) override
+  {
+    int ret = common::OB_SUCCESS;
+    if (OB_ISNULL(timer_)) {
+      ret = common::OB_ERR_UNEXPECTED;
+    } else {
+      ret = timer_->wait_task(task);
+    }
+    return ret;
+  }
   void destroy()
   {
     if (timer_ != nullptr) {
@@ -833,15 +873,18 @@ private:
   int64_t max_task_num_;
 };
 
-template<>
-class TG<TGType::ASYNC_TASK_QUEUE> : public ITG
+class TG_ASYNC_TASK_QUEUE : public ITG
 {
 public:
-  TG(lib::ThreadCountPair pair, const int64_t queue_size)
+  TG_ASYNC_TASK_QUEUE(lib::ThreadCountPair pair, const int64_t queue_size)
     : thread_cnt_(pair.get_thread_cnt()),
       queue_size_(queue_size)
   {}
-  ~TG() { destroy(); }
+  TG_ASYNC_TASK_QUEUE(int64_t thread_cnt, const int64_t queue_size)
+    : thread_cnt_(thread_cnt),
+      queue_size_(queue_size)
+  {}
+  ~TG_ASYNC_TASK_QUEUE() { destroy(); }
   int thread_cnt() override { return (int)thread_cnt_; }
   int set_thread_cnt(int64_t thread_cnt) override
   {
@@ -861,7 +904,7 @@ public:
       ret = common::OB_ERR_UNEXPECTED;
     } else {
       qth_ = new (buf_) share::ObAsyncTaskQueue();
-      qth_->set_run_wrapper(tg_helper_, tg_cgroup_);
+      qth_->set_run_wrapper(tg_helper_);
       if (OB_FAIL(qth_->init(thread_cnt_,
                              queue_size_,
                              attr_.name_))) {
@@ -909,122 +952,7 @@ private:
   int64_t queue_size_;
 };
 
-template<>
-class TG<TGType::TIMER_GROUP> : public ITG
-{
-  static constexpr int MAX_CNT = 32;
-  using TimerType = TG<TGType::TIMER>;
-public:
-  TG(ThreadCountPair pair)
-    : cnt_(pair.get_thread_cnt())
-  {}
-  ~TG() { destroy(); }
-  int thread_cnt() override { return (int)cnt_; }
-  int set_thread_cnt(int64_t thread_cnt)
-  {
-    UNUSED(thread_cnt);
-    int ret = common::OB_ERR_UNEXPECTED;
-    return ret;
-  }
-  int start() override
-  {
-    int ret = common::OB_SUCCESS;
-    if (is_inited_) {
-      ret = common::OB_ERR_UNEXPECTED;
-    } else {
-      if (cnt_ >= MAX_CNT) {
-        ret = common::OB_ERR_UNEXPECTED;
-      }
-      for (int i = 0; OB_SUCC(ret) && i < cnt_; i++) {
-        auto *tmp = new (buf_ + sizeof(TimerType) * i) TimerType();
-        tmp->attr_ = attr_;
-        if (OB_FAIL(tmp->start())) {
-        } else {
-          timers_[i] = tmp;
-        }
-      }
-      is_inited_ = true;
-    }
-    return ret;
-  }
-  void stop() override
-  {
-    if (is_inited_) {
-      for (int i = 0; i < cnt_; i++) {
-        if (timers_[i] != nullptr) {
-          timers_[i]->stop();
-        }
-      }
-    }
-  }
-  void wait() override
-  {
-    if (is_inited_) {
-      for (int i = 0; i < cnt_; i++) {
-        if (timers_[i] != nullptr) {
-          timers_[i]->wait();
-        }
-      }
-      destroy();
-    }
-  }
-  int schedule(int idx, common::ObTimerTask &task, const int64_t delay,
-               bool repeate = false) override
-  {
-    int ret = common::OB_SUCCESS;
-    if (!is_inited_) {
-      ret = common::OB_ERR_UNEXPECTED;
-    } else if (idx >= cnt_) {
-      ret = common::OB_INVALID_ARGUMENT;
-    } else if (OB_ISNULL(timers_[idx])) {
-      ret = common::OB_ERR_UNEXPECTED;
-    } else {
-      ret = timers_[idx]->schedule(task, delay, repeate);
-    }
-    return ret;
-  }
-  void destroy()
-  {
-    if (is_inited_) {
-      for (int i = 0; i < cnt_; i++) {
-        if (timers_[i] != nullptr) {
-          timers_[i]->~TimerType();
-          timers_[i] = nullptr;
-        }
-      }
-      is_inited_ = false;
-    }
-  }
-private:
-  char buf_[sizeof(TimerType) * MAX_CNT];
-  TimerType *timers_[MAX_CNT] = {nullptr};
-  const int64_t cnt_ = 0;
-  bool is_inited_ = false;
-};
-
-template<enum TGType type>
-class TGCLSMap;
-#define BIND_TG_CLS(type, CLS_)    \
-  namespace lib                    \
-  {                                \
-    template<>                     \
-    class TGCLSMap<type>           \
-    {                              \
-    public:                        \
-      using CLS = CLS_;            \
-    };                             \
-  }
 } // end of namespace lib
-
-BIND_TG_CLS(TGType::REENTRANT_THREAD_POOL, TG<TGType::REENTRANT_THREAD_POOL>);
-BIND_TG_CLS(TGType::THREAD_POOL, TG<TGType::THREAD_POOL>);
-BIND_TG_CLS(TGType::QUEUE_THREAD, TG<TGType::QUEUE_THREAD>);
-BIND_TG_CLS(TGType::DEDUP_QUEUE, TG<TGType::DEDUP_QUEUE>);
-BIND_TG_CLS(TGType::TIMER, TG<TGType::TIMER>);
-BIND_TG_CLS(TGType::TIMER_GROUP, TG<TGType::TIMER_GROUP>);
-BIND_TG_CLS(TGType::ASYNC_TASK_QUEUE, TG<TGType::ASYNC_TASK_QUEUE>);
-BIND_TG_CLS(TGType::MAP_QUEUE_THREAD, TG<TGType::MAP_QUEUE_THREAD>);
-
 
 namespace lib {
 
@@ -1072,8 +1000,7 @@ public:
   // tenant isolation
   int create_tg_tenant(int tg_def_id,
                        int &tg_id,
-                       int64_t qsize = 0,
-                       lib::ThreadCGroup cgroup = lib::ThreadCGroup::FRONT_CGROUP)
+                       int64_t qsize = 0)
   {
     tg_id = -1;
     int ret = common::OB_SUCCESS;
@@ -1098,7 +1025,6 @@ public:
         OB_LOG(WARN, "create tg tenant but tenant tg helper is null", K(tg_def_id), K(tg_id));
       } else {
         tg->tg_helper_ = tg_helper;
-        tg->tg_cgroup_ = cgroup;
         tg_helper->tg_create_cb(tg_id);
       }
       tg->set_queue_size(qsize);
@@ -1119,7 +1045,6 @@ private:
   char bs_buf_[ABitSet::buf_len(MAX_ID)];
 public:
   ITG *tgs_[MAX_ID] = {nullptr};
-  int default_tg_id_map_[TGDefIDs::END] = {-1};
 };
 
 template<typename Func, bool return_void=false>
@@ -1150,10 +1075,10 @@ public:
       OB_LOG(ERROR, "invalid tg id");                \
     } else {                                         \
       lib::ITG *tg =                                 \
-        TG_MGR.tgs_[static_cast<int>(tg_id) < static_cast<int>(lib::TGDefIDs::END) ? \
-        TG_MGR.default_tg_id_map_[tg_id] : tg_id];   \
+        TG_MGR.tgs_[tg_id];                          \
       if (OB_ISNULL(tg)) {                           \
         ret = common::OB_ERR_UNEXPECTED;             \
+        OB_LOG(WARN, "null tg", K(tg_id));           \
       } else {                                       \
         auto f = [&]() { return tg->func(args); };   \
         ret = lib::FWrap<decltype(f), std::is_void<decltype(f())>::value>()(f); \
@@ -1190,6 +1115,8 @@ public:
 #define TG_STOP(tg_id) do { int r = TG_INVOKE(tg_id, stop); UNUSED(r); } while (0)
 #define TG_CANCEL_R(tg_id, args...) TG_INVOKE(tg_id, cancel, args)
 #define TG_CANCEL(tg_id, args...) do { int r = TG_INVOKE(tg_id, cancel, args); UNUSED(r); } while (0)
+#define TG_CANCEL_TASK(tg_id, args...) do { int r = TG_INVOKE(tg_id, cancel_task, args); UNUSED(r); } while (0)
+#define TG_WAIT_TASK(tg_id, args...) do { int r = TG_INVOKE(tg_id, wait_task, args); UNUSED(r); } while (0)
 #define TG_CANCEL_ALL(tg_id) TG_INVOKE(tg_id, cancel_all)
 #define TG_TASK_EXIST(tg_id, args...) TG_INVOKE(tg_id, task_exist, args)
 #define TG_SCHEDULE(tg_id, args...) TG_INVOKE(tg_id, schedule, args)
@@ -1222,7 +1149,7 @@ public:
       tg_type = tg->attr_.type_;                                                                        \
     }                                                                                                   \
     if (TGType::REENTRANT_THREAD_POOL == tg_type) {                                                     \
-      TG<TGType::REENTRANT_THREAD_POOL>* tmp_tg = static_cast<TG<TGType::REENTRANT_THREAD_POOL>*>(tg); \
+      TG_REENTRANT_THREAD_POOL* tmp_tg = static_cast<TG_REENTRANT_THREAD_POOL*>(tg); \
       ret = tmp_tg->logical_start();                                                                    \
     } else {                                                                                            \
       ret = common::OB_ERR_UNEXPECTED;                                                                  \
@@ -1240,7 +1167,7 @@ public:
       tg_type = tg->attr_.type_;                                                                        \
     }                                                                                                   \
     if (TGType::REENTRANT_THREAD_POOL == tg_type) {                                                     \
-      TG<TGType::REENTRANT_THREAD_POOL>* tmp_tg = static_cast<TG<TGType::REENTRANT_THREAD_POOL>*>(tg); \
+      TG_REENTRANT_THREAD_POOL* tmp_tg = static_cast<TG_REENTRANT_THREAD_POOL*>(tg); \
       tmp_tg->logical_stop();                                                                           \
     } else {                                                                                            \
       ret = common::OB_ERR_UNEXPECTED;                                                                  \
@@ -1257,7 +1184,7 @@ public:
       tg_type = tg->attr_.type_;                                                                        \
     }                                                                                                   \
     if (TGType::REENTRANT_THREAD_POOL == tg_type) {                                                     \
-      TG<TGType::REENTRANT_THREAD_POOL>* tmp_tg = static_cast<TG<TGType::REENTRANT_THREAD_POOL>*>(tg); \
+      TG_REENTRANT_THREAD_POOL* tmp_tg = static_cast<TG_REENTRANT_THREAD_POOL*>(tg); \
       tmp_tg->logical_wait();                                                                           \
     } else {                                                                                            \
       ret = common::OB_ERR_UNEXPECTED;                                                                  \

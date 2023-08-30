@@ -49,7 +49,11 @@ ob_set_subtarget(ob_logservice common
   ob_server_log_block_mgr.cpp
   ob_log_flashback_service.cpp
   ob_net_keepalive_adapter.cpp
+  ob_log_external_storage_handler.cpp
+  ob_log_external_storage_io_task.cpp
   ob_log_monitor.cpp
+  ob_log_external_storage_handler.cpp
+  ob_log_external_storage_io_task.cpp
 )
 
 ob_set_subtarget(ob_logservice common_mixed
@@ -61,6 +65,7 @@ ob_set_subtarget(ob_logservice common_mixed
   replayservice/ob_log_replay_service.cpp
   replayservice/ob_replay_handler.cpp
   replayservice/ob_replay_status.cpp
+  replayservice/ob_tablet_replay_executor.cpp
 )
 
 ob_set_subtarget(ob_logservice leader_coordinator
@@ -75,6 +80,7 @@ ob_set_subtarget(ob_logservice leader_coordinator
 ob_set_subtarget(ob_logservice logrouteservice
   logrouteservice/ob_all_server_info.cpp
   logrouteservice/ob_all_zone_info.cpp
+  logrouteservice/ob_all_units_info.cpp
   logrouteservice/ob_external_server_blacklist.cpp
   logrouteservice/ob_log_all_svr_cache.cpp
   logrouteservice/ob_log_route_key.cpp
@@ -144,6 +150,7 @@ ob_set_subtarget(ob_logservice palf
   palf/log_updater.cpp
   palf/log_io_utils.cpp
   palf/log_io_worker_wrapper.cpp
+  palf/log_throttle.cpp
 )
 
 ob_set_subtarget(ob_logservice palf_election
@@ -174,13 +181,12 @@ ob_set_subtarget(ob_logservice restoreservice
   restoreservice/ob_log_restore_allocator.cpp
   restoreservice/ob_remote_fetch_context.cpp
   restoreservice/ob_log_restore_scheduler.cpp
-  restoreservice/ob_log_restore_controller.cpp
   restoreservice/ob_log_restore_driver_base.cpp
   restoreservice/ob_log_restore_net_driver.cpp
   restoreservice/ob_log_restore_archive_driver.cpp
   restoreservice/ob_restore_log_function.cpp
+  restoreservice/ob_remote_log_writer.cpp
 )
-
 
 ob_set_subtarget(ob_logservice data_dictionary
   data_dictionary/ob_data_dict_utils.cpp

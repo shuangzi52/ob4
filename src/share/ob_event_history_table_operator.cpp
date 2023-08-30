@@ -184,7 +184,7 @@ int ObEventHistoryTableOperator::init(common::ObMySQLProxy &proxy)
     LOG_WARN("init twice", K(ret));
   } else {
     const int64_t thread_count = 1;
-    const int64_t queue_size_square_of_2 = 14;
+    const int64_t queue_size_square_of_2 = 10;
     if (OB_FAIL(event_queue_.init(thread_count, "EvtHisUpdTask", TASK_QUEUE_SIZE, TASK_MAP_SIZE,
         TOTAL_LIMIT, HOLD_LIMIT, PAGE_SIZE))) {
       LOG_WARN("task_queue_ init failed", K(thread_count), LITERAL_K(TASK_QUEUE_SIZE),
@@ -203,11 +203,23 @@ int ObEventHistoryTableOperator::init(common::ObMySQLProxy &proxy)
   return ret;
 }
 
-void ObEventHistoryTableOperator::destroy()
+void ObEventHistoryTableOperator::stop()
 {
   stopped_ = true;
+  event_queue_.stop();
+  timer_.stop();
+}
+
+void ObEventHistoryTableOperator::wait()
+{
+  event_queue_.wait();
+  timer_.wait();
+}
+
+void ObEventHistoryTableOperator::destroy()
+{
   event_queue_.destroy();
-  timer_.stop_and_wait();
+  timer_.destroy();
   // allocator should destroy after event_queue_ destroy
   inited_ = false;
 }
@@ -339,7 +351,7 @@ int ObEventHistoryTableOperator::add_event_to_timer_(const common::ObSqlString &
   ObAddr self_addr = self_addr_;
   common::ObMySQLProxy *proxy = proxy_;
   ObUniqueGuard<ObStringHolder> uniq_holder;
-  if (OB_FAIL(ob_make_unique(uniq_holder))) {
+  if (OB_FAIL(ob_make_unique(uniq_holder, SET_USE_500("EventReHolder")))) {
     SHARE_LOG(WARN, "fail to make unique guard");
   } else if (OB_FAIL(uniq_holder->assign(sql.string()))) {
     SHARE_LOG(WARN, "fail to create unique ownership of string");

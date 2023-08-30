@@ -391,6 +391,15 @@ public:
                                       const common::ObTabletID &scan_tablet_id,
                                       const common::ObArrayWrap<share::schema::ObColDesc> &rowkey_descs,
                                       common::ObNewRange &new_range);
+
+  OB_INLINE bool can_partition_retry()
+  {
+    return (
+         ctx_.get_my_session()->is_user_session() &&
+         (! ObStmt::is_dml_write_stmt(ctx_.get_physical_plan_ctx()->get_phy_plan()->get_stmt_type()) )&&
+         (! ctx_.get_physical_plan_ctx()->get_phy_plan()->has_for_update() )
+        );
+  }
 protected:
   // Get GI task then update location_idx and $cur_access_tablet_
   // NOTE: set $iter_end_ if no task found.
@@ -478,6 +487,17 @@ protected:
       const ObPushdownExprSpec &pd_expr_spec = MY_SPEC.tsc_ctdef_.scan_ctdef_.pd_expr_spec_;
       ObSQLUtils::access_expr_sanity_check(pd_expr_spec.access_exprs_,
                                eval_ctx_, pd_expr_spec.max_batch_size_);
+
+
+      int64_t stmt_used = tsc_rtdef_.scan_rtdef_.stmt_allocator_.get_alloc()->used();
+      if (stmt_used > 2L*1024*1024*1024) {
+        SQL_LOG_RET(WARN,OB_ERR_UNEXPECTED,"stmt memory used over the threshold",K(stmt_used));
+      }
+
+      int64_t scan_used = tsc_rtdef_.scan_rtdef_.scan_allocator_.get_alloc()->used();
+      if (scan_used > 2L*1024*1024*1024) {
+        SQL_LOG_RET(WARN,OB_ERR_UNEXPECTED,"scan memory used over the threshold",K(scan_used));
+      }
     }
   }
   bool is_foreign_check_nested_session() { return ObSQLUtils::is_fk_nested_sql(&ctx_);}

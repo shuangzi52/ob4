@@ -165,21 +165,20 @@ ObDASScanOp::ObDASScanOp(ObIAllocator &op_alloc)
     scan_ctdef_(nullptr),
     scan_rtdef_(nullptr),
     result_(nullptr),
-    remain_row_cnt_(0)
+    remain_row_cnt_(0),
+    retry_alloc_(nullptr)
 {
 }
 
 ObDASScanOp::~ObDASScanOp()
 {
-  if (result_ != nullptr && result_->get_type() == ObNewRowIterator::ObTableScanIterator) {
-    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "table scan iter is not released, maybe some bug occured",
-              KPC(scan_ctdef_), K(scan_param_), KPC(scan_rtdef_));
-    #ifdef ENABLE_SANITY
-    abort();
-    #endif
-  }
   scan_param_.destroy();
   trans_info_array_.destroy();
+
+  if (retry_alloc_ != nullptr) {
+    retry_alloc_->reset();
+    retry_alloc_ = nullptr;
+  }
 }
 
 int ObDASScanOp::swizzling_remote_task(ObDASRemoteInfo *remote_info)
@@ -224,9 +223,14 @@ int ObDASScanOp::init_scan_param()
   scan_param_.timeout_ = scan_rtdef_->timeout_ts_;
   scan_param_.scan_flag_ = scan_rtdef_->scan_flag_;
   scan_param_.reserved_cell_count_ = scan_ctdef_->access_column_ids_.count();
-  scan_param_.allocator_ = &scan_rtdef_->stmt_allocator_;
+  if (in_part_retry_ && retry_alloc_ != nullptr) {
+    scan_param_.allocator_      = retry_alloc_;
+    scan_param_.scan_allocator_ = retry_alloc_;
+  } else {
+    scan_param_.allocator_ = &scan_rtdef_->stmt_allocator_;
+    scan_param_.scan_allocator_ = &scan_rtdef_->scan_allocator_;
+  }
   scan_param_.sql_mode_ = scan_rtdef_->sql_mode_;
-  scan_param_.scan_allocator_ = &scan_rtdef_->scan_allocator_;
   scan_param_.frozen_version_ = scan_rtdef_->frozen_version_;
   scan_param_.force_refresh_lc_ = scan_rtdef_->force_refresh_lc_;
   scan_param_.output_exprs_ = &(scan_ctdef_->pd_expr_spec_.access_exprs_);
@@ -301,12 +305,18 @@ int ObDASScanOp::open_op()
 {
   int ret = OB_SUCCESS;
   ObITabletScan &tsc_service = get_tsc_service();
+  //Retry may be called many times.
+  //Only for DASScanOp now, we add a retry alloc to avoid
+  //memory expansion.
+  if (in_part_retry_) {
+    init_retry_alloc();
+  }
   reset_access_datums_ptr();
   if (OB_FAIL(init_scan_param())) {
     LOG_WARN("init scan param failed", K(ret));
   } else if (OB_FAIL(tsc_service.table_scan(scan_param_, result_))) {
     if (OB_SNAPSHOT_DISCARDED == ret && scan_param_.fb_snapshot_.is_valid()) {
-      ret = OB_INVALID_QUERY_TIMESTAMP;
+      ret = OB_TABLE_DEFINITION_CHANGED;
     } else if (OB_TRY_LOCK_ROW_CONFLICT != ret) {
       LOG_WARN("fail to scan table", K(scan_param_), K(ret));
     }
@@ -321,24 +331,36 @@ int ObDASScanOp::open_op()
 int ObDASScanOp::release_op()
 {
   int ret = OB_SUCCESS;
+  int lookup_ret = OB_SUCCESS;
   ObITabletScan &tsc_service = get_tsc_service();
   if (result_ != nullptr) {
     if (ObNewRowIterator::IterType::ObLocalIndexLookupIterator == result_->get_type() ||
         ObNewRowIterator::IterType::ObGroupLookupOp == result_->get_type()) {
       ObLocalIndexLookupOp *lookup_op = static_cast<ObLocalIndexLookupOp*>(result_);
-      if (OB_FAIL(tsc_service.revert_scan_iter(lookup_op->get_rowkey_iter()))) {
+
+      ret = tsc_service.revert_scan_iter(lookup_op->get_rowkey_iter());
+      if (OB_SUCCESS != ret) {
         LOG_WARN("revert scan iterator failed", K(ret));
-      } else if (OB_FAIL(lookup_op->revert_iter())) {
-        LOG_WARN("revert lookup iterator failed", K(ret));
-      } else {
-        result_ = nullptr;
+      }
+
+      lookup_ret = lookup_op->revert_iter();
+      if (OB_SUCCESS != lookup_ret) {
+        LOG_WARN("revert lookup iterator failed", K(lookup_ret));
+      }
+
+      result_ = nullptr;
+      //if row_key revert is succ return look_up iter ret code.
+      //if row_key revert is fail return row_key iter ret code.
+      //In short if row_key and look_up iter all revert fail.
+      //We just ignore lookup_iter ret code.
+      if (OB_SUCCESS == ret) {
+        ret = lookup_ret;
       }
     } else {
       if (OB_FAIL(tsc_service.revert_scan_iter(result_))) {
         LOG_WARN("revert scan iterator failed", K(ret));
-      } else {
-        result_ = nullptr;
       }
+      result_ = nullptr;
     }
   }
   //need to clear the flag:need_switch_param_
@@ -346,6 +368,11 @@ int ObDASScanOp::release_op()
   scan_param_.need_switch_param_ = false;
   scan_param_.partition_guard_ = nullptr;
   scan_param_.destroy_schema_guard();
+
+  if (retry_alloc_ != nullptr) {
+    retry_alloc_->reset();
+    retry_alloc_ = nullptr;
+  }
 
   int simulate_error = EVENT_CALL(EventTable::EN_DAS_SIMULATE_LOOKUPOP_INIT_ERROR);
   if (OB_UNLIKELY(OB_SUCCESS != simulate_error)) {
@@ -642,6 +669,10 @@ int ObDASScanOp::rescan()
 int ObDASScanOp::reuse_iter()
 {
   int &ret = errcode_;
+  //May be retry change to retry alloc.
+  //Change back.
+  scan_param_.scan_allocator_ = &scan_rtdef_->scan_allocator_;
+
   ObITabletScan &tsc_service = get_tsc_service();
   ObLocalIndexLookupOp *lookup_op = get_lookup_op();
   const ObTabletID &storage_tablet_id = scan_param_.tablet_id_;
@@ -802,17 +833,7 @@ OB_SERIALIZE_MEMBER((ObDASScanResult, ObIDASTaskResult),
 
 ObLocalIndexLookupOp::~ObLocalIndexLookupOp()
 {
-  if (lookup_iter_ != nullptr && lookup_iter_->get_type() == ObNewRowIterator::ObTableScanIterator) {
-    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "lookup_iter_ iter is not released, maybe some bug occured",
-              KPC(lookup_ctdef_), K(scan_param_), KPC(index_ctdef_),
-              K(lookup_rowkey_cnt_), K(lookup_row_cnt_));
-  }
 
-  if (rowkey_iter_ != nullptr && rowkey_iter_->get_type() == ObNewRowIterator::ObTableScanIterator) {
-    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "rowkey_iter_ iter is not released, maybe some bug occured",
-              KPC(lookup_ctdef_), K(scan_param_), KPC(index_ctdef_),
-              K(lookup_rowkey_cnt_), K(lookup_row_cnt_));
-  }
 }
 
 int ObLocalIndexLookupOp::init(const ObDASScanCtDef *lookup_ctdef,
@@ -1109,6 +1130,7 @@ int ObLocalIndexLookupOp::check_lookup_row_cnt()
                       "lookup_group_cnt", get_lookup_group_cnt(),
                       "index_table_id", index_ctdef_->ref_table_id_ ,
                       "data_table_tablet_id", tablet_id_ ,
+                      KPC_(snapshot),
                       KPC_(tx_desc));
       if (trans_info_array_.count() == scan_param_.key_ranges_.count()) {
         for (int64_t i = 0; i < trans_info_array_.count(); i++) {

@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -16,6 +24,7 @@
 #include "storage/direct_load/ob_direct_load_fast_heap_table.h"
 #include "storage/direct_load/ob_direct_load_multi_map.h"
 #include "storage/direct_load/ob_direct_load_range_splitter.h"
+#include "storage/blocksstable/ob_sstable.h"
 
 namespace oceanbase
 {
@@ -42,7 +51,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(merge_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, merge_time_us);
     int ret = OB_SUCCESS;
     ObDirectLoadPartitionMergeTask *merge_task = nullptr;
     while (OB_SUCC(ret)) {
@@ -104,7 +113,6 @@ private:
 ObTableLoadMerger::ObTableLoadMerger(ObTableLoadStoreCtx *store_ctx)
   : store_ctx_(store_ctx),
     param_(store_ctx->ctx_->param_),
-    allocator_("TLD_TLdMerge"),
     running_thread_count_(0),
     has_error_(false),
     is_stop_(false),
@@ -195,6 +203,7 @@ int ObTableLoadMerger::build_merge_ctx()
   merge_param.table_data_desc_ = store_ctx_->table_data_desc_;
   merge_param.datum_utils_ = &(store_ctx_->ctx_->schema_.datum_utils_);
   merge_param.col_descs_ = &(store_ctx_->ctx_->schema_.column_descs_);
+  merge_param.cmp_funcs_ = &(store_ctx_->ctx_->schema_.cmp_funcs_);
   merge_param.is_heap_table_ = store_ctx_->ctx_->schema_.is_heap_table_;
   merge_param.is_fast_heap_table_ = store_ctx_->is_fast_heap_table_;
   merge_param.online_opt_stat_gather_ = param_.online_opt_stat_gather_;
@@ -299,6 +308,58 @@ int ObTableLoadMerger::build_merge_ctx()
   if (OB_SUCC(ret)) {
     if (OB_FAIL(merge_task_iter_.init(&merge_ctx_))) {
       LOG_WARN("fail to init merge task iter", KR(ret));
+    }
+  }
+  return ret;
+}
+
+int ObTableLoadMerger::collect_dml_stat(ObTableLoadDmlStat &dml_stats)
+{
+  int ret = OB_SUCCESS;
+  if (store_ctx_->is_fast_heap_table_) {
+    ObDirectLoadMultiMap<ObTabletID, ObDirectLoadFastHeapTable *> tables;
+    ObArray<ObTableLoadTransStore *> trans_store_array;
+    if (OB_FAIL(tables.init())) {
+      LOG_WARN("fail to init table", KR(ret));
+    } else if (OB_FAIL(store_ctx_->get_committed_trans_stores(trans_store_array))) {
+      LOG_WARN("fail to get trans store", KR(ret));
+    } else {
+      for (int i = 0; OB_SUCC(ret) && i < trans_store_array.count(); ++i) {
+        ObTableLoadTransStore *trans_store = trans_store_array.at(i);
+        for (int j = 0; OB_SUCC(ret) && j < trans_store->session_store_array_.count(); ++j) {
+          ObTableLoadTransStore::SessionStore * session_store =  trans_store->session_store_array_.at(j);
+          for (int k = 0 ; OB_SUCC(ret) && k < session_store->partition_table_array_.count(); ++k) {
+            ObIDirectLoadPartitionTable *table = session_store->partition_table_array_.at(k);
+            ObDirectLoadFastHeapTable *sstable = nullptr;
+            if (OB_ISNULL(sstable = dynamic_cast<ObDirectLoadFastHeapTable *>(table))) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected not heap sstable", KR(ret), KPC(table));
+            } else {
+              const ObTabletID &tablet_id = sstable->get_tablet_id();
+              if (OB_FAIL(tables.add(tablet_id, sstable))) {
+                LOG_WARN("fail to add tables", KR(ret), KPC(sstable));
+              }
+            }
+          }
+        }
+      }
+      for (int i = 0; OB_SUCC(ret) && i < merge_ctx_.get_tablet_merge_ctxs().count(); ++i) {
+        ObDirectLoadTabletMergeCtx *tablet_ctx = merge_ctx_.get_tablet_merge_ctxs().at(i);
+        ObArray<ObDirectLoadFastHeapTable *> heap_table_array ;
+        if (OB_FAIL(tables.get(tablet_ctx->get_tablet_id(), heap_table_array))) {
+          LOG_WARN("get heap sstable failed", KR(ret));
+        } else if (OB_FAIL(tablet_ctx->collect_dml_stat(heap_table_array, dml_stats))) {
+          LOG_WARN("fail to collect sql statics", KR(ret));
+        }
+      }
+    }
+  } else {
+    for (int i = 0; OB_SUCC(ret) && i < merge_ctx_.get_tablet_merge_ctxs().count(); ++i) {
+      ObDirectLoadTabletMergeCtx *tablet_ctx = merge_ctx_.get_tablet_merge_ctxs().at(i);
+      ObArray<ObDirectLoadFastHeapTable *> heap_table_array ;
+      if (OB_FAIL(tablet_ctx->collect_dml_stat(heap_table_array, dml_stats))) {
+        LOG_WARN("fail to collect sql statics", KR(ret));
+      }
     }
   }
   return ret;

@@ -321,25 +321,19 @@ int ObMPStmtExecute::construct_execute_param_for_arraybinding(int64_t pos)
   return ret;
 }
 
-void ObMPStmtExecute::reset_collection_param_for_arraybinding()
+void ObMPStmtExecute::reset_complex_param_memory(ParamStore *params, ObSQLSessionInfo &session_info)
 {
-  if (OB_NOT_NULL(arraybinding_params_)) {
-    for (int64_t i = 0; i < arraybinding_params_->count(); ++i) {
-      ObObjParam &obj = arraybinding_params_->at(i);
-      ObPLCollection *coll = NULL;
-      if (obj.is_ext()
-          && OB_NOT_NULL(coll = reinterpret_cast<ObPLCollection*>(obj.get_ext()))) {
-        if (OB_NOT_NULL(coll->get_allocator())) {
-          coll->get_allocator()->reset();
+  if (OB_NOT_NULL(params)) {
+    for (int64_t i = 0; i < params->count(); ++i) {
+      ObObjParam &obj = params->at(i);
+      if (obj.is_pl_extend()) {
+        int ret = ObUserDefinedType::destruct_obj(obj, &session_info);
+        if (OB_SUCCESS != ret) {
+          LOG_WARN("fail to destruct obj", K(ret), K(i));
         }
-        coll->set_data(NULL);
-        coll->set_count(0);
-        coll->set_first(OB_INVALID_INDEX);
-        coll->set_last(OB_INVALID_INDEX);
       }
     }
   }
-  return ;
 }
 
 int ObMPStmtExecute::send_eof_packet_for_arraybinding(ObSQLSessionInfo &session_info)
@@ -388,6 +382,7 @@ int ObMPStmtExecute::response_result_for_arraybinding(
       for (int64_t i = 0; OB_SUCC(ret) && i < arraybinding_columns_->count(); ++i) {
         ObMySQLField field;
         OZ (ObMySQLResultSet::to_mysql_field(arraybinding_columns_->at(i), field));
+        ObMySQLResultSet::replace_lob_type(session_info, arraybinding_columns_->at(i), field);
         OMPKField fp(field);
         OZ (response_packet(fp, &session_info));
       }
@@ -578,33 +573,43 @@ int ObMPStmtExecute::before_process()
 
 int ObMPStmtExecute::store_params_value_to_str(ObIAllocator &alloc, sql::ObSQLSessionInfo &session)
 {
+  return store_params_value_to_str(alloc, session, params_, params_value_, params_value_len_);
+}
+
+int ObMPStmtExecute::store_params_value_to_str(ObIAllocator &alloc,
+                                               sql::ObSQLSessionInfo &session,
+                                               ParamStore *params,
+                                               char *&params_value,
+                                               int64_t &params_value_len)
+{
   int ret = OB_SUCCESS;
   int64_t pos = 0;
   int64_t length = OB_MAX_SQL_LENGTH;
-  CK (OB_NOT_NULL(params_));
-  CK (OB_NOT_NULL(params_value_ = static_cast<char *>(alloc.alloc(OB_MAX_SQL_LENGTH))));
-  for (int i = 0; OB_SUCC(ret) && i < params_->count(); ++i) {
-    const common::ObObjParam &param = params_->at(i);
+  CK (OB_NOT_NULL(params));
+  CK (OB_ISNULL(params_value));
+  CK (OB_NOT_NULL(params_value = static_cast<char *>(alloc.alloc(OB_MAX_SQL_LENGTH))));
+  for (int i = 0; OB_SUCC(ret) && i < params->count(); ++i) {
+    const common::ObObjParam &param = params->at(i);
     if (param.is_ext()) {
       pos = 0;
-      params_value_ = NULL;
-      params_value_len_ = 0;
+      params_value = NULL;
+      params_value_len = 0;
       break;
     } else {
-      OZ (param.print_sql_literal(params_value_, length, pos, alloc, TZ_INFO(&session)));
-      if (i != params_->count() - 1) {
-        OZ (databuff_printf(params_value_, length, pos, alloc, ","));
+      OZ (param.print_sql_literal(params_value, length, pos, alloc, TZ_INFO(&session)));
+      if (i != params->count() - 1) {
+        OZ (databuff_printf(params_value, length, pos, alloc, ","));
       }
     }
   }
   if (OB_FAIL(ret)) {
-    params_value_ = NULL;
-    params_value_len_ = 0;
+    params_value = NULL;
+    params_value_len = 0;
     // The failure of store_params_value_to_str does not affect the execution of SQL,
     // so the error code is ignored here
     ret = OB_SUCCESS;
   } else {
-    params_value_len_ = pos;
+    params_value_len = pos;
   }
   return ret;
 }
@@ -627,6 +632,7 @@ int ObMPStmtExecute::parse_request_type(const char* &pos,
   for (int i = 0; OB_SUCC(ret) && i < num_of_params; ++i) {
     uint8_t type = 0;
     int8_t flag = 0;
+    TypeInfo &type_name_info = param_type_infos.at(i);
     if (1 == new_param_bound_flag) {
       PS_DEFENSE_CHECK(2) // type(1) + flag(1)
       {
@@ -634,6 +640,16 @@ int ObMPStmtExecute::parse_request_type(const char* &pos,
         ObMySQLUtil::get_int1(pos, flag);
         if (OB_FAIL(param_types.push_back(static_cast<EMySQLFieldType>(type)))) {
           LOG_WARN("fail to push back", K(type), K(i));
+        } else if (EMySQLFieldType::MYSQL_TYPE_COMPLEX != type) {
+          int16_t unsigned_flag = 128;
+          ObObjType ob_elem_type;
+          if (OB_FAIL(ObSMUtils::get_ob_type(ob_elem_type,
+                                    static_cast<EMySQLFieldType>(type),
+                                    flag & unsigned_flag ? true : false))) {
+            LOG_WARN("get ob type fail. ", K(type));
+          } else {
+            type_name_info.elem_type_.set_obj_type(ob_elem_type);
+          }
         }
       }
     } else {
@@ -647,7 +663,7 @@ int ObMPStmtExecute::parse_request_type(const char* &pos,
     }
 
     if (OB_SUCC(ret)) {
-      TypeInfo &type_name_info = param_type_infos.at(i);
+
       uint8_t elem_type = 0;
       if (EMySQLFieldType::MYSQL_TYPE_COMPLEX == type) {
         type_name_info.is_basic_type_ = false;
@@ -1068,6 +1084,22 @@ int ObMPStmtExecute::execute_response(ObSQLSessionInfo &session,
                         NULL/*result*/, &ret, NULL/*func*/, true);
       if (OB_FAIL(ObSPIService::dbms_dynamic_open(&pl_ctx, *cursor))) {
         LOG_WARN("open cursor fail. ", K(ret), K(stmt_id_));
+        if (!THIS_WORKER.need_retry()) {
+          int cli_ret = OB_SUCCESS;
+          retry_ctrl_.test_and_save_retry_state(
+            gctx_, ctx_, result, ret, cli_ret, is_arraybinding_ /*ararybinding only local retry*/);
+          if (OB_ERR_PROXY_REROUTE == ret) {
+            LOG_DEBUG("run stmt_query failed, check if need retry",
+                      K(ret), K(cli_ret), K(retry_ctrl_.need_retry()), K_(stmt_id));
+          } else {
+            LOG_WARN("run stmt_query failed, check if need retry",
+                      K(ret), K(cli_ret), K(retry_ctrl_.need_retry()), K_(stmt_id));
+          }
+          ret = cli_ret;
+        }
+        if (OB_ERR_PROXY_REROUTE == ret && !is_arraybinding_) {
+          need_response_error = true;
+        }
       }
     }
     /*
@@ -1366,6 +1398,11 @@ int ObMPStmtExecute::do_process(ObSQLSessionInfo &session,
     bool need_retry = (THIS_THWORKER.need_retry()
                        || RETRY_TYPE_NONE != retry_ctrl_.get_retry_type());
     if (!is_ps_cursor()) {
+#ifdef OB_BUILD_SPM
+      if (!need_retry) {
+        (void)ObSQLUtils::handle_plan_baseline(audit_record, result.get_physical_plan(), ret, ctx_);
+      }
+#endif
       // ps cursor has already record after inner_open in spi
       ObSQLUtils::handle_audit_record(need_retry, EXECUTE_PS_EXECUTE, session, ctx_.is_sensitive_);
     }
@@ -1381,7 +1418,13 @@ int ObMPStmtExecute::response_result(
     bool &async_resp_used)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_SPM
   bool need_trans_cb  = result.need_end_trans_callback() && (!force_sync_resp);
+#else
+  bool need_trans_cb  = result.need_end_trans_callback() &&
+                        (!force_sync_resp) &&
+                        (!ctx_.spm_ctx_.check_execute_status_);
+#endif
 
   // NG_TRACE_EXT(exec_begin, ID(arg1), force_sync_resp, ID(end_trans_cb), need_trans_cb);
 
@@ -1451,6 +1494,7 @@ OB_NOINLINE int ObMPStmtExecute::process_retry(ObSQLSessionInfo &session,
 {
   int ret = OB_SUCCESS;
   //create a temporary memory context to process retry, avoid memory bloat caused by retries
+  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
   lib::ContextParam param;
   param.set_mem_attr(MTL_ID(),
       ObModIds::OB_SQL_EXECUTOR, ObCtxIds::DEFAULT_CTX_ID)
@@ -1623,9 +1667,9 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
   // 执行setup_wb后，所有WARNING都会写入到当前session的WARNING BUFFER中
   setup_wb(session);
   const bool enable_trace_log = lib::is_trace_log_enabled();
-
   //============================ 注意这些变量的生命周期 ================================
-  ObSessionStatEstGuard stat_est_guard(get_conn()->tenant_->id(), session.get_sessid());
+  ObSMConnection *conn = get_conn();
+  ObSessionStatEstGuard stat_est_guard(conn->tenant_->id(), session.get_sessid());
   if (OB_FAIL(init_process_var(ctx_, multi_stmt_item, session))) {
     LOG_WARN("init process var failed.", K(ret), K(multi_stmt_item));
   } else {
@@ -1638,6 +1682,8 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
     if (OB_FAIL(check_and_refresh_schema(session.get_login_tenant_id(),
                                          session.get_effective_tenant_id()))) {
       LOG_WARN("failed to check_and_refresh_schema", K(ret));
+    } else if (OB_FAIL(session.update_timezone_info())) {
+      LOG_WARN("fail to update time zone info", K(ret));
     } else if (is_arraybinding_) {
       need_response_error = false;
       bool optimization_done = false;
@@ -1680,21 +1726,17 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
         }
       }
       // 释放数组内存避免内存泄漏
-      reset_collection_param_for_arraybinding();
+      reset_complex_param_memory(arraybinding_params_, session);
       OZ (response_result_for_arraybinding(session, exception_array));
     } else {
       need_response_error = false;
       if (OB_FAIL(do_process_single(session, params_, has_more_result, force_sync_resp, async_resp_used))) {
         LOG_WARN("fail to do process", K(ret), K(ctx_.cur_sql_));
       }
-      if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid()) {
+      if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid() && is_conn_valid()) {
         int bak_ret = ret;
-        ObSMConnection *conn = get_conn();
         ObSQLSessionInfo *sess = NULL;
-        if (OB_ISNULL(conn)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("null conn ptr", K(ret));
-        } else if (OB_FAIL(get_session(sess))) {
+        if (OB_FAIL(get_session(sess))) {
           LOG_WARN("get session fail", K(ret));
         } else if (OB_ISNULL(sess)) {
           ret = OB_ERR_UNEXPECTED;
@@ -1710,6 +1752,7 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
         }
         ret = OB_SUCC(bak_ret) ? ret : bak_ret;
       }
+      reset_complex_param_memory(params_, session);
     }
     if (enable_trace_log) {
       ObThreadLogLevelUtils::clear();
@@ -1727,7 +1770,6 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
 
   //对于tracelog的处理, 不影响正常逻辑, 错误码无须赋值给ret, 清空WARNING BUFFER
   do_after_process(session, ctx_, async_resp_used);
-  record_flt_trace(session);
 
   if (OB_FAIL(ret) && need_response_error && is_conn_valid()) {
     send_error_packet(ret, NULL);
@@ -1771,6 +1813,8 @@ int ObMPStmtExecute::process()
     int64_t tenant_version = 0;
     int64_t sys_version = 0;
     THIS_WORKER.set_session(sess);
+    lib::CompatModeGuard g(sess->get_compatibility_mode() == ORACLE_MODE ?
+                             lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL);
     ObSQLSessionInfo::LockGuard lock_guard(session.get_query_lock());
     session.set_current_trace_id(ObCurTraceId::get_trace_id());
     session.get_raw_audit_record().request_memory_used_ = 0;
@@ -1852,28 +1896,28 @@ int ObMPStmtExecute::process()
     }
     session.check_and_reset_retry_info(*cur_trace_id, THIS_WORKER.need_retry());
     session.set_last_trace_id(ObCurTraceId::get_trace_id());
-  }
-
-  // whether the previous error was reported, a cleanup is to be done here
-  if (NULL != sess && !async_resp_used) {
-    // async remove in ObSqlEndTransCb
-    ObPieceCache *piece_cache = static_cast<ObPieceCache*>(sess->get_piece_cache());
-    if (OB_ISNULL(piece_cache)) {
-      // do nothing
-      // piece_cache not be null in piece data protocol
-    } else {
-      for (uint64_t i = 0; OB_SUCC(ret) && i < params_num_; i++) {
-        if (OB_FAIL(piece_cache->remove_piece(
-                            piece_cache->get_piece_key(stmt_id_, i),
-                            *sess))) {
-          if (OB_HASH_NOT_EXIST == ret) {
-            ret = OB_SUCCESS;
-          } else {
-            LOG_WARN("remove piece fail", K(stmt_id_), K(i), K(ret));
+    // whether the previous error was reported, a cleanup is to be done here
+    if (!async_resp_used) {
+      // async remove in ObSqlEndTransCb
+      ObPieceCache *piece_cache = static_cast<ObPieceCache*>(session.get_piece_cache());
+      if (OB_ISNULL(piece_cache)) {
+        // do nothing
+        // piece_cache not be null in piece data protocol
+      } else {
+        for (uint64_t i = 0; OB_SUCC(ret) && i < params_num_; i++) {
+          if (OB_FAIL(piece_cache->remove_piece(
+                              piece_cache->get_piece_key(stmt_id_, i),
+                              session))) {
+            if (OB_HASH_NOT_EXIST == ret) {
+              ret = OB_SUCCESS;
+            } else {
+              LOG_WARN("remove piece fail", K(stmt_id_), K(i), K(ret));
+            }
           }
         }
       }
     }
+    record_flt_trace(session);
   }
 
   if (OB_NOT_NULL(sess) && !sess->get_in_transaction()) {
@@ -1976,7 +2020,7 @@ int ObMPStmtExecute::get_package_type_by_name(ObIAllocator &allocator,
   CK (OB_NOT_NULL(ctx_.session_info_));
   CK (OB_NOT_NULL(ctx_.session_info_->get_pl_engine()));
   if (OB_SUCC(ret) && OB_ISNULL(pl_type ))
-  OZ (schema_checker.init(*ctx_.schema_guard_));
+  OZ (schema_checker.init(*ctx_.schema_guard_, ctx_.session_info_->get_sessid()));
   OZ (schema_checker.get_package_info(ctx_.session_info_->get_effective_tenant_id(),
                                       type_info->relation_name_,
                                       type_info->package_name_,
@@ -2006,10 +2050,53 @@ int ObMPStmtExecute::get_pl_type_by_type_info(ObIAllocator &allocator,
                                               const pl::ObUserDefinedType *&pl_type)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ORACLE_PL
   UNUSEDx(allocator, type_info, pl_type);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support", K(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "Get PL type by type info is not supported in CE version");
+#else
+  const share::schema::ObUDTTypeInfo *udt_info = NULL;
+  if (OB_ISNULL(type_info)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("type info is null", K(ret), K(type_info));
+  } else if (!type_info->is_elem_type_) {
+    if (type_info->package_name_.empty()) {
+      OZ (get_udt_by_name(type_info->relation_name_, type_info->type_name_, udt_info));
+      OZ (udt_info->transform_to_pl_type(allocator, pl_type));
+    } else {
+      OZ (get_package_type_by_name(allocator, type_info, pl_type));
+    }
+  } else {
+    void *ptr = NULL;
+    pl::ObNestedTableType *table_type = NULL;
+    pl::ObPLDataType elem_type;
+    const pl::ObUserDefinedType *elem_type_ptr = NULL;
+    if (type_info->elem_type_.get_obj_type() != ObExtendType) {
+      elem_type.set_data_type(type_info->elem_type_);
+    } else if (OB_FAIL(get_udt_by_name(type_info->relation_name_, type_info->type_name_, udt_info))) {
+      LOG_WARN("failed to get udt info", K(ret), K(type_info->relation_name_), K(type_info->type_name_));
+    } else if (OB_FAIL(udt_info->transform_to_pl_type(allocator, elem_type_ptr))) {
+      LOG_WARN("failed to transform udt to pl type", K(ret));
+    } else if (OB_ISNULL(elem_type_ptr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to get elem type ptr", K(ret));
+    } else {
+      elem_type = *(static_cast<const pl::ObPLDataType*>(elem_type_ptr));
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_ISNULL(ptr = allocator.alloc(sizeof(pl::ObNestedTableType)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory for ObNestedTableType", K(ret));
+    } else {
+      table_type = new(ptr)pl::ObNestedTableType();
+      table_type->set_type_from(pl::ObPLTypeFrom::PL_TYPE_LOCAL);
+      table_type->set_element_type(elem_type);
+      pl_type = table_type;
+    }
+  }
+  CK (OB_NOT_NULL(pl_type));
+#endif
   return ret;
 }
 
@@ -2027,11 +2114,11 @@ int ObMPStmtExecute::parse_complex_param_value(ObIAllocator &allocator,
   int64_t param_size = 0, param_pos = 0;
   CK (OB_NOT_NULL(type_info));
   OZ (get_pl_type_by_type_info(allocator, type_info, pl_type));
+  CK (OB_NOT_NULL(pl_type));
   OZ (pl_type->init_obj(*(ctx_.schema_guard_), allocator, param, param_size));
   OX (param.set_udt_id(pl_type->get_user_type_id()));
   OZ (pl_type->deserialize(*(ctx_.schema_guard_), allocator, charset, cs_type, ncs_type,
-        tz_info, data, reinterpret_cast<char *>(param.get_ext()), param_size,
-        param_pos));
+        tz_info, data, reinterpret_cast<char *>(param.get_ext()), param_size, param_pos));
   OX (param.set_need_to_check_extend_type(true));
   return ret;
 }
@@ -2045,7 +2132,8 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
                                              const common::ObTimeZoneInfo *tz_info,
                                              ObObj &param,
                                              bool is_complex_element,
-                                             ObPSAnalysisChecker *checker)
+                                             ObPSAnalysisChecker *checker,
+                                             bool is_unsigned)
 {
   int ret = OB_SUCCESS;
   UNUSED(charset);
@@ -2054,7 +2142,7 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
     case MYSQL_TYPE_SHORT:
     case MYSQL_TYPE_LONG:
     case MYSQL_TYPE_LONGLONG: {
-      if (OB_FAIL(parse_integer_value(type, data, param, allocator, is_complex_element, checker))) {
+      if (OB_FAIL(parse_integer_value(type, data, param, allocator, is_complex_element, checker, is_unsigned))) {
         LOG_WARN("parse integer value from client failed", K(ret));
       }
       break;
@@ -2180,6 +2268,9 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
           str.assign_ptr(data, static_cast<ObString::obstr_size_t>(length));
         }
         if (OB_FAIL(ret)) {
+        } else if (length > OB_MAX_LONGTEXT_LENGTH) {
+          ret = OB_ERR_INVALID_INPUT_ARGUMENT;
+          LOG_WARN("input param len is over size", K(ret), K(length));
         } else if (MYSQL_TYPE_OB_NVARCHAR2 == type
                   || MYSQL_TYPE_OB_NCHAR == type) {
           OZ(copy_or_convert_str(allocator, cur_cs_type, ncs_type, str, dst));
@@ -2418,8 +2509,9 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
         OX (param.set_param_meta());
       }
     } else {
+      bool is_unsigned = NULL == type_info || !type_info->elem_type_.get_meta_type().is_unsigned_integer() ? false : true;
       if (OB_FAIL(parse_basic_param_value(allocator, type, charset, cs_type, ncs_type,
-                                          data, tz_info, param, false, &analysis_checker_))) {
+                                          data, tz_info, param, false, &analysis_checker_, is_unsigned))) {
         LOG_WARN("failed to parse basic param value", K(ret));
       } else {
         param.set_param_meta();
@@ -2508,8 +2600,9 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
           LOG_WARN("store string fail.", K(ret), K(stmt_id_), K(param_id));
         } else {
           const char* src = tmp;
+          bool is_unsigned = NULL == type_info || !type_info->elem_type_.get_meta_type().is_unsigned_integer() ? false : true;
           if (OB_FAIL(parse_basic_param_value(allocator, type, charset, cs_type, ncs_type,
-                                              src, tz_info, param, false))) {
+                                              src, tz_info, param, false, NULL ,is_unsigned))) {
             LOG_WARN("failed to parse basic param value", K(ret));
           } else {
             param.set_param_meta();
@@ -2585,7 +2678,8 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
                                          ObObj &param,
                                          ObIAllocator &allocator,
                                          bool is_complex_element,
-                                         ObPSAnalysisChecker *checker)
+                                         ObPSAnalysisChecker *checker,
+                                         bool is_unsigned) // oracle unsigned need
 {
   int ret = OB_SUCCESS;
   bool cast_to_number = !(lib::is_mysql_mode() || is_complex_element || MYSQL_TYPE_TINY == type);
@@ -2596,7 +2690,7 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
       {
         int8_t value;
         ObMySQLUtil::get_int1(data, value);
-        param.set_tinyint(value);
+        is_unsigned ? param.set_utinyint(value) : param.set_tinyint(value);
       }
       break;
     }
@@ -2606,9 +2700,17 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         int16_t value = 0;
         ObMySQLUtil::get_int2(data, value);
         if (!cast_to_number) {
-          param.set_smallint(value);
+          is_unsigned ? param.set_usmallint(value) : param.set_smallint(value);
         } else {
           res_val = static_cast<int64_t>(value);
+          if (is_unsigned) {
+            if (((1LL << 16) + res_val) < 1 || res_val > 0xFFFF) {
+              ret = OB_DECIMAL_OVERFLOW_WARN;
+              LOG_WARN("param is over flower.", K(res_val), K(type), K(ret));
+            } else {
+              res_val = res_val < 0 ? ((1LL << 16) + res_val) : res_val;
+            }
+          }
         }
       }
       break;
@@ -2619,9 +2721,17 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         int32_t value = 0;
         ObMySQLUtil::get_int4(data, value);
         if (!cast_to_number) {
-          param.set_int32(value);
+          is_unsigned ? param.set_uint32(value) : param.set_int32(value);
         } else {
           res_val = static_cast<int64_t>(value);
+          if (is_unsigned) {
+            if (((1LL << 32) + res_val) < 1 || res_val > 0xFFFFFFFF) {
+              ret = OB_DECIMAL_OVERFLOW_WARN;
+              LOG_WARN("param is over flower.", K(res_val), K(type), K(ret));
+            } else {
+              res_val = res_val < 0 ? ((1LL << 32) + res_val) : res_val;
+            }
+          }
         }
       }
       break;
@@ -2632,7 +2742,7 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         int64_t value = 0;
         ObMySQLUtil::get_int8(data, value);
         if (!cast_to_number) {
-          param.set_int(value);
+          is_unsigned ? param.set_uint(ObUInt64Type, value) : param.set_int(value);
         } else {
           res_val = value;
         }
@@ -2647,7 +2757,9 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
   }
   if (OB_SUCC(ret) && cast_to_number) {
     number::ObNumber nb;
-    if (OB_FAIL(nb.from(res_val, allocator))) {
+    if (is_unsigned && OB_FAIL(nb.from(static_cast<uint64_t>(res_val), allocator))) {
+      LOG_WARN("decode param to number failed", K(ret), K(res_val));
+    } else if (!is_unsigned && OB_FAIL(nb.from(static_cast<int64_t>(res_val), allocator))) {
       LOG_WARN("decode param to number failed", K(ret), K(res_val));
     } else {
       param.set_number(nb);
@@ -2929,80 +3041,19 @@ void ObMPStmtExecute::record_stat(const stmt::StmtType type, const int64_t end_t
 
 int ObMPStmtExecute::response_query_header(ObSQLSessionInfo &session, pl::ObDbmsCursorInfo &cursor)
 {
-  // TODO: 增加com类型的处理
   int ret = OB_SUCCESS;
-  bool ac = true;
-  const ColumnsFieldArray &fields = cursor.get_field_columns();
-  int64_t fields_count = fields.count();
-  if (fields_count <= 0) {
-    LOG_WARN("cursor set column", K(fields_count));
-    ret = OB_ERR_BAD_FIELD_ERROR;
-  } else if (OB_FAIL(session.get_autocommit(ac))) {
+  ObSyncPlanDriver drv(gctx_,
+                           ctx_,
+                           session,
+                           retry_ctrl_,
+                           *this,
+                           false,
+                           OB_INVALID_COUNT);
+  if (OB_FAIL(drv.response_query_header(cursor.get_field_columns(),
+                                        false,
+                                        false,
+                                        true))) {
     LOG_WARN("fail to get autocommit", K(ret));
-  }
-  if (OB_SUCC(ret)) {
-    OMPKResheader rhp;
-    rhp.set_field_count(fields_count);
-    if (OB_FAIL(response_packet(rhp, &session))) {
-      LOG_WARN("response packet fail", K(ret));
-    }
-  }
-  if (OB_SUCC(ret)) {
-    for (int64_t i = 0; OB_SUCC(ret) && i < fields_count; ++i) {
-      ObMySQLField field;
-      const ObField &ob_field = fields.at(i);
-      ret = ObMySQLResultSet::to_mysql_field(ob_field, field);
-      if (OB_SUCC(ret)) {
-        ObMySQLResultSet::replace_lob_type(session, ob_field, field);
-        OMPKField fp(field);
-        if (OB_FAIL(response_packet(fp, &session))) {
-          LOG_WARN("response packet fail", K(ret));
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    OMPKEOF eofp;
-    eofp.set_warning_count(0);
-    ObServerStatusFlags flags = eofp.get_server_status();
-    flags.status_flags_.OB_SERVER_STATUS_IN_TRANS
-      = (session.is_server_status_in_transaction() ? 1 : 0);
-    flags.status_flags_.OB_SERVER_STATUS_AUTOCOMMIT = (ac ? 1 : 0);
-    flags.status_flags_.OB_SERVER_MORE_RESULTS_EXISTS = false;
-    flags.status_flags_.OB_SERVER_PS_OUT_PARAMS = false;
-    flags.status_flags_.OB_SERVER_STATUS_CURSOR_EXISTS = true;
-    if (!session.is_obproxy_mode()) {
-      // in java client or others, use slow query bit to indicate partition hit or not
-      flags.status_flags_.OB_SERVER_QUERY_WAS_SLOW = !session.partition_hit().get_bool();
-    }
-    eofp.set_server_status(flags);
-
-    // for obproxy, 最后一次要把 eof和OK包放一起
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(update_last_pkt_pos())) {
-        LOG_WARN("failed to update last packet pos", K(ret));
-      } else {
-        // do nothing
-      }
-    }
-    // for obproxy
-    if (OB_SUCC(ret)) {
-      // in multi-stmt, send extra ok packet in the last stmt(has no more result)
-      if (need_send_extra_ok_packet()) {
-        ObOKPParam ok_param;
-        ok_param.affected_rows_ = 0;
-        ok_param.is_partition_hit_ = session.partition_hit().get_bool();
-        ok_param.has_more_result_ = false;
-        if (OB_FAIL(send_ok_packet(session, ok_param, &eofp))) {
-          LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
-        }
-      } else {
-        if (OB_FAIL(response_packet(eofp, &session))) {
-          LOG_WARN("response packet fail", K(ret));
-        }
-      }
-    }
   }
   return ret;
 }

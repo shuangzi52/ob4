@@ -26,6 +26,7 @@
 #include "lib/list/ob_dlist.h"
 #include "lib/coro/co_var.h"
 #include "lib/time/ob_tsc_timestamp.h"
+#include "common/ob_clock_generator.h"
 #include "lib/utility/ob_macro_utils.h"
 
 #define TP_COMMA(x) ,
@@ -101,8 +102,7 @@ private:
 
 
 #define EVENT_CALL(event_no, ...) ({ \
-      EventItem item; \
-      item = ::oceanbase::common::EventTable::instance().get_event(event_no); \
+      EventItem &item = ::oceanbase::common::EventTable::instance().get_event(event_no); \
       item.call(SELECT(1, ##__VA_ARGS__)); })
 
 #define ERRSIM_POINT_DEF(name) void name##name(){}; static oceanbase::common::NamedEventItem name( \
@@ -226,15 +226,29 @@ struct EventItem
       error_code_(0),
       cond_(0) {}
 
-  int call(const int64_t v) const { return cond_ == v ? call() : 0; }
-  int call() const
+  int call(const int64_t v) { return cond_ == v ? call() : 0; }
+  int call()
   {
     int ret = 0;
-    if (OB_LIKELY(trigger_freq_ == 0)) {
+    int64_t trigger_freq = trigger_freq_;
+    if (occur_ > 0) {
+      do {
+        int64_t occur = occur_;
+        if (occur > 0) {
+          if (ATOMIC_VCAS(&occur_, occur, occur - 1)) {
+            ret = static_cast<int>(error_code_);
+            break;
+          }
+        } else {
+          ret = 0;
+          break;
+        }
+      } while (true);
+    } else if (OB_LIKELY(trigger_freq == 0)) {
       ret = 0;
     } else if (get_tp_switch()) { // true means skip errsim
       ret = 0;
-    } else if (trigger_freq_ == 1) {
+    } else if (trigger_freq == 1) {
       ret = static_cast<int>(error_code_);
 #ifdef NDEBUG
       if (REACH_TIME_INTERVAL(1 * 1000 * 1000))
@@ -243,9 +257,9 @@ struct EventItem
         COMMON_LOG(WARN, "[ERRSIM] sim error", K(ret));
       }
     } else {
-      if (rand() % trigger_freq_ == 0) {
+      if (rand() % trigger_freq == 0) {
         ret = static_cast<int>(error_code_);
-        COMMON_LOG(WARN, "[ERRSIM] sim error", K(ret), K_(error_code), K_(trigger_freq), KCSTRING(lbt()));
+        COMMON_LOG(WARN, "[ERRSIM] sim error", K(ret), K_(error_code), K(trigger_freq), KCSTRING(lbt()));
       } else {
         ret = 0;
       }
@@ -261,7 +275,7 @@ struct NamedEventItem : public ObDLinkBase<NamedEventItem>
   {
     l.add_last(this);
   }
-  operator int(void) const { return item_.call(); }
+  operator int(void) { return item_.call(); }
 
   const char *name_;
   EventItem item_;
@@ -494,8 +508,8 @@ class EventTable
       EN_INVALID_ADDR_WEAK_READ_FAILED = 215,
       EN_STACK_OVERFLOW_CHECK_EXPR_STACK_SIZE = 216,
       EN_ENABLE_PDML_ALL_FEATURE = 217,
-      // OFS错误模拟占坑 218-230
-      EN_OFS_SLOG_WRITE = 218,
+      // slog checkpoint错误模拟占坑 218-230
+      EN_SLOG_CKPT_ERROR = 218,
       EN_FAST_RECOVERY_AFTER_ALLOC_FILE = 219,
       EN_FAST_MIGRATE_ADD_MEMBER_FAIL = 220,
       EN_FAST_RECOVERY_BEFORE_ADD_MEMBER = 221,
@@ -618,6 +632,10 @@ class EventTable
       EN_PX_TEMP_TABLE_NOT_DESTROY_REMOTE_INTERM_RESULT = 607,
       EN_PX_NOT_ERASE_P2P_DH_MSG = 608,
       EN_PX_SLOW_PROCESS_SQC_FINISH_MSG = 609,
+      EN_PX_JOIN_FILTER_NOT_MERGE_MSG = 610,
+      EN_PX_P2P_MSG_REG_DM_FAILED= 611,
+      EN_PX_JOIN_FILTER_HOLD_MSG = 612,
+      EN_PX_DTL_TRACE_LOG_ENABLE = 613,
       // please add new trace point after 700 or before 600
 
       // Compaction Related 700-750
@@ -661,6 +679,8 @@ class EventTable
       EN_TABLET_GC_TASK_FAILED = 918,
       EN_UPDATE_TABLET_HA_STATUS_FAILED = 919,
       EN_GENERATE_REBUILD_TASK_FAILED = 920,
+      EN_CHECK_TRANSFER_TASK_EXSIT = 921,
+      EN_TABLET_EMPTY_SHELL_TASK_FAILED = 922,
 
       // Log Archive and Restore 1001 - 1100
       EN_START_ARCHIVE_LOG_GAP = 1001,
@@ -683,10 +703,12 @@ class EventTable
       EN_BACKUP_PERSIST_SET_TASK_FAILED = 1110,
       EN_BACKUP_READ_MACRO_BLOCK_FAILED = 1111,
       EN_FETCH_TABLE_INFO_RPC = 1112,
+      EN_RESTORE_TABLET_TASK_FAILED = 1113,
       // END OF STORAGE HA - 1101 - 2000
 
       // sql parameterization 1170-1180
       EN_SQL_PARAM_FP_NP_NOT_SAME_ERROR = 1170,
+      EN_FLUSH_PC_NOT_CLEANUP_LEAK_MEM_ERROR = 1171,
       // END OF sql parameterization 1170-1180
 
       // session info verification
@@ -697,6 +719,7 @@ class EventTable
       EN_SESS_INFO_VERI_CLIENT_ID_ERROR = 1183,
       EN_SESS_INFO_VERI_CONTROL_INFO_ERROR = 1184,
       EN_SESS_INFO_VERI_TXN_EXTRA_INFO_ERROR = 1185,
+      EN_SESS_POOL_MGR_CTRL = 1186,
       EN_ENABLE_NEWSORT_FORCE = 1200,
 
       // Transaction // 2001 - 2100
@@ -709,12 +732,16 @@ class EventTable
       EN_THREAD_HANG = 2022,
 
       EN_ENABLE_SET_TRACE_CONTROL_INFO = 2100,
+      EN_CHEN = 2101,
+
+      // WR && ASH
+      EN_CLOSE_ASH = 2201,
 
       EVENT_TABLE_MAX = SIZE_OF_EVENT_TABLE
     };
 
     /* get an event value */
-    inline EventItem get_event(int64_t index)
+    inline EventItem &get_event(int64_t index)
     { return (index >= 0 && index < SIZE_OF_EVENT_TABLE) ? event_table_[index] : event_table_[0]; }
 
     /* set an event value */

@@ -55,6 +55,26 @@ enum class TableAccessType {
   HAS_USER_TABLE
 };
 
+// for runtime filter, jf create op must scheduled earlier than jf use op
+struct RuntimeFilterDependencyInfo
+{
+public:
+  RuntimeFilterDependencyInfo() : rf_create_ops_(), rf_use_ops_() {}
+  ~RuntimeFilterDependencyInfo() = default;
+  void destroy()
+  {
+    rf_create_ops_.reset();
+    rf_use_ops_.reset();
+  }
+  inline bool is_empty() const {
+    return rf_create_ops_.empty() && rf_use_ops_.empty();
+  }
+  int describe_dependency(ObDfo *root_dfo);
+public:
+  ObTMArray<const ObOpSpec *> rf_create_ops_;
+  ObTMArray<const ObOpSpec *> rf_use_ops_;
+};
+
 struct ObP2PDfoMapNode
 {
   ObP2PDfoMapNode() : target_dfo_id_(OB_INVALID_ID),  addrs_() {}
@@ -103,7 +123,8 @@ public:
     table_access_type_(TableAccessType::NO_TABLE),
     qc_detectable_id_(),
     p2p_dfo_map_(),
-    p2p_temp_table_info_()
+    p2p_temp_table_info_(),
+    rf_dpd_info_()
   {}
   virtual ~ObPxCoordInfo() {}
   virtual void destroy()
@@ -112,6 +133,7 @@ public:
     piece_msg_ctx_mgr_.reset();
     p2p_dfo_map_.destroy();
     p2p_temp_table_info_.reset();
+    rf_dpd_info_.destroy();
   }
   void reset_for_rescan()
   {
@@ -153,6 +175,7 @@ public:
   // key = p2p_dh_id value = dfo_id + target_addrs
   hash::ObHashMap<int64_t, ObP2PDfoMapNode, hash::NoPthreadDefendMode> p2p_dfo_map_;
   ObTempTableP2PInfo p2p_temp_table_info_;
+  RuntimeFilterDependencyInfo rf_dpd_info_;
 };
 
 class ObDfoSchedulerBasic;
@@ -171,17 +194,17 @@ public:
   int on_sqc_init_fail(ObDfo &dfo, ObPxSqcMeta &sqc);
   int on_interrupted(ObExecContext &ctx, const common::ObInterruptCode &pkt);
   int startup_msg_loop(ObExecContext &ctx);
-  // begin DATAHUB msg processing
-  int on_piece_msg(ObExecContext &ctx, const ObBarrierPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObWinbufPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObDynamicSamplePieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObRollupKeyPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObRDWFPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObInitChannelPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObReportingWFPieceMsg &pkt);
-  int on_piece_msg(ObExecContext &ctx, const ObOptStatsGatherPieceMsg &pkt);
-  // end DATAHUB msg processing
-
+  // Begin Datahub processing
+  // Don't need to process datahub message in terminate message processor
+  int on_piece_msg(ObExecContext &ctx, const ObBarrierPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObWinbufPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObDynamicSamplePieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObRollupKeyPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObRDWFPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObInitChannelPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObReportingWFPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  int on_piece_msg(ObExecContext &ctx, const ObOptStatsGatherPieceMsg &pkt) { UNUSED(ctx); UNUSED(pkt); return common::OB_NOT_SUPPORTED; }
+  // End Datahub processing
   ObPxCoordInfo &coord_info_;
   ObIPxCoordEventListener &listener_;
 };

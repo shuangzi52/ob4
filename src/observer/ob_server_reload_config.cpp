@@ -157,10 +157,8 @@ int ObServerReloadConfig::operator()()
 #ifdef OB_USE_ASAN
     __MemoryContext__::set_enable_asan_allocator(GCONF.enable_asan_for_memory_context);
 #endif
-#if defined(__x86_64__)
     ObMallocSampleLimiter::set_interval(GCONF._max_malloc_sample_interval,
                                      GCONF._min_malloc_sample_interval);
-#endif
     if (!is_arbitration_mode) {
       ObIOConfig io_config;
       int64_t cpu_cnt = GCONF.cpu_count;
@@ -196,9 +194,19 @@ int ObServerReloadConfig::operator()()
 
 
 
-  const int64_t cache_size = GCONF.memory_chunk_cache_size;
-  const int cache_cnt = (cache_size > 0 ? cache_size : GMEMCONF.get_server_memory_limit()) / INTACT_ACHUNK_SIZE;
-  lib::AChunkMgr::instance().set_max_chunk_cache_cnt(cache_cnt);
+  int64_t cache_size = GCONF.memory_chunk_cache_size;
+  if (0 == cache_size) {
+    cache_size = GMEMCONF.get_server_memory_limit();
+    if (cache_size >= (32L<<30)) {
+      cache_size -= (4L<<30);
+    }
+  }
+  int64_t large_cache_size = GCONF._memory_large_chunk_cache_size;
+  if (0 == large_cache_size) {
+    large_cache_size = lib::AChunkMgr::DEFAULT_LARGE_CHUNK_CACHE_SIZE;
+  }
+  lib::AChunkMgr::instance().set_max_chunk_cache_size(cache_size);
+  lib::AChunkMgr::instance().set_max_large_chunk_cache_size(large_cache_size);
 
   if (!is_arbitration_mode) {
     // Refresh cluster_id, cluster_name_hash for non arbitration mode
@@ -232,6 +240,10 @@ int ObServerReloadConfig::operator()()
     }
   }
 #ifndef ENABLE_SANITY
+  {
+    ObMallocAllocator::get_instance()->force_explict_500_malloc_ =
+      GCONF._force_explict_500_malloc;
+  }
 #else
   {
     sanity_set_whitelist(GCONF.sanity_whitelist.str());

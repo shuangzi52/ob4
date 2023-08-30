@@ -14,9 +14,11 @@
 #include "lib/oblog/ob_log_module.h"
 #include "lib/time/ob_time_utility.h"
 #include "lib/utility/ob_macro_utils.h"
+#include "logservice/palf/lsn.h"
 #include "ob_archive_fetcher.h"
 #include "lib/ob_define.h"
 #include "lib/ob_errno.h"
+#include "lib/stat/ob_session_stat.h"
 #include "lib/thread/ob_thread_name.h"        // lib::set_thread_name
 #include "logservice/ob_log_service.h"        // ObLogService
 #include "logservice/palf/log_group_entry.h"  // LogGroupEntry
@@ -31,10 +33,14 @@
 #include "ob_archive_util.h"
 #include "ob_archive_sequencer.h"             // ObArchivesSequencer
 #include "objit/common/ob_item_type.h"        // print
+#include "observer/omt/ob_tenant_config_mgr.h"
+#include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "share/ob_debug_sync.h"              // DEBUG_SYNC
 #include "share/ob_debug_sync_point.h"        // LOG_ARCHIVE_PUSH_LOG
 #include "share/ob_errno.h"
 #include "share/ob_ls_id.h"
+#include "share/ob_tenant_info_proxy.h"       // ObAllTenantInfo
+#include "share/scn.h"
 
 namespace oceanbase
 {
@@ -142,7 +148,7 @@ void ObArchiveFetcher::destroy()
 int ObArchiveFetcher::start()
 {
   int ret = OB_SUCCESS;
-  ObThreadPool::set_run_wrapper(MTL_CTX(), lib::ThreadCGroup::BACK_CGROUP);
+  ObThreadPool::set_run_wrapper(MTL_CTX());
   if (OB_UNLIKELY(! inited_)) {
     ARCHIVE_LOG(ERROR, "ObArchiveFetcher not init");
     ret = OB_NOT_INIT;
@@ -362,8 +368,8 @@ int ObArchiveFetcher::handle_log_fetch_task_(ObArchiveLogFetchTask &task)
   const ObLSID id = task.get_ls_id();
   const ArchiveWorkStation &station = task.get_station();
   ArchiveKey key = station.get_round();
-  LSN commit_lsn;
   SCN commit_scn;
+  LSN commit_lsn;
 
   DEBUG_SYNC(BEFORE_ARCHIVE_FETCH_LOG);
 
@@ -376,12 +382,11 @@ int ObArchiveFetcher::handle_log_fetch_task_(ObArchiveLogFetchTask &task)
     ARCHIVE_LOG(WARN, "invalid task", K(ret), K(task));
   } else if (OB_FAIL(get_max_lsn_scn_(id, commit_lsn, commit_scn))) {
     ARCHIVE_LOG(WARN, "get max lsn scn failed", K(ret), K(id));
-  } else if (OB_FAIL(check_need_delay_(id, station, task.get_cur_offset(),
-          task.get_end_offset(), commit_lsn, commit_scn, need_delay))) {
-    ARCHIVE_LOG(WARN, "check need delay failed", K(ret), K(commit_lsn), K(commit_scn), K(task));
+  } else if (OB_FAIL(check_need_delay_(task, commit_lsn, need_delay))) {
+    ARCHIVE_LOG(WARN, "check need delay failed", K(ret), K(commit_lsn), K(task));
   } else if (need_delay) {
     // just skip
-      ARCHIVE_LOG(INFO, "need delay", K(task), K(need_delay));
+      ARCHIVE_LOG(TRACE, "need delay", K(task), K(need_delay));
   } else if (OB_FAIL(init_helper_(task, commit_lsn, helper))) {
     ARCHIVE_LOG(WARN, "init helper failed", K(ret), K(task));
   } else if (OB_FAIL(init_iterator_(task.get_ls_id(), helper, palf_handle_guard, iter))) {
@@ -428,7 +433,7 @@ int ObArchiveFetcher::get_max_lsn_scn_(const ObLSID &id, palf::LSN &lsn, SCN &sc
   } else if (OB_FAIL(palf_handle_guard.get_end_scn(scn))) {
     ARCHIVE_LOG(WARN, "get end ts ns failed", K(ret), K(id));
   } else {
-    ARCHIVE_LOG(INFO, "get end lsn scn succ", K(ret), K(id), K(lsn), K(scn));
+    ARCHIVE_LOG(TRACE, "get end lsn scn succ", K(ret), K(id), K(lsn), K(scn));
   }
   return ret;
 }
@@ -444,55 +449,71 @@ int ObArchiveFetcher::get_max_lsn_scn_(const ObLSID &id, palf::LSN &lsn, SCN &sc
 // The archive progress lag is smaller than target, just need delay.
 //
 // The buffer to archive is not enough and not reach the block end, just need delay.
-int ObArchiveFetcher::check_need_delay_(const ObLSID &id,
-    const ArchiveWorkStation &station,
-    const LSN &cur_lsn,
-    const LSN &end_lsn,
+int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
     const LSN &commit_lsn,
-    const share::SCN &commit_scn,
     bool &need_delay)
 {
   int ret = OB_SUCCESS;
-  bool data_enough = false;
   bool data_full = false;
+  const ObLSID &id = task.get_ls_id();
+  const ArchiveWorkStation &station = task.get_station();
+  const share::SCN &base_scn = task.get_base_scn();
+  const LSN &start_lsn = task.get_start_offset();
+  const LSN &cur_lsn = task.get_cur_offset();
+  const LSN &end_lsn = task.get_end_offset();
   LSN offset;
   SCN fetch_scn;
+  int64_t last_fetch_timestamp = OB_INVALID_TIMESTAMP;
   need_delay = false;
   int64_t send_task_count = 0;
   int64_t ls_archive_task_count = 0;
   int64_t send_task_status_count = 0;
+  const bool new_block = start_lsn == cur_lsn;
+  palf::LSN max_no_limit_lsn;
+  storage::ObLSHandle handle;
+  share::SCN offline_scn;
 
-  GET_LS_TASK_CTX(ls_mgr_, id) {
-    if (OB_FAIL(ls_archive_task->get_fetcher_progress(station, offset, fetch_scn))) {
-      ARCHIVE_LOG(WARN, "get fetch progress failed", K(ret), K(id), K(station));
-    } else if (OB_FAIL(ls_archive_task->get_send_task_count(station, send_task_count))) {
-      ARCHIVE_LOG(WARN, "get send task count failed", K(ret), K(id), K(station));
-    } else if (send_task_count >= MAX_LS_SEND_TASK_COUNT_LIMIT) {
-      need_delay = true;
-      ARCHIVE_LOG(TRACE, "send_task_count exceed threshold, need delay",
-          K(id), K(station), K(send_task_count));
-    } else if (! check_scn_enough_(fetch_scn, commit_scn)) {
-      need_delay = true;
-      ARCHIVE_LOG(TRACE, "scn not enough, need delay", K(id),
-          K(station), K(fetch_scn), K(commit_scn));
-    } else {
-      ls_archive_task_count = ls_mgr_->get_ls_task_count();
-      send_task_status_count = archive_sender_->get_send_task_status_count();
-      if (ls_archive_task_count < send_task_status_count) {
+  if (OB_FAIL(MTL(storage::ObLSService*)->get_ls(id, handle, ObLSGetMod::ARCHIVE_MOD))) {
+    ARCHIVE_LOG(WARN, "get ls failed", K(id));
+  } else if (OB_FAIL(handle.get_ls()->get_offline_scn(offline_scn))) {
+    ARCHIVE_LOG(WARN, "get offline_scn failed", K(id));
+  } else {
+    GET_LS_TASK_CTX(ls_mgr_, id) {
+      if (OB_FAIL(ls_archive_task->get_fetcher_progress(station, offset, fetch_scn, last_fetch_timestamp))) {
+        ARCHIVE_LOG(WARN, "get fetch progress failed", K(ret), K(id), K(station));
+      } else if (OB_FAIL(ls_archive_task->get_send_task_count(station, send_task_count))) {
+        ARCHIVE_LOG(WARN, "get send task count failed", K(ret), K(id), K(station));
+      } else if (OB_FAIL(ls_archive_task->get_max_no_limit_lsn(station, max_no_limit_lsn))) {
+        ARCHIVE_LOG(WARN, "get max_no_limit_lsn failed", K(id), K(station));
+      } else if (send_task_count >= MAX_LS_SEND_TASK_COUNT_LIMIT) {
         need_delay = true;
-        ARCHIVE_LOG(TRACE, "archive_sender_ task status count more than ls archive task count, just wait",
-            K(ls_archive_task_count), K(send_task_status_count), K(need_delay));
+        ARCHIVE_LOG(TRACE, "send_task_count exceed threshold, need delay",
+            K(id), K(station), K(send_task_count));
       } else {
-        check_capacity_enough_(commit_lsn, cur_lsn, end_lsn, data_enough, data_full);
-        if (data_full) {
-          // although data buffer not enough, but data reaches the end of the block, do archive
-          ARCHIVE_LOG(TRACE, "data buffer reach clog block end, do archive",
-              K(id), K(station), K(end_lsn), K(commit_lsn));
-        } else if (! data_enough) {
-          // data not enough to fill unit, just wait
+        ls_archive_task_count = ls_mgr_->get_ls_task_count();
+        send_task_status_count = archive_sender_->get_send_task_status_count();
+        if (ls_archive_task_count < send_task_status_count) {
           need_delay = true;
-          ARCHIVE_LOG(TRACE, "data not enough, need delay", K(id), K(station), K(commit_lsn),
-              K(cur_lsn), K(end_lsn), K(data_enough));
+          ARCHIVE_LOG(TRACE, "archive_sender_ task status count more than ls archive task count, just wait",
+              K(ls_archive_task_count), K(send_task_status_count), K(need_delay));
+        } else {
+          check_capacity_enough_(commit_lsn, cur_lsn, end_lsn, data_full);
+          if (data_full) {
+            // although data buffer not enough, but data reaches the end of the block, do archive
+            ARCHIVE_LOG(TRACE, "data buffer reach clog block end, do archive",
+                K(id), K(station), K(end_lsn), K(commit_lsn));
+          } else if (OB_UNLIKELY(offline_scn.is_valid())) {
+            if (fetch_scn.is_valid() && fetch_scn >= offline_scn) {
+              // if ls is offline and does not archive all, it should be archived as soon as possible
+              need_delay = true;
+            } else {
+              need_delay = false;
+            }
+          } else if (! check_scn_enough_(id, new_block, cur_lsn, max_no_limit_lsn, base_scn, fetch_scn, last_fetch_timestamp)) {
+            need_delay = true;
+            ARCHIVE_LOG(TRACE, "scn not enough, need delay", K(id), K(station), K(new_block), K(cur_lsn),
+                K(max_no_limit_lsn), K(base_scn), K(fetch_scn));
+          }
         }
       }
     }
@@ -503,17 +524,41 @@ int ObArchiveFetcher::check_need_delay_(const ObLSID &id,
 void ObArchiveFetcher::check_capacity_enough_(const LSN &commit_lsn,
     const LSN &cur_lsn,
     const LSN &end_lsn,
-    bool &data_enough,
     bool &data_full)
 {
   // 已有足够大用以压缩加密单元或者到达归档文件尾(也是ob日志文件尾)
   data_full = end_lsn <= commit_lsn;
-  data_enough = data_full || commit_lsn >= cur_lsn + unit_size_;
 }
 
-bool ObArchiveFetcher::check_scn_enough_(const SCN &fetch_scn, const SCN &end_scn) const
+bool ObArchiveFetcher::check_scn_enough_(const share::ObLSID &id,
+    const bool new_block,
+    const palf::LSN &lsn,
+    const palf::LSN &max_no_limit_lsn,
+    const SCN &base_scn,
+    const SCN &fetch_scn,
+    const int64_t last_fetch_timestamp)
 {
-  return true;
+  int ret = OB_SUCCESS;
+  bool bret = false;    // archive limit default
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id_));
+  const int64_t lag_target = tenant_config.is_valid() ? tenant_config->archive_lag_target : 0L;
+  share::SCN replayable_scn;
+  if (lsn <= max_no_limit_lsn || 0 == lag_target) {
+    bret = true;
+    // when ls archive task init or update, the max_no_limit_lsn set
+    // logs whose lsn smaller than the max_no_limit_lsn will ignore the archive_lag_target limit
+  } else if (common::ObTimeUtility::fast_current_time() - last_fetch_timestamp >= lag_target) {
+    // for standby tenant, sync_scn will stop at the tenant dropping scn X,
+    // so logs whose scn bigger than (X - archive_lag_target) will be archived according to the condition
+    bret = true;
+  } else if (OB_FAIL(get_max_archive_point_(replayable_scn))) {
+    ARCHIVE_LOG(WARN, "get replayable_scn failed", K(id));
+  } else if (new_block) {
+    bret = ((replayable_scn.convert_to_ts() - base_scn.convert_to_ts()) >= lag_target);
+  } else {
+    bret = ((replayable_scn.convert_to_ts() - fetch_scn.convert_to_ts()) >= lag_target);
+  }
+  return bret;
 }
 
 int ObArchiveFetcher::init_helper_(ObArchiveLogFetchTask &task, const LSN &commit_lsn, TmpMemoryHelper &helper)
@@ -587,7 +632,7 @@ int ObArchiveFetcher::generate_send_buffer_(PalfGroupBufferIterator &iter, TmpMe
   while (OB_SUCC(ret) && ! iter_end && ! piece_change && ! has_set_stop()) {
     buffer = NULL;
     if (OB_FAIL(iter.next(max_scn))) {
-      if (OB_ITER_END == ret || common::OB_NEED_RETRY == ret) {
+      if (iterator_need_retry_(ret)) {
         ARCHIVE_LOG(TRACE, "iterate log entry to end", K(ret), K(iter));
       } else {
         ARCHIVE_LOG(WARN, "iterate log entry failed", K(ret), K(iter));
@@ -600,6 +645,11 @@ int ObArchiveFetcher::generate_send_buffer_(PalfGroupBufferIterator &iter, TmpMe
     } else if (OB_UNLIKELY(entry.get_serialize_size() > helper.get_capaicity())) {
       ret = OB_ERR_UNEXPECTED;
        ARCHIVE_LOG(ERROR, "iterate buf not valid", K(ret), K(helper), K(entry));
+    } else if (OB_UNLIKELY(helper.is_log_out_of_range(entry.get_serialize_size()))) {
+      // Committed logs can only be truncated in failover, and the commit_lsn before failover may be not match a log group entry,
+      // and the log may not match the buffer for the task
+      ret = OB_EAGAIN;
+      ARCHIVE_LOG(WARN, "log out of helper range, failover may happen", K(entry), K(helper), K(iter));
     } else {
       // 由于归档按照palf block起始LSN开始归档, 因此存在部分日志其scn是小于归档round_start_scn的,
       // 对于这部分日志, 归档到第一个piece
@@ -632,7 +682,7 @@ int ObArchiveFetcher::generate_send_buffer_(PalfGroupBufferIterator &iter, TmpMe
       }
     }
   }
-  if (OB_ITER_END == ret || OB_NEED_RETRY == ret) {
+  if (iterator_need_retry_(ret)) {
     ret = OB_SUCCESS;
   }
 
@@ -941,10 +991,16 @@ int ObArchiveFetcher::submit_residual_log_fetch_task_(ObArchiveLogFetchTask &tas
 int ObArchiveFetcher::submit_send_task_(ObArchiveSendTask *send_task)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(archive_sender_->submit_send_task(send_task))) {
+  int64_t buf_size;
+  if (OB_ISNULL(send_task)) {
+    ret = OB_INVALID_ARGUMENT;
+    ARCHIVE_LOG(WARN, "invalid argument", K(ret), KP(send_task));
+  } else if (FALSE_IT(buf_size = send_task->get_buf_size())) {
+  } else if (OB_FAIL(archive_sender_->submit_send_task(send_task))) {
     ARCHIVE_LOG(WARN, "submit send task failed", K(ret), KPC(send_task));
   } else {
     ARCHIVE_LOG(INFO, "submit send task succ", KP(send_task));
+    EVENT_TENANT_ADD(ObStatEventIds::ARCHIVE_WRITE_LOG_SIZE, buf_size, tenant_id_);
   }
   return ret;
 }
@@ -1014,6 +1070,7 @@ void ObArchiveFetcher::statistic(const int64_t log_size, const int64_t ts)
     READ_COST_TS = 0;
     READ_TASK_COUNT = 0;
   }
+  EVENT_TENANT_ADD(ObStatEventIds::ARCHIVE_READ_LOG_SIZE, log_size, tenant_id_);
 }
 
 // TmpMemoryHelper
@@ -1113,6 +1170,11 @@ ObArchiveSendTask *ObArchiveFetcher::TmpMemoryHelper::gen_send_task()
   return task;
 }
 
+bool ObArchiveFetcher::TmpMemoryHelper::is_log_out_of_range(const int64_t size) const
+{
+  return std::min(commit_offset_, end_offset_) < (cur_offset_ + size);
+}
+
 // 聚合出足够大处理单元, 或者到达归档文件尾
 bool ObArchiveFetcher::TmpMemoryHelper::original_buffer_enough(const int64_t size)
 {
@@ -1158,7 +1220,8 @@ int ObArchiveFetcher::TmpMemoryHelper::append_handled_buf(char *buf, const int64
     ret = OB_INVALID_ARGUMENT;
     ARCHIVE_LOG(WARN, "invalid argument", K(ret), K(buf), K(buf_size));
   } else if (OB_UNLIKELY(buf_size > ec_buf_size_ - ec_buf_pos_)) {
-    ret = reserve_(std::max(static_cast<int64_t>(ec_buf_pos_ + (unitized_offset_ - start_offset_)), ec_buf_pos_ + buf_size));
+    ret = OB_NOT_SUPPORTED;
+    ARCHIVE_LOG(ERROR, "buf is oversize while buffer is pre-allocated enough", K(buf), K(buf_size), KPC(this));
   }
   if (OB_SUCC(ret)) {
     MEMCPY(ec_buf_ + ec_buf_pos_, buf, buf_size);
@@ -1230,26 +1293,14 @@ void ObArchiveFetcher::TmpMemoryHelper::inner_free_send_buffer_()
   }
 }
 
-int ObArchiveFetcher::TmpMemoryHelper::reserve_(const int64_t size)
-{
-  int ret = OB_SUCCESS;
-  char *tmp_buf = NULL;
-  const int64_t reserved_size = get_reserved_buf_size_();
-  if (size <= ec_buf_size_) {
-  } else if (OB_ISNULL(tmp_buf = (char *)allocator_->alloc_send_task(size + reserved_size))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    ARCHIVE_LOG(WARN, "alloc memory failed", K(ret), K(size));
-  } else {
-    MEMCPY(tmp_buf + reserved_size, ec_buf_, ec_buf_pos_);
-    ec_buf_ = tmp_buf;
-    ec_buf_size_ = size;
-  }
-  return ret;
-}
-
 int64_t ObArchiveFetcher::TmpMemoryHelper::get_reserved_buf_size_() const
 {
   return sizeof(ObArchiveSendTask) + ARCHIVE_FILE_HEADER_SIZE;
+}
+
+bool ObArchiveFetcher::iterator_need_retry_(const int ret) const
+{
+  return OB_NEED_RETRY == ret || OB_ITER_END == ret || OB_PARTIAL_LOG == ret;
 }
 } // namespace archive
 } // namespace oceanbase

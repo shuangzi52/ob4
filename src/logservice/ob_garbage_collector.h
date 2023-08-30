@@ -21,8 +21,10 @@
 #include "share/ob_thread_pool.h"
 #include "share/ob_ls_id.h"
 #include "share/ls/ob_ls_status_operator.h"
+#include "storage/tx_storage/ob_safe_destroy_handler.h"
 #include "logservice/ob_log_base_header.h"
 #include "logservice/ob_append_callback.h"
+#include "logservice/logrpc/ob_log_rpc_proxy.h"
 
 namespace oceanbase
 {
@@ -100,11 +102,14 @@ struct GCDiagnoseInfo
   ~GCDiagnoseInfo() { reset(); }
   LSGCState gc_state_;
   int64_t gc_start_ts_;
+  int64_t block_tx_ts_;
   TO_STRING_KV(K(gc_state_),
-               K(gc_start_ts_));
+               K(gc_start_ts_),
+               K(block_tx_ts_));
   void reset() {
     gc_state_ = LSGCState::INVALID_LS_GC_STATE;
     gc_start_ts_ = OB_INVALID_TIMESTAMP;
+    block_tx_ts_ = OB_INVALID_TIMESTAMP;
   }
 };
 
@@ -139,6 +144,7 @@ public:
   int init(storage::ObLSService *ls_service,
            obrpc::ObSrvRpcProxy *rpc_proxy,
            common::ObMySQLProxy *sql_proxy,
+           obrpc::ObLogServiceRpcProxy *log_rpc_proxy,
            const common::ObAddr &self_addr);
   int start();
   void stop();
@@ -185,6 +191,12 @@ public:
   static bool is_tenant_dropping_ls_status(const LSStatus &status);
   int get_ls_status_from_table(const share::ObLSID &ls_id,
                                share::ObLSStatus &ls_status);
+  int add_safe_destroy_task(storage::ObSafeDestroyTask &task);
+  template <typename Function>
+  int safe_destroy_task_for_each(Function &fn)
+  {
+    return safe_destroy_handler_.for_each(fn);
+  }
 private:
   bool is_valid_ls_status_(const LSStatus &status);
   bool is_need_gc_ls_status_(const LSStatus &status);
@@ -200,7 +212,7 @@ private:
                                const share::ObLSID &id) const;
   //日志流状态表相关
   void gc_check_ls_status_(ObGCCandidateArray &gc_candidates);
-  int gc_check_ls_status_(const share::ObLSID &id,
+  int gc_check_ls_status_(storage::ObLS &ls,
                           ObGCCandidateArray &gc_candidates);
   int check_if_tenant_has_been_dropped_(const uint64_t tenant_id,
                                         bool &has_dropped);
@@ -214,8 +226,12 @@ private:
   storage::ObLSService *ls_service_;
   obrpc::ObSrvRpcProxy *rpc_proxy_;
   common::ObMySQLProxy *sql_proxy_;
+  obrpc::ObLogServiceRpcProxy *log_rpc_proxy_;
   common::ObAddr self_addr_;
   int64_t seq_;
+  storage::ObSafeDestroyHandler safe_destroy_handler_;
+  // stop push task, but will process the left task.
+  bool stop_create_new_gc_task_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObGarbageCollector);
 };
@@ -231,9 +247,11 @@ public:
   int init(storage::ObLS *ls);
   void reset();
   void execute_pre_gc_process(ObGarbageCollector::LSStatus &ls_status);
+  int execute_pre_remove();
   int check_ls_can_offline(const share::ObLSStatus &ls_status);
   int gc_check_invalid_member_seq(const int64_t gc_seq, bool &need_gc);
   static bool is_valid_ls_gc_state(const LSGCState &state);
+
   int diagnose(GCDiagnoseInfo &diagnose_info) const;
 
   // for replay
@@ -253,7 +271,9 @@ public:
   virtual int flush(share::SCN &scn) override;
 
   TO_STRING_KV(K(is_inited_),
-               K(gc_seq_invalid_member_));
+               K(gc_seq_invalid_member_),
+               K(gc_start_ts_),
+               K(block_tx_ts_));
 
 private:
   typedef common::SpinRWLock RWLock;
@@ -289,6 +309,7 @@ private:
   };
 
 private:
+  const int64_t MAX_WAIT_TIME_US_FOR_READONLY_TX = 10 * 60 * 1000 * 1000L;//10 min
   const int64_t LS_CLOG_ALIVE_TIMEOUT_US = 100 * 1000; //100ms
   const int64_t GET_GTS_TIMEOUT_US = 10L * 1000 * 1000; //10s
   int get_gts_(const int64_t timeout_us, share::SCN &gts_scn);
@@ -299,9 +320,16 @@ private:
   bool is_ls_offline_finished_(const LSGCState &state);
   bool is_tablet_clear_(const ObGarbageCollector::LSStatus &ls_status);
   void try_check_and_set_wait_gc_(ObGarbageCollector::LSStatus &ls_status);
+  int try_check_and_set_wait_gc_when_log_archive_is_off_(
+      const LSGCState &gc_state,
+      const share::SCN &readable_scn,
+      const share::SCN &offline_scn,
+      ObGarbageCollector::LSStatus &ls_status);
+  int check_if_tenant_is_dropping_or_dropped_(const uint64_t tenant_id,
+      bool &is_tenant_dropping_or_dropped);
   int get_tenant_readable_scn_(share::SCN &readable_scn);
   int check_if_tenant_in_archive_(bool &in_archive);
-  void submit_log_(const ObGCLSLOGType log_type);
+  int submit_log_(const ObGCLSLOGType log_type, bool &is_success);
   void update_ls_gc_state_after_submit_log_(const ObGCLSLOGType log_type,
                                             const share::SCN &scn);
   void block_ls_transfer_in_(const share::SCN &block_scn);
@@ -309,12 +337,14 @@ private:
   int get_palf_role_(common::ObRole &role);
   void handle_gc_ls_dropping_(const ObGarbageCollector::LSStatus &ls_status);
   void handle_gc_ls_offline_(ObGarbageCollector::LSStatus &ls_status);
+  void set_block_tx_if_necessary_();
 private:
   bool is_inited_;
   RWLock rwlock_; //for leader revoke/takeover submit log
   storage::ObLS *ls_;
   int64_t gc_seq_invalid_member_; //缓存gc检查当前ls不在成员列表时的轮次
   int64_t gc_start_ts_;
+  int64_t block_tx_ts_;
 };
 
 } // namespace logservice

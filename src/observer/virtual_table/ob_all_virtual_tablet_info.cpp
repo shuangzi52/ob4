@@ -28,7 +28,7 @@ ObAllVirtualTabletInfo::ObAllVirtualTabletInfo()
       addr_(),
       ls_id_(share::ObLSID::INVALID_LS_ID),
       ls_iter_guard_(),
-      ls_tablet_iter_()
+      ls_tablet_iter_(ObMDSGetTabletMode::READ_WITHOUT_CHECK)
 {
 }
 
@@ -127,6 +127,9 @@ int ObAllVirtualTabletInfo::process_curr_tenant(ObNewRow *&row)
   int ret = OB_SUCCESS;
   ObTabletHandle tablet_handle;
   ObTablet *tablet = nullptr;
+  ObTabletCreateDeleteMdsUserData latest_user_data;
+  bool is_committed = false;
+  bool is_empty_result = false;
   if (NULL == allocator_) {
     ret = OB_NOT_INIT;
     SERVER_LOG(WARN, "allocator_ shouldn't be NULL", K(allocator_), K(ret));
@@ -143,7 +146,17 @@ int ObAllVirtualTabletInfo::process_curr_tenant(ObNewRow *&row)
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(WARN, "tablet should not null", K(ret), K(tablet_handle));
-  } else {
+  } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(latest_user_data, is_committed))) {
+    if (OB_EMPTY_RESULT == ret || OB_ERR_SHARED_LOCK_CONFLICT == ret) {
+      is_committed = false;
+      is_empty_result = true;
+      ret = OB_SUCCESS;
+    } else {
+      SERVER_LOG(WARN, "failed to get latest tablet status", K(ret), KPC(tablet));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     const ObTabletMeta &tablet_meta = tablet->get_tablet_meta();
     const int64_t col_count = output_column_ids_.count();
     for (int64_t i = 0; OB_SUCC(ret) && i < col_count; ++i) {
@@ -195,6 +208,45 @@ int ObAllVirtualTabletInfo::process_curr_tenant(ObNewRow *&row)
         case OB_APP_MIN_COLUMN_ID + 9:
           // multi_version_start
           cur_row_.cells_[i].set_uint64(tablet_meta.multi_version_start_);
+          break;
+        case OB_APP_MIN_COLUMN_ID + 10:
+          // transfer_start_scn
+          cur_row_.cells_[i].set_uint64(tablet_meta.transfer_info_.transfer_start_scn_.get_val_for_inner_table_field());
+          break;
+        case OB_APP_MIN_COLUMN_ID + 11:
+          // transfer_seq
+          cur_row_.cells_[i].set_int(tablet_meta.transfer_info_.transfer_seq_);
+          break;
+        case OB_APP_MIN_COLUMN_ID + 12:
+          // has_transfer_table
+          cur_row_.cells_[i].set_int(tablet_meta.transfer_info_.has_transfer_table() ? 1 : 0);
+          break;
+        case OB_APP_MIN_COLUMN_ID + 13: {
+          // restore_status
+          ObTabletRestoreStatus::STATUS restore_status;
+          if (OB_FAIL(tablet_meta.ha_status_.get_restore_status(restore_status))) {
+            SERVER_LOG(WARN, "failed to get restore status", K(ret), K(tablet_meta));
+          } else {
+            cur_row_.cells_[i].set_int(restore_status);
+          }
+        }
+          break;
+        case OB_APP_MIN_COLUMN_ID + 14: {
+          // tablet_status
+          if (is_empty_result) {
+            cur_row_.cells_[i].set_int(static_cast<int64_t>(ObTabletStatus::MAX));
+          } else {
+            cur_row_.cells_[i].set_int(static_cast<int64_t>(latest_user_data.get_tablet_status()));
+          }
+          break;
+        }
+        case OB_APP_MIN_COLUMN_ID + 15:
+          // is_committed
+          cur_row_.cells_[i].set_int(is_committed ? 1 : 0);
+          break;
+        case OB_APP_MIN_COLUMN_ID + 16:
+          // is_empty_shell
+          cur_row_.cells_[i].set_int(tablet->is_empty_shell() ? 1 : 0);
           break;
         default:
           ret = OB_ERR_UNEXPECTED;

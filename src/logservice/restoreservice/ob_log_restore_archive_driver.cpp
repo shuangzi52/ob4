@@ -118,9 +118,8 @@ int ObLogRestoreArchiveDriver::check_need_schedule_(ObLS &ls,
   ObLogRestoreHandler *restore_handler = NULL;
   bool need_delay = false;
   need_schedule = false;
-  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id_));
-  const int64_t concurrency = std::min(MAX_LS_FETCH_LOG_TASK_CONCURRENCY,
-    tenant_config.is_valid() ? tenant_config->log_restore_concurrency : 1L);
+  int64_t concurrency = 0;
+  int64_t fetch_log_worker_count = 0;
   if (OB_ISNULL(restore_handler = ls.get_log_restore_handler())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("get restore_handler failed", K(ret), "id", ls.get_ls_id());
@@ -128,6 +127,9 @@ int ObLogRestoreArchiveDriver::check_need_schedule_(ObLS &ls,
     LOG_WARN("get fetch log context failed", K(ret), K(ls));
   } else if (! need_schedule) {
     // do nothing
+  } else if (OB_FAIL(worker_->get_thread_count(fetch_log_worker_count))) {
+    LOG_WARN("get_thread_count from worker_ failed", K(ret), K(ls));
+  } else if (FALSE_IT(concurrency = std::min(fetch_log_worker_count, MAX_LS_FETCH_LOG_TASK_CONCURRENCY))) {
   } else if (context.issue_task_num_ >= concurrency) {
     need_schedule = false;
   } else if (OB_FAIL(check_need_delay_(ls.get_ls_id(), need_delay))) {
@@ -201,6 +203,21 @@ int ObLogRestoreArchiveDriver::get_palf_base_lsn_scn_(ObLS &ls, LSN &lsn, SCN &s
   } else if (OB_UNLIKELY(!scn.is_valid() || !lsn.is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("get_palf_base_lsn_scn_, return invalid scn or lsn", K(id), K(scn), K(lsn));
+  } else if (!ls.get_clog_checkpoint_scn().is_valid()) {
+    // checkpoint_scn not valid, just skip it
+    LOG_ERROR("ls checkpoint_scn not valid", K(ls));
+  } else {
+    // The start scn for palf to restore is the min scn of a block,
+    // so if the min scn exists in two or more archive rounds and the the rounds are not continuous,
+    // the location of the scn will hit the first round, which results to restore failure.
+    //
+    // Use the ls checkpoint_scn to help the first location.
+    //
+    // For example, the round 1 range: [100, 200], the checkpoint_scn of the matched backup fall in the range [100, 200],
+    // the round 2 range: [300, 500], the checkpoint_scn of the matched backup in [300, 500].
+    // But the start_scn for restore maybe only 50, so it will locate failed.
+    // The checkpoint_scn is precise, it will help to locate the correct round.
+    scn = std::max(scn, ls.get_clog_checkpoint_scn());
   }
   return ret;
 }

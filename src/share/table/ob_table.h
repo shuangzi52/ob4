@@ -23,6 +23,8 @@
 #include "lib/list/ob_dlist.h"
 #include "common/ob_common_types.h"
 #include "common/ob_range.h"
+#include "rpc/obrpc/ob_poc_rpc_server.h"
+
 namespace oceanbase
 {
 namespace common
@@ -369,6 +371,7 @@ public:
   ObTableOperationType::Type type() const { return operation_type_; }
   int get_entity(const ObITableEntity *&entity) const;
   int get_entity(ObITableEntity *&entity);
+  ObITableEntity *get_entity() { return entity_; }
   int64_t get_affected_rows() const { return affected_rows_; }
 
   void set_entity(ObITableEntity &entity) { entity_ = &entity; }
@@ -622,6 +625,34 @@ private:
   ObString filter_string_;
 };
 
+enum ObTableAggregationType
+{
+  INVAILD = 0,
+  MAX = 1,
+  MIN = 2,
+  COUNT = 3,
+  SUM = 4,
+  AVG = 5,
+};
+
+class ObTableAggregation
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObTableAggregation()
+      : type_(ObTableAggregationType::INVAILD),
+        column_()
+  {}
+  ObTableAggregationType get_type() const { return type_; }
+  const common::ObString &get_column() const { return column_; }
+  bool is_agg_all_column() const { return column_ == "*"; };
+  int deep_copy(common::ObIAllocator &allocator, ObTableAggregation &dst) const;
+  TO_STRING_KV(K_(type), K_(column));
+private:
+  ObTableAggregationType type_; // e.g. max
+  common::ObString column_; // e.g. age
+};
+
 /// A table query
 /// 1. support multi range scan
 /// 2. support reverse scan
@@ -641,7 +672,9 @@ public:
       index_name_(),
       batch_size_(-1),
       max_result_size_(-1),
-      htable_filter_()
+      htable_filter_(),
+      scan_range_columns_(),
+      aggregations_()
   {}
   ~ObTableQuery() = default;
   void reset();
@@ -687,6 +720,8 @@ public:
   void clear_scan_range() { key_ranges_.reset(); }
   void set_deserialize_allocator(common::ObIAllocator *allocator) { deserialize_allocator_ = allocator; }
   int deep_copy(ObIAllocator &allocator, ObTableQuery &dst) const;
+  const common::ObIArray<ObTableAggregation> &get_aggregations() const { return aggregations_; }
+  bool is_aggregate_query() const { return !aggregations_.empty(); }
   TO_STRING_KV(K_(key_ranges),
                K_(select_columns),
                K_(filter_string),
@@ -694,9 +729,11 @@ public:
                K_(offset),
                K_(scan_order),
                K_(index_name),
-               K_(htable_filter),
                K_(batch_size),
-               K_(max_result_size));
+               K_(max_result_size),
+               K_(htable_filter),
+               K_(scan_range_columns),
+               K_(aggregations));
 public:
   static ObString generate_filter_condition(const ObString &column, const ObString &op, const ObObj &value);
   static ObString combile_filters(const ObString &filter1, const ObString &op, const ObString &filter2);
@@ -713,6 +750,8 @@ private:
   int32_t batch_size_;
   int64_t max_result_size_;
   ObHTableFilter htable_filter_;
+  ObSEArray<ObString, 8> scan_range_columns_;
+  ObSEArray<ObTableAggregation, 8> aggregations_;
 };
 
 /// result for ObTableQuery
@@ -778,6 +817,7 @@ public:
   int assign_property_names(const common::ObIArray<common::ObString> &other);
   void reset_property_names() { properties_names_.reset(); }
   int add_row(const common::ObNewRow &row);
+  int add_row(const common::ObIArray<ObObj> &row);
   int add_all_property(const ObTableQueryResult &other);
   int add_all_row(const ObTableQueryResult &other);
   int64_t get_row_count() const { return row_count_; }
@@ -787,8 +827,9 @@ public:
   bool reach_batch_size_or_result_size(const int32_t batch_count,
                                        const int64_t max_result_size);
   const common::ObIArray<common::ObString>& get_select_columns() const { return properties_names_; };
+  static int64_t get_max_packet_buffer_length() { return obrpc::get_max_rpc_packet_size() - (1<<20); }
+  static int64_t get_max_buf_block_size() { return get_max_packet_buffer_length() - (1024*1024LL); }
 private:
-  static const int64_t MAX_BUF_BLOCK_SIZE = common::OB_MAX_PACKET_BUFFER_LENGTH - (1024*1024LL);
   static const int64_t DEFAULT_BUF_BLOCK_SIZE = common::OB_MALLOC_BIG_BLOCK_SIZE - (1024*1024LL);
   int alloc_buf_if_need(const int64_t size);
 private:
@@ -850,6 +891,17 @@ public:
                K_(database_id),
                K_(expire_ts),
                K_(hash_val));
+};
+
+/// Table Direct Load Operation Type
+enum class ObTableDirectLoadOperationType {
+  BEGIN = 0,
+  COMMIT = 1,
+  ABORT = 2,
+  GET_STATUS = 3,
+  INSERT = 4,
+  HEART_BEAT = 5,
+  MAX_TYPE
 };
 
 } // end namespace table

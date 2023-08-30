@@ -1,6 +1,14 @@
-// Copyright (c) 2018-present Alibaba Inc. All Rights Reserved.
-// Author:
-//   Junquan Chen <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -21,6 +29,27 @@ using namespace common::hash;
 using namespace share;
 using namespace storage;
 using namespace table;
+
+int ObTableLoadPartitionLocation::check_tablet_has_same_leader(const ObTableLoadPartitionLocation &other, bool &result)
+{
+  int ret = OB_SUCCESS;
+  result = true;
+  if (tablet_ids_.count() != other.tablet_ids_.count()) {
+    result = false;
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && result &&  i < tablet_ids_.count(); i ++) {
+    PartitionLocationInfo info1;
+    PartitionLocationInfo info2;
+    if (OB_FAIL(partition_map_.get_refactored(tablet_ids_.at(i), info1))) {
+      LOG_WARN("fail to get location info", KR(ret));
+    } else if (OB_FAIL(other.partition_map_.get_refactored(other.tablet_ids_.at(i), info2))) {
+      LOG_WARN("fail to get location info", KR(ret));
+    } else if (info1.leader_addr_ != info2.leader_addr_) {
+      result = false;
+    }
+  }
+  return ret;
+}
 
 int ObTableLoadPartitionLocation::fetch_ls_id(uint64_t tenant_id, const ObTabletID &tablet_id,
                                               ObLSID &ls_id)
@@ -207,7 +236,7 @@ int ObTableLoadPartitionLocation::init_all_partition_location(
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(fetch_ls_locations(tenant_id, partition_ids))) {
-    LOG_WARN("fail to fetch locations", KR(ret), K(tenant_id), K(table_id));
+    LOG_WARN("fail to fetch locations", KR(ret), K(tenant_id));
   }
   return ret;
 }
@@ -219,6 +248,7 @@ int ObTableLoadPartitionLocation::init_all_leader_info(ObIAllocator &allocator)
   ObHashMap<ObAddr, ObIArray<ObTableLoadLSIdAndPartitionId> *> addr_map;
   ObHashMap<ObAddr, ObIArray<ObTableLoadLSIdAndPartitionId> *>::const_iterator addr_iter;
   int64_t pos = 0;
+  tmp_allocator.set_tenant_id(MTL_ID());
   // 将所有addr存到set中
   if (OB_FAIL(addr_map.create(64, "TLD_PL_Tmp", "TLD_PL_Tmp"))) {
     LOG_WARN("fail to create hashmap", KR(ret));

@@ -69,9 +69,14 @@ public:
   void destroy() {
     reset_();
   }
+  int prepare_offline(const int64_t start_ts);
   int offline();
   int online();
 
+  // NB: block_normal and unblcok should pair used !!!
+  // when you finish block_noraml, you should unblock_normal then push to other state
+  int block_normal();
+  int unblock_normal();
 public:
   int init(const share::ObLSID &ls_id,
            transaction::ObLSTxCtxMgr *mgr,
@@ -95,7 +100,8 @@ public:
   int get_write_store_ctx(transaction::ObTxDesc &tx,
                           const transaction::ObTxReadSnapshot &snapshot,
                           const concurrent_control::ObWriteFlag write_flag,
-                          storage::ObStoreCtx &store_ctx) const;
+                          storage::ObStoreCtx &store_ctx,
+                          const transaction::ObTxSEQ &spec_seq_no = transaction::ObTxSEQ::INVL()) const;
   int revert_store_ctx(storage::ObStoreCtx &store_ctx) const;
   // Freeze process needs to traverse trans ctx to submit redo log
   int traverse_trans_to_submit_redo_log(transaction::ObTransID &fail_tx_id);
@@ -108,7 +114,11 @@ public:
   // @return OB_SUCCESS, all the tx of this ls cleaned up
   // @return other, there is something wrong or there is some tx not cleaned up.
   int check_all_tx_clean_up() const;
+  // @return OB_SUCCESS, all the readonly_tx of this ls cleaned up
+  // @return other, there is something wrong or there is some readonly tx not cleaned up.
+  int check_all_readonly_tx_clean_up() const;
   int block_tx();
+  int block_all();
   int kill_all_tx(const bool graceful);
   // for ddl check
   // Check all active and not "for_replay" tx_ctx in this ObLSTxCtxMgr
@@ -135,6 +145,8 @@ public:
                                 transaction::ObTransID &block_tx_id);
   // get the obj lock op iterator from tx of this ls.
   int iterate_tx_obj_lock_op(transaction::tablelock::ObLockOpIterator &iter) const;
+  int get_tx_ctx_count(int64_t &tx_ctx_count);
+  int get_active_tx_count(int64_t &active_tx_count);
 public:
   int replay(const void *buffer, const int64_t nbytes, const palf::LSN &lsn, const share::SCN &scn);
 
@@ -165,8 +177,11 @@ public:
   int traversal_flush();
   virtual share::SCN get_ls_weak_read_ts();
   int check_in_leader_serving_state(bool& bool_ret);
-
+  int set_max_replay_commit_version(share::SCN commit_version);
   transaction::ObTxRetainCtxMgr *get_retain_ctx_mgr();
+
+  // check tx ls blocked
+  int check_tx_blocked(bool &tx_blocked) const;
 private:
   void reset_();
 

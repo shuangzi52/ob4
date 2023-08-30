@@ -88,7 +88,9 @@ int ObPLRouter::check_error_in_resolve(int code)
     case OB_ERR_SP_NO_DROP_SP:
     case OB_ERR_SP_BAD_CONDITION_TYPE:
     case OB_ERR_DUP_SIGNAL_SET:
-    case OB_ERR_CANNOT_UPDATE_VIRTUAL_COL_IN_TRG: {
+    case OB_ERR_WRONG_PARAMETERS_TO_NATIVE_FCT:
+    case OB_ERR_CANNOT_UPDATE_VIRTUAL_COL_IN_TRG:
+    case OB_ERR_VIEW_SELECT_CONTAIN_QUESTIONMARK: {
       if (lib::is_mysql_mode()) {
         ret = code;
         break;
@@ -203,7 +205,7 @@ int ObPLRouter::simple_resolve(ObPLFunctionAST &func_ast)
   ObStmtNodeTree *parse_tree = NULL;
   if (OB_SUCC(ret)) {
     ObString body = routine_info_.get_routine_body(); //获取body字符串
-    ObPLParser parser(inner_allocator_, session_info_.get_local_collation_connection());
+    ObPLParser parser(inner_allocator_, session_info_.get_local_collation_connection(), session_info_.get_sql_mode());
     CHECK_COMPATIBILITY_MODE(&session_info_);
 
     if (OB_FAIL(ObSQLUtils::convert_sql_text_from_schema_for_resolve(

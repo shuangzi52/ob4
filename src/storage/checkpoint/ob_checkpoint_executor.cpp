@@ -134,8 +134,8 @@ inline void get_min_rec_scn_service_type_by_index_(int index, char* service_type
 int ObCheckpointExecutor::update_clog_checkpoint()
 {
   int ret = OB_SUCCESS;
-  //avoid checkpoint concurrently
-  WLockGuard guard(rwlock_);
+  WLockGuard guard_for_update_clog_checkpoint(rwlock_for_update_clog_checkpoint_);
+  RLockGuard guard(rwlock_);
   if (update_checkpoint_enabled_) {
     ObFreezer *freezer = ls_->get_freezer();
     if (OB_NOT_NULL(freezer)) {
@@ -170,6 +170,9 @@ int ObCheckpointExecutor::update_clog_checkpoint()
             ret = OB_SUCCESS;
           } else if (OB_NOT_INIT == ret) {
             STORAGE_LOG(WARN, "palf has been disabled", K(ret), K(checkpoint_scn), K(ls_->get_ls_id()));
+            ret = OB_SUCCESS;
+          } else if (OB_NEED_RETRY == ret) {
+            STORAGE_LOG(WARN, "locate_by_scn_coarsely need retry", K(checkpoint_scn), K(ls_->get_ls_id()));
             ret = OB_SUCCESS;
           } else {
             STORAGE_LOG(ERROR, "locate lsn by logts failed", K(ret), K(ls_id),

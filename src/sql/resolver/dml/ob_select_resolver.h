@@ -56,7 +56,10 @@ public:
   virtual ObSelectStmt *get_child_stmt() { return get_select_stmt(); }
   virtual bool is_select_resolver() const { return true; }
   inline bool can_produce_aggr() const
-  { return T_FIELD_LIST_SCOPE == current_scope_ || T_HAVING_SCOPE == current_scope_ || T_ORDER_SCOPE == current_scope_; }
+  { return T_FIELD_LIST_SCOPE == current_scope_ ||
+           T_HAVING_SCOPE == current_scope_ ||
+           T_ORDER_SCOPE == current_scope_ ||
+           T_NAMED_WINDOWS_SCOPE == current_scope_; }
   int add_aggr_expr(ObAggFunRawExpr *&final_aggr_expr);
   int add_unsettled_column(ObRawExpr *column_expr);
   void set_in_set_query(bool in_set_query) { in_set_query_ = in_set_query; }
@@ -209,7 +212,7 @@ protected:
   int resolve_named_windows_clause(const ParseNode *node);
   int check_nested_aggr_in_having(ObRawExpr* expr);
   int resolve_start_with_clause(const ParseNode *node);
-  int check_connect_by_expr_validity(const ObRawExpr *raw_expr);
+  int check_connect_by_expr_validity(const ObRawExpr *raw_expr, bool is_prior);
   int resolve_connect_by_clause(const ParseNode *node);
   int check_correlated_column_ref(const ObSelectStmt &select_stmt, ObRawExpr *expr, bool &correalted_query);
   virtual int resolve_order_item(const ParseNode &sort_node, OrderItem &order_item);
@@ -340,6 +343,8 @@ private:
   int add_name_for_anonymous_view_recursive(TableItem *table_item);
 
   int is_need_check_col_dup(const ObRawExpr *expr, bool &need_check);
+
+  int resolve_shared_order_item(OrderItem &order_item, ObSelectStmt *select_stmt);
 protected:
   // data members
   /*these member is only for with clause*/

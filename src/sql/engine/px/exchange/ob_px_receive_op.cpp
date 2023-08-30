@@ -305,7 +305,8 @@ int ObPxReceiveOp::link_ch_sets(ObPxTaskChSet &ch_set,
   } else if (OB_FAIL(dfc->reserve(ch_set.count()))) {
     LOG_WARN("fail reserve dfc channels", K(ret), K(ch_set.count()));
   } else if (ch_set.count() > 0) {
-    void *buf = oceanbase::common::ob_malloc(DTL_CHANNEL_SIZE * ch_set.count(), "SqlDtlRecvChan");
+    ObMemAttr attr(ctx_.get_my_session()->get_effective_tenant_id(), "SqlDtlRecvChan");
+    void *buf = oceanbase::common::ob_malloc(DTL_CHANNEL_SIZE * ch_set.count(), attr);
     if (nullptr == buf) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("malloc channel buf failed", K(ret));
@@ -390,31 +391,13 @@ int ObPxReceiveOp::inner_rescan()
   return ret;
 }
 
-int ObPxReceiveOp::drain_exch()
+int ObPxReceiveOp::inner_drain_exch()
 {
   int ret = OB_SUCCESS;
-  uint64_t version = -1;
-  if (OB_FAIL(try_open())) {
-    LOG_WARN("get operator ctx failed", K(ret));
-  } else if (exch_drained_) {
-    // has been drained, do noting.
-  } else if (iter_end_) {
+  if (iter_end_) {
     exch_drained_ = true;
   } else if (!exch_drained_) {
-    if (IS_PX_COORD(get_spec().get_type())) {
-      /**
-       * 为什么qc的drain什么操作都不需要做？
-       * qc调用drain_exch有两种情况，第一种是它自己inner get next row
-       * 网上返回了ob iter end，这种不会走到这里。
-       * 第二种是类似这种计划
-       *               merge join
-       *          QC1              QC2
-       * QC1它如果end了，主线程会去调用QC2的drain exch。这种情况下我们
-       * 根本不需要做任何处理，因为上层已经获得所有行，很快就会调用inner close
-       * 来结束所有的dfo，没必要这里先发一次终止消息出去。
-       */
-      LOG_TRACE("drain QC");
-    } else if (OB_FAIL(try_link_channel())) {
+    if (OB_FAIL(try_link_channel())) {
       LOG_WARN("failed to link channel", K(ret));
     } else if (OB_FAIL(active_all_receive_channel())) {
       LOG_WARN("failed to active all receive channel", K(ret));

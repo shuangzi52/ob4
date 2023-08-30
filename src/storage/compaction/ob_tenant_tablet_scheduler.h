@@ -37,7 +37,7 @@ class ObLS;
 class ObTablet;
 class ObITable;
 class ObTabletDDLKvMgr;
-
+class ObLSTabletService;
 class ObFastFreezeChecker
 {
 public:
@@ -55,7 +55,6 @@ private:
   bool enable_fast_freeze_;
 };
 
-
 // record ls_id/tablet_id
 class ObCompactionScheduleIterator
 {
@@ -63,48 +62,104 @@ public:
   ObCompactionScheduleIterator(
     const bool is_major,
     ObLSGetMod mod = ObLSGetMod::STORAGE_MOD,
-    const int64_t timeout_us = ObTabletCommon::DIRECT_GET_COMMITTED_TABLET_TIMEOUT_US)
+    const int64_t batch_tablet_cnt = SCHEDULE_TABLET_BATCH_CNT)
     : mod_(mod),
       is_major_(is_major),
       scan_finish_(false),
       merge_finish_(false),
-      timeout_us_(timeout_us),
-      ls_idx_(0),
+      finish_cur_batch_(false),
+      report_scn_flag_(false),
+      ls_idx_(-1),
       tablet_idx_(0),
+      schedule_tablet_cnt_(0),
+      max_batch_tablet_cnt_(batch_tablet_cnt),
+      ls_tablet_svr_(nullptr),
       ls_ids_(),
       tablet_ids_()
-  {}
+  {
+    ls_ids_.set_attr(ObMemAttr(MTL_ID(), "CompIter"));
+    tablet_ids_.set_attr(ObMemAttr(MTL_ID(), "CompIter"));
+  }
   ~ObCompactionScheduleIterator() { reset(); }
   int build_iter();
   int get_next_ls(ObLSHandle &ls_handle);
-  int get_next_tablet(ObLSHandle &ls_handle, ObTabletHandle &tablet_handle);
+  int get_next_tablet(ObTabletHandle &tablet_handle);
   bool is_scan_finish() const { return scan_finish_; }
   bool tenant_merge_finish() const { return merge_finish_ & scan_finish_; }
-  void update_merge_finish(bool merge_finish) {
+  void update_merge_finish(const bool merge_finish) {
     merge_finish_ &= merge_finish;
   }
+  void set_report_scn_flag() { report_scn_flag_ = true; }
+  bool need_report_scn() const { return report_scn_flag_; }
   void reset();
   bool is_valid() const;
   void skip_cur_ls()
   {
     ++ls_idx_;
+    tablet_idx_ = -1;
+    ls_tablet_svr_ = nullptr;
     tablet_ids_.reuse();
   }
-  OB_INLINE int64_t to_string(char *buf, const int64_t buf_len) const;
+  void start_cur_batch()
+  {
+    schedule_tablet_cnt_ = 0;
+    finish_cur_batch_ = false;
+  }
+  int64_t to_string(char *buf, const int64_t buf_len) const;
 private:
+  // virtual for unittest
+  virtual int get_cur_ls_handle(ObLSHandle &ls_handle);
+  virtual int get_tablet_ids();
+  virtual int get_tablet_handle(const ObTabletID &tablet_id, ObTabletHandle &tablet_handle);
+
   static const int64_t LS_ID_ARRAY_CNT = 10;
   static const int64_t TABLET_ID_ARRAY_CNT = 2000;
+  static const int64_t SCHEDULE_TABLET_BATCH_CNT = 50 * 1000L; // 5w
+  static const int64_t CHECK_REPORT_SCN_INTERVAL = 5 * 60 * 1000 * 1000L; // 600s
+
   ObLSGetMod mod_;
   bool is_major_;
   bool scan_finish_;
   bool merge_finish_;
+  bool finish_cur_batch_;
+  bool report_scn_flag_;
   int64_t timeout_us_;
   int64_t ls_idx_;
-  uint64_t tablet_idx_;
+  int64_t tablet_idx_;
+  int64_t schedule_tablet_cnt_;
+  int64_t max_batch_tablet_cnt_;
+  storage::ObLSTabletService *ls_tablet_svr_;
   common::ObSEArray<share::ObLSID, LS_ID_ARRAY_CNT> ls_ids_;
   common::ObSEArray<ObTabletID, TABLET_ID_ARRAY_CNT> tablet_ids_;
 };
 
+struct ObProhibitScheduleMediumMap
+{
+public:
+  enum ProhibitFlag
+  {
+    TRANSFER = 0,
+    MEDIUM = 1,
+    FLAG_MAX
+  };
+  static const char *ProhibitFlagStr[];
+  static bool is_valid_flag(const ProhibitFlag flag)
+  {
+    return flag >= TRANSFER && flag < FLAG_MAX;
+  }
+  ObProhibitScheduleMediumMap();
+  ~ObProhibitScheduleMediumMap() { destroy(); }
+  int init();
+  void destroy();
+  int clear_flag(const share::ObLSID &ls_id, const ProhibitFlag &input_flag);
+  int add_flag(const share::ObLSID &ls_id, const ProhibitFlag &input_flag);
+  int64_t to_string(char *buf, const int64_t buf_len) const;
+  int64_t get_transfer_flag_cnt() const;
+private:
+  int64_t transfer_flag_cnt_;
+  mutable obsys::ObRWLock lock_;
+  common::hash::ObHashMap<share::ObLSID, ProhibitFlag> ls_id_map_;
+};
 
 class ObTenantTabletScheduler
 {
@@ -142,7 +197,6 @@ public:
     int64_t finish_cnt_;
     int64_t wait_rs_validate_cnt_;
   };
-
 public:
   ObTenantTabletScheduler();
   ~ObTenantTabletScheduler();
@@ -172,7 +226,17 @@ public:
   void stop_major_merge();
   void resume_major_merge();
   OB_INLINE bool could_major_merge_start() const { return major_merge_status_; }
-
+  int check_tablet_could_schedule_by_status(const ObTablet &tablet, bool &could_schedule_merge);
+  // The transfer task sets the flag that prohibits the scheduling of medium when the log stream is src_ls of transfer
+  int stop_ls_schedule_medium(const share::ObLSID &ls_id);
+  int clear_prohibit_medium_flag(const share::ObLSID &ls_id, const ObProhibitScheduleMediumMap::ProhibitFlag &input_flag)
+  {
+    return prohibit_medium_map_.clear_flag(ls_id, input_flag);
+  }
+  int ls_start_schedule_medium(const share::ObLSID &ls_id, bool &ls_could_schedule_medium);
+  const ObProhibitScheduleMediumMap& get_prohibit_medium_ls_map() const {
+    return prohibit_medium_map_;
+  }
   int64_t get_frozen_version() const;
   int64_t get_merged_version() const { return merged_version_; }
   int64_t get_inner_table_merged_scn() const { return ATOMIC_LOAD(&inner_table_merged_scn_); }
@@ -184,8 +248,10 @@ public:
   int schedule_merge(const int64_t broadcast_version);
   int update_upper_trans_version_and_gc_sstable();
   int check_ls_compaction_finish(const share::ObLSID &ls_id);
-
   int schedule_all_tablets_minor();
+
+  int gc_info();
+  int set_max();
 
   // Schedule an async task to build bloomfilter for the given macro block.
   // The bloomfilter build task will be ignored if a same build task exists in the queue.
@@ -193,9 +259,9 @@ public:
       const uint64_t table_id,
       const blocksstable::MacroBlockId &macro_id,
       const int64_t prefix_len);
-  int schedule_load_bloomfilter(const blocksstable::MacroBlockId &macro_id);
   static bool check_tx_table_ready(ObLS &ls, const share::SCN &check_scn);
   static int check_ls_state(ObLS &ls, bool &need_merge);
+  static int check_ls_state_in_major(ObLS &ls, bool &need_merge);
   template <class T>
   static int schedule_tablet_minor_merge(
       ObLSHandle &ls_handle,
@@ -228,11 +294,21 @@ private:
   int schedule_ls_medium_merge(
       int64_t &merge_version,
       ObLSHandle &ls_handle,
-      bool &all_ls_weak_read_ts_ready,
-      int64_t &schedule_tablet_cnt);
+      bool &all_ls_weak_read_ts_ready);
+  OB_INLINE int schedule_tablet_medium(
+    ObLSHandle &ls_handle,
+    ObTabletHandle &tablet_handle,
+    const int64_t major_frozen_scn,
+    const share::SCN &weak_read_ts,
+    const bool could_major_merge,
+    const bool enable_adaptive_compaction,
+    const bool ls_could_schedule_medium,
+    compaction::ObLSLocality ls_locality,
+    int64_t &merge_version,
+    bool &is_leader,
+    bool &tablet_merge_finish);
   int schedule_ls_minor_merge(
-      ObLSHandle &ls_handle,
-      int64_t &schedule_tablet_cnt);
+      ObLSHandle &ls_handle);
   int try_remove_old_table(ObLS &ls);
   int restart_schedule_timer_task(
     const int64_t interval,
@@ -252,7 +328,7 @@ private:
   class SSTableGCTask : public common::ObTimerTask
   {
   public:
-    SSTableGCTask() = default;
+    SSTableGCTask() { disable_timeout_check(); }
     virtual ~SSTableGCTask() = default;
     virtual void runTimerTask() override;
   };
@@ -261,6 +337,13 @@ private:
   public:
     MediumLoopTask() { disable_timeout_check(); }
     virtual ~MediumLoopTask() = default;
+    virtual void runTimerTask() override;
+  };
+  class InfoPoolResizeTask : public common::ObTimerTask
+  {
+  public:
+    InfoPoolResizeTask() = default;
+    virtual ~InfoPoolResizeTask() = default;
     virtual void runTimerTask() override;
   };
 public:
@@ -280,12 +363,10 @@ private:
   static constexpr ObMergeType MERGE_TYPES[] = {
       MINOR_MERGE, HISTORY_MINOR_MERGE};
   static const int64_t SSTABLE_GC_INTERVAL = 30 * 1000 * 1000L; // 30s
-  static const int64_t DEFAULT_HASH_MAP_BUCKET_CNT = 1009;
+  static const int64_t INFO_POOL_RESIZE_INTERVAL = 30 * 1000 * 1000L; // 30s
   static const int64_t DEFAULT_COMPACTION_SCHEDULE_INTERVAL = 30 * 1000 * 1000L; // 30s
-  static const int64_t CHECK_WEAK_READ_TS_SCHEDULE_INTERVAL = 10 * 1000 * 1000L; // 10s
-  static const int64_t CHECK_REPORT_SCN_INTERVAL = 5 * 60 * 1000 * 1000L; // 600s
   static const int64_t ADD_LOOP_EVENT_INTERVAL = 120 * 1000 * 1000L; // 120s
-  static const int64_t WAIT_MEDIUM_CHECK_THRESHOLD = 10 * 60 * 1000 * 1000L; // 10m
+  static const int64_t WAIT_MEDIUM_CHECK_THRESHOLD = 10 * 60 * 1000 * 1000 * 1000L; // 10m // ns
   static const int64_t PRINT_LOG_INVERVAL = 2 * 60 * 1000 * 1000L; // 2m
   static const int64_t SCHEDULE_TABLET_BATCH_CNT = 50 * 1000L; // 5w
   static const int64_t CHECK_LS_LOCALITY_INTERVAL = 5 * 60 * 1000 * 1000L; // 5m
@@ -296,6 +377,7 @@ private:
   int merge_loop_tg_id_; // thread
   int medium_loop_tg_id_; // thread
   int sstable_gc_tg_id_; // thread
+  int info_pool_resize_tg_id_;   // thread
   int64_t schedule_interval_;
 
   common::ObDedupQueue bf_queue_;
@@ -307,11 +389,13 @@ private:
   MergeLoopTask merge_loop_task_;
   MediumLoopTask medium_loop_task_;
   SSTableGCTask sstable_gc_task_;
+  InfoPoolResizeTask info_pool_resize_task_;
   ObFastFreezeChecker fast_freeze_checker_;
   bool enable_adaptive_compaction_;
   ObCompactionScheduleIterator minor_ls_tablet_iter_;
   ObCompactionScheduleIterator medium_ls_tablet_iter_;
   int64_t error_tablet_cnt_; // for diagnose
+  ObProhibitScheduleMediumMap prohibit_medium_map_;
   compaction::ObStorageLocalityCache ls_locality_cache_;
 };
 

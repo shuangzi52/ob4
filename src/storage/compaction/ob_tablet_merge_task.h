@@ -72,12 +72,12 @@ struct ObMergeParameter {
   int16_t sstable_logic_seq_;
   ObVersionRange version_range_;
   share::ObScnRange scn_range_;
-  const ObTableReadInfo *full_read_info_; // full read info of old tablet
+  const ObITableReadInfo *rowkey_read_info_;
   bool is_full_merge_;               // full merge or increment merge, duplicated with merge_level
   compaction::ObCachedTransStateMgr *trans_state_mgr_;
-
+  share::SCN merge_scn_;
   TO_STRING_KV(KPC_(tables_handle), K_(merge_type), K_(merge_level), KP_(merge_schema),
-      K_(merge_range), K_(version_range), K_(scn_range), K_(is_full_merge));
+               K_(merge_range), K_(version_range), K_(scn_range), K_(is_full_merge), K_(merge_scn));
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMergeParameter);
 };
@@ -95,10 +95,11 @@ struct ObTabletMergeDagParam : public share::ObIDagInitParam
     return is_tenant_major_merge_ ? MAJOR_MERGE : merge_type_;
   }
 
-  TO_STRING_KV("merge_type",merge_type_to_str(merge_type_), K_(merge_version), K_(ls_id), K_(tablet_id), KP(report_), K_(for_diagnose), K_(is_tenant_major_merge));
+  virtual int64_t to_string(char* buf, const int64_t buf_len) const;
 
   bool for_diagnose_;
   bool is_tenant_major_merge_;
+  bool need_swap_tablet_flag_;
   storage::ObMergeType merge_type_;
   int64_t merge_version_;
   share::ObLSID ls_id_;
@@ -134,7 +135,6 @@ public:
 private:
   virtual int check_before_init() override;
   virtual int inner_init_ctx(ObTabletMergeCtx &ctx, bool &skip_merge_task_flag) override;
-  int create_sstable_directly();
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTabletMajorPrepareTask);
 };
@@ -159,16 +159,20 @@ public:
   virtual int process() override;
 
 private:
-  int create_sstable_after_merge(blocksstable::ObSSTable *&sstable);
-  int get_merged_sstable();
-  int check_data_checksum();
-  int check_empty_merge_valid(ObTabletMergeCtx &ctx);
-  int get_merged_sstable(ObTabletMergeCtx &ctx, blocksstable::ObSSTable *&sstable);
+  int create_sstable_after_merge();
+  int get_merged_sstable(ObTabletMergeCtx &ctx);
   int add_sstable_for_merge(ObTabletMergeCtx &ctx);
   int try_schedule_compaction_after_mini(ObTabletMergeCtx &ctx, storage::ObTabletHandle &tablet_handle);
   int try_report_tablet_stat_after_mini(ObTabletMergeCtx &ctx);
-  int read_msd_from_memtable(ObTabletMergeCtx &ctx, storage::ObUpdateTableStoreParam &param);
-  int traverse_all_memtables(ObTabletMergeCtx &ctx, memtable::ObIMultiSourceDataUnit *msd, const memtable::MultiSourceDataUnitType &type);
+  int read_msd_from_memtable(
+      ObTabletMergeCtx &ctx,
+      storage::ObUpdateTableStoreParam &param,
+      ObArenaAllocator &allocator);
+  int traverse_all_memtables(
+      ObTabletMergeCtx &ctx,
+      memtable::ObIMultiSourceDataUnit *msd,
+      const memtable::MultiSourceDataUnitType &type,
+      ObArenaAllocator &allocator);
 private:
   bool is_inited_;
   ObBasicTabletMergeDag *merge_dag_;
@@ -200,11 +204,12 @@ class ObBasicTabletMergeDag: public share::ObIDag, public ObMergeDagHash
 public:
   ObBasicTabletMergeDag(const share::ObDagType::ObDagTypeEnum type);
   virtual ~ObBasicTabletMergeDag();
-  ObTabletMergeCtx &get_ctx() { return *ctx_; }
+  ObTabletMergeCtx *get_ctx() { return ctx_; }
   ObTabletMergeDagParam &get_param() { return param_; }
+  virtual const share::ObLSID & get_ls_id() const { return param_.ls_id_; }
   virtual bool operator == (const ObIDag &other) const override;
   virtual int64_t hash() const override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual bool ignore_warning() override
   {
@@ -215,15 +220,16 @@ public:
         || OB_TABLET_NOT_EXIST == dag_ret_
         || OB_CANCELED == dag_ret_;
   }
+  int prepare_merge_ctx();
   int get_tablet_and_compat_mode();
   virtual int64_t to_string(char* buf, const int64_t buf_len) const override;
   virtual lib::Worker::CompatMode get_compat_mode() const override { return compat_mode_; }
   virtual uint64_t get_consumer_group_id() const override { return consumer_group_id_; }
+  virtual bool is_ha_dag() const override { return false; }
   static int generate_merge_task(
       ObBasicTabletMergeDag &merge_dag,
       ObTabletMergeCtx &ctx,
       share::ObITask *prepare_task = nullptr);
-
 protected:
   int alloc_merge_ctx();
   int inner_init(const ObTabletMergeDagParam &param);
@@ -241,12 +247,27 @@ class ObTabletMergeDag : public ObBasicTabletMergeDag
 public:
   ObTabletMergeDag(const share::ObDagType::ObDagTypeEnum type);
   virtual ~ObTabletMergeDag() {}
-  template <class T>
+  template <typename T>
   int create_first_task();
 
   virtual int gene_compaction_info(compaction::ObTabletCompactionProgress &progress) override;
   virtual int diagnose_compaction_info(compaction::ObDiagnoseTabletCompProgress &progress) override;
 };
+
+template <typename T>
+int ObTabletMergeDag::create_first_task()
+{
+  int ret = common::OB_SUCCESS;
+  T *task = nullptr;
+  if (OB_FAIL(alloc_task(task))) {
+    STORAGE_LOG(WARN, "fail to alloc task", K(ret));
+  } else if (OB_FAIL(task->init())) {
+    STORAGE_LOG(WARN, "failed to init task", K(ret));
+  } else if (OB_FAIL(add_task(*task))) {
+    STORAGE_LOG(WARN, "fail to add task", K(ret), K_(ls_id), K_(tablet_id), K_(ctx));
+  }
+  return ret;
+}
 
 class ObTabletMajorMergeDag: public ObTabletMergeDag
 {
@@ -281,14 +302,19 @@ class ObTabletMergeExecutePrepareTask: public share::ObITask
 public:
   ObTabletMergeExecutePrepareTask();
   virtual ~ObTabletMergeExecutePrepareTask();
-  int init(const ObGetMergeTablesResult &result, ObTabletMergeCtx &ctx);
+  int init(const ObGetMergeTablesResult &result, ObTabletMergeCtx &ctx, const bool need_swap_tablet_flag);
   virtual int process() override;
 protected:
   virtual int prepare_compaction_filter() { return OB_SUCCESS; }
+  int get_tablet_and_result();
+  int get_result_by_table_key();
+  const static int64_t TABLET_KEY_ARRAY_CNT = 20;
 
   bool is_inited_;
+  bool need_swap_tablet_flag_;
   ObTabletMergeCtx *ctx_;
   ObGetMergeTablesResult result_;
+  ObSEArray<ObITable::TableKey, TABLET_KEY_ARRAY_CNT> table_key_array_;
 };
 
 // for minor merge
@@ -310,15 +336,13 @@ public:
       const ObGetMergeTablesResult &result,
       storage::ObLSHandle &ls_handle);
   template<class T>
-  int create_first_task(const ObGetMergeTablesResult &result);
+  int create_first_task(const ObGetMergeTablesResult &result, const bool need_swap_tablet_flag);
   virtual bool operator == (const ObIDag &other) const override;
   const share::ObScnRange& get_merge_range() const { return merge_scn_range_; }
 
   INHERIT_TO_STRING_KV("ObBasicTabletMergeDag", ObBasicTabletMergeDag, K_(merge_scn_range));
 private:
-  int prepare_compaction(const ObGetMergeTablesResult &result);
-  virtual int prepare_compaction_filter() { return OB_SUCCESS; }
-  virtual int create_first_task(const ObGetMergeTablesResult &result);
+  virtual int create_first_task(const ObGetMergeTablesResult &result, const bool need_swap_tablet_flag);
   DISALLOW_COPY_AND_ASSIGN(ObTabletMergeExecuteDag);
 
   share::ObScnRange merge_scn_range_;
@@ -332,7 +356,7 @@ public:
   {}
   virtual ~ObTxTableMinorExecuteDag() = default;
 private:
-  virtual int create_first_task(const ObGetMergeTablesResult &result) override;
+  virtual int create_first_task(const ObGetMergeTablesResult &result, const bool need_swap_tablet_flag) override;
   DISALLOW_COPY_AND_ASSIGN(ObTxTableMinorExecuteDag);
   ObTransStatusFilter compaction_filter_;
 };

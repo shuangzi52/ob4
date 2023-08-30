@@ -337,7 +337,7 @@ public:
   }
   virtual int write_lock_yield();
 
-  virtual void update_max_submitted_seq_no(const int64_t seq_no) override;
+  virtual void update_max_submitted_seq_no(const transaction::ObTxSEQ seq_no) override;
 public:
   virtual void set_read_only();
   virtual void inc_ref();
@@ -395,12 +395,13 @@ public:
   virtual void add_trans_mem_total_size(const int64_t size);
   int64_t get_ref() const { return ATOMIC_LOAD(&ref_); }
   uint64_t get_tenant_id() const;
-  inline bool has_read_elr_data() const { return read_elr_data_; }
+  inline bool has_row_updated() const { return has_row_updated_; }
+  inline void set_row_updated() { has_row_updated_ = true; }
   int remove_callbacks_for_fast_commit();
   int remove_callback_for_uncommited_txn(
     const memtable::ObMemtableSet *memtable_set,
     const share::SCN max_applied_scn);
-  int rollback(const int64_t seq_no, const int64_t from_seq_no);
+  int rollback(const transaction::ObTxSEQ seq_no, const transaction::ObTxSEQ from_seq_no);
   bool is_all_redo_submitted();
   bool is_for_replay() const { return trans_mgr_.is_for_replay(); }
   int64_t get_trans_mem_total_size() const { return trans_mem_total_size_; }
@@ -493,12 +494,11 @@ private:
   int clear_table_lock_(const bool is_commit,
                         const share::SCN &commit_version,
                         const share::SCN &commit_scn);
-  int rollback_table_lock_(int64_t seq_no);
+  int rollback_table_lock_(transaction::ObTxSEQ seq_no);
   int register_multi_source_data_if_need_(
       const transaction::tablelock::ObTableLockOp &lock_op,
       const bool is_replay);
   static int64_t get_us() { return ::oceanbase::common::ObTimeUtility::current_time(); }
-  void set_read_elr_data(const bool read_elr_data) { read_elr_data_ = read_elr_data; }
   int reset_log_generator_();
   int reuse_log_generator_();
   void inc_pending_log_size(const int64_t size)
@@ -539,9 +539,9 @@ private:
   int64_t callback_free_count_;
   bool is_read_only_;
   bool is_master_;
-  // Used to indicate whether elr data is read. When a statement executes,
-  // if one row involves elr data, set it to true, and the row can't be purged
-  bool read_elr_data_;
+  // Used to indicate whether mvcc row is updated or not.
+  // When a statement is update or select for update, the value can be set ture;
+  bool has_row_updated_;
   storage::ObTxTableGuard tx_table_guard_;
   // For deaklock detection
   // The trans id of the holder of the conflict row lock

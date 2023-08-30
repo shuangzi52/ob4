@@ -932,7 +932,9 @@ int ObJsonBin::parse_tree(ObJsonNode *json_tree)
   INIT_SUCC(ret);
   result_.reuse();
   ObJsonNodeType root_type = json_tree->json_type();
-  if (root_type == ObJsonNodeType::J_ARRAY || root_type == ObJsonNodeType::J_OBJECT) {
+  if (OB_FAIL(result_.reserve(json_tree->get_serialize_size()))) {
+    LOG_WARN("failed to reserve bin buffer", K(ret), K(json_tree->get_serialize_size()));
+  } else if (root_type == ObJsonNodeType::J_ARRAY || root_type == ObJsonNodeType::J_OBJECT) {
     if (OB_FAIL(serialize_json_value(json_tree, result_))) { // do recursion
       LOG_WARN("failed to serialize json tree at recursion", K(ret));
       result_.reset();
@@ -986,7 +988,7 @@ int ObJsonBin::to_tree(ObJsonNode *&json_tree)
   return ret;
 }
 
-int ObJsonBin::deserialize_json_value(const char *data,
+int ObJsonBin:: deserialize_json_value(const char *data,
                                       uint64_t length,
                                       uint8_t type,
                                       uint64_t value_offset,
@@ -1484,7 +1486,7 @@ int ObJsonBin::deserialize_json_object_v0(const char *data, uint64_t length, ObJ
           ObJsonNode *node = NULL;
           ret = deserialize_json_value(val, length - value_offset, val_type, value_offset, node, type);
           if (OB_SUCC(ret)) {
-            if (OB_FAIL(object->add(key, node))) {
+            if (OB_FAIL(object->add(key, node, false, true, false))) {
               LOG_WARN("failed to add node to obj", K(ret));
             }
           } else {
@@ -1617,7 +1619,7 @@ int ObJsonBin::get_max_offset(const char* data, ObJsonNodeType cur_node, uint64_
       number::ObNumber number;
       if (OB_FAIL(serialization::decode_i16(data, curr_.length() - (data - curr_.ptr()), pos, &prec))) {
         LOG_WARN("fail to deserialize decimal precision.", K(ret), K(data - curr_.ptr()), K(curr_.length()));
-      } else if (serialization::decode_i16(data, curr_.length() - (data - curr_.ptr()), pos, &scale)) {
+      } else if (OB_FAIL(serialization::decode_i16(data, curr_.length() - (data - curr_.ptr()), pos, &scale))) {
         LOG_WARN("fail to deserialize decimal scale.", K(ret), K(data - curr_.ptr()), K(curr_.length()));
       } else if (OB_FAIL(number.deserialize(data, curr_.length() - (data - curr_.ptr()), pos))) {
         LOG_WARN("failed to deserialize decimal data", K(ret));

@@ -70,15 +70,18 @@ public:
   int xa_commit(const ObXATransID &xid,
                 const int64_t flags,
                 const int64_t xa_timeout_seconds,
-                bool &has_tx_level_temp_table);
+                bool &has_tx_level_temp_table,
+                ObTransID &tx_id);
   int xa_rollback(const ObXATransID &xid,
-                  const int64_t xa_timeout_seconds);
+                  const int64_t xa_timeout_seconds,
+                  ObTransID &tx_id);
   int xa_rollback_local(const ObXATransID &xid,
                         const ObTransID &tx_id,
                         const int64_t timeout_us,
                         const int64_t request_id);
   int xa_prepare(const ObXATransID &xid,
-                 const int64_t timeout_seconds);
+                 const int64_t timeout_seconds,
+                 ObTransID &tx_id);
   int local_xa_prepare(const ObXATransID &xid,
                        const ObTransID &trans_id,
                        const int64_t timeout_us);
@@ -100,7 +103,8 @@ public:
                       ObXATransID &xid);
   int xa_start_for_dblink_client(const common::sqlclient::DblinkDriverProto dblink_type,
                                  common::sqlclient::ObISQLConnection *dblink_conn,
-                                 ObTxDesc *&tx_desc);
+                                 ObTxDesc *&tx_desc,
+                                 ObXATransID &remote_xid);
   int commit_for_dblink_trans(ObTxDesc *&tx_desc);
   int rollback_for_dblink_trans(ObTxDesc *&tx_desc);
   static int generate_xid(const ObTransID &tx_id, ObXATransID &new_xid);
@@ -176,11 +180,12 @@ public:
                    const share::ObLSID &coordinator,
                    const bool has_tx_level_temp_table,
                    int64_t &affected_rows);
-  void insert_record_for_standby(const uint64_t tenant_id,
-                                 const ObXATransID &xid,
-                                 const ObTransID &trans_id,
-                                 const share::ObLSID &coordinator,
-                                 const ObAddr &sche_addr);
+  int insert_record_for_standby(const uint64_t tenant_id,
+                                const ObXATransID &xid,
+                                const ObTransID &trans_id,
+                                const share::ObLSID &coordinator,
+                                const ObAddr &sche_addr);
+  ObXAStatistics &get_xa_statistics() { return xa_statistics_; }
 private:
   int local_one_phase_xa_commit_ (const ObXATransID &xid,
                                   const ObTransID &trans_id,
@@ -208,7 +213,8 @@ private:
   int one_phase_xa_commit_(const ObXATransID &xid,
                            const int64_t timeout_us,
                            const int64_t request_id,
-                           bool &has_tx_level_temp_table);
+                           bool &has_tx_level_temp_table,
+                           ObTransID &tx_id);
   int xa_rollback_local_(const ObXATransID &xid,
                          const ObTransID &tx_id,
                          const int64_t timeout_us,
@@ -231,7 +237,8 @@ private:
   int two_phase_xa_commit_(const ObXATransID &xid,
                            const int64_t timeout_us,
                            const int64_t request_id,
-                           bool &has_tx_level_temp_table);
+                           bool &has_tx_level_temp_table,
+                           ObTransID &tx_id);
   int xa_rollback_for_pending_trans_(const ObXATransID &xid,
                                     const ObTransID &tx_id,
                                     const int64_t timeout_us,
@@ -281,6 +288,7 @@ private:
   ObXAInnerTableGCWorker xa_inner_table_gc_worker_;
   bool is_running_;
   bool is_inited_;
+  ObXAStatistics xa_statistics_;
 };
 
 }//transaction

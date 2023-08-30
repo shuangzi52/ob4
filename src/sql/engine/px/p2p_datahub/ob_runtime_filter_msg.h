@@ -37,9 +37,9 @@ public:
     SECOND_LEVEL
   };
   ObRFBloomFilterMsg() : phase_(), bloom_filter_(),
-      next_peer_addrs_(), expect_first_phase_count_(0),
-      piece_size_(0), filter_indexes_(), receive_count_array_(),
-      filter_idx_(nullptr), create_finish_(nullptr), is_finish_regen_(false) {}
+      next_peer_addrs_(allocator_), expect_first_phase_count_(0),
+      piece_size_(0), filter_indexes_(allocator_), receive_count_array_(allocator_),
+      filter_idx_(nullptr), create_finish_(nullptr), need_send_msg_(true), is_finish_regen_(false) {}
   ~ObRFBloomFilterMsg() { destroy(); }
   virtual int assign(const ObP2PDatahubMsgBase &) final;
   virtual int merge(ObP2PDatahubMsgBase &) final;
@@ -79,6 +79,7 @@ public:
       ObRFBloomFilterMsg &msg, bool &first_phase_end);
   virtual int process_msg_internal(bool &need_free);
   virtual int regenerate() override;
+  int atomic_merge(ObP2PDatahubMsgBase &other_msg);
 private:
 int calc_hash_value(
     const common::ObIArray<ObExpr *> &expr_array,
@@ -91,13 +92,14 @@ int generate_receive_count_array(int64_t piece_size, int64_t cur_begin_idx);
 public:
   ObSendBFPhase phase_;
   ObPxBloomFilter bloom_filter_;
-  common::ObSArray<common::ObAddr> next_peer_addrs_;
+  common::ObFixedArray<common::ObAddr, common::ObIAllocator> next_peer_addrs_;
   int64_t expect_first_phase_count_;
   int64_t piece_size_;
-  common::ObArray<BloomFilterIndex> filter_indexes_;
-  common::ObArray<BloomFilterReceiveCount> receive_count_array_;
+  common::ObFixedArray<BloomFilterIndex, common::ObIAllocator> filter_indexes_;
+  common::ObFixedArray<BloomFilterReceiveCount, common::ObIAllocator> receive_count_array_;
   int64_t *filter_idx_; //for shared msg
   bool *create_finish_; //for shared msg
+  bool need_send_msg_;  //for shared msg, when drain_exch, msg is not need to be sent
   bool is_finish_regen_;
 };
 
@@ -125,8 +127,7 @@ public:
   virtual int destroy() {
     lower_bounds_.reset();
     upper_bounds_.reset();
-    null_first_cmp_funcs_.reset();
-    null_last_cmp_funcs_.reset();
+    cmp_funcs_.reset();
     need_null_cmp_flags_.reset();
     cells_size_.reset();
     allocator_.reset();
@@ -155,7 +156,6 @@ public:
     ObEvalCtx &eval_ctx,
     uint64_t *batch_hash_values) override;
   virtual int reuse() override;
-  int might_contain(ObIArray<ObDatum> &vals, bool &is_match);
   int adjust_cell_size();
 private:
   int get_min(ObIArray<ObDatum> &vals);
@@ -163,14 +163,20 @@ private:
   int get_min(ObCmpFunc &func, ObDatum &l, ObDatum &r, int64_t &cell_size);
   int get_max(ObCmpFunc &func, ObDatum &l, ObDatum &r, int64_t &cell_size);
   int dynamic_copy_cell(const ObDatum &src, ObDatum &target, int64_t &cell_size);
+  // only used in might_contain_batch,
+  // without adding filter_count, total_count, check_count in filter_ctx
+  int do_might_contain_batch(const ObExpr &expr,
+      ObEvalCtx &ctx,
+      const ObBitVector &skip,
+      const int64_t batch_size,
+      ObExprJoinFilter::ObExprJoinFilterContext &filter_ctx);
 
 public:
   ObFixedArray<ObDatum, common::ObIAllocator> lower_bounds_;
   ObFixedArray<ObDatum, common::ObIAllocator> upper_bounds_;
   ObFixedArray<bool, common::ObIAllocator> need_null_cmp_flags_;
   ObFixedArray<MinMaxCellSize, common::ObIAllocator> cells_size_;
-  ObCmpFuncs null_first_cmp_funcs_;
-  ObCmpFuncs null_last_cmp_funcs_;
+  ObCmpFuncs cmp_funcs_;
 };
 
 class ObRFInFilterMsg : public ObP2PDatahubMsgBase
@@ -179,17 +185,20 @@ class ObRFInFilterMsg : public ObP2PDatahubMsgBase
 public:
   struct ObRFInFilterNode {
     ObRFInFilterNode() = default;
-    ObRFInFilterNode(ObCmpFuncs *cmp_funcs, ObHashFuncs *hash_funcs, ObIArray<ObDatum> *row)
-        : cmp_funcs_(cmp_funcs), hash_funcs_(hash_funcs), row_(row) {}
+    ObRFInFilterNode(ObCmpFuncs *cmp_funcs, ObHashFuncs *hash_funcs,
+          ObIArray<ObDatum> *row, int64_t hash_val = 0)
+        : cmp_funcs_(cmp_funcs), hash_funcs_(hash_funcs),
+          row_(row), hash_val_(hash_val) {}
     int hash(uint64_t &hash_ret) const;
     inline bool operator==(const ObRFInFilterNode &other) const;
     ObCmpFuncs *cmp_funcs_;
     ObHashFuncs *hash_funcs_;
     ObIArray<ObDatum> *row_;
+    int64_t hash_val_;
   };
 public:
   ObRFInFilterMsg() : ObP2PDatahubMsgBase(), rows_set_(),
-      cmp_funcs_(allocator_), hash_funcs_(allocator_),
+      cmp_funcs_(allocator_), hash_funcs_for_insert_(allocator_),
       serial_rows_(), need_null_cmp_flags_(allocator_),
       cur_row_(allocator_), col_cnt_(0),
       max_in_num_(0) {}
@@ -220,13 +229,21 @@ public:
     ObEvalCtx &eval_ctx,
     uint64_t *batch_hash_values) override;
   virtual int reuse() override;
+  void check_finish_receive() override final;
 private:
   int append_row();
   int insert_node();
+  // only used in might_contain_batch,
+  // without adding filter_count, total_count, check_count in filter_ctx
+  int do_might_contain_batch(const ObExpr &expr,
+      ObEvalCtx &ctx,
+      const ObBitVector &skip,
+      const int64_t batch_size,
+      ObExprJoinFilter::ObExprJoinFilterContext &filter_ctx);
 public:
   hash::ObHashSet<ObRFInFilterNode, hash::NoPthreadDefendMode> rows_set_;
   ObCmpFuncs cmp_funcs_;
-  ObHashFuncs hash_funcs_;
+  ObHashFuncs hash_funcs_for_insert_;
   ObSArray<ObFixedArray<ObDatum, common::ObIAllocator> *> serial_rows_;
   ObFixedArray<bool, common::ObIAllocator> need_null_cmp_flags_;
   ObFixedArray<ObDatum, common::ObIAllocator> cur_row_;

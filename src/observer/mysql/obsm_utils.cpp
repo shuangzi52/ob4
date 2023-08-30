@@ -191,7 +191,7 @@ int ObSMUtils::cell_str(
         break;
       }
       case ObJsonTC:{
-        ret = ObMySQLUtil::json_cell_str(buf, len, obj.get_string(), pos);
+        ret = ObMySQLUtil::json_cell_str(MTL_ID(), buf, len, obj.get_string(), pos);
         break;
       }
       case ObGeometryTC: {
@@ -243,6 +243,31 @@ int ObSMUtils::cell_str(
                      K(ObString(len, buf)),
                      K(ret));
             } else { /*do nothing*/ }
+#ifdef OB_BUILD_ORACLE_PL
+          } else if (obj.is_pl_extend()
+                     && PL_NESTED_TABLE_TYPE == obj.get_meta().get_extend_type()) {
+            // anonymous collection
+            ObPLCollection *coll = reinterpret_cast<ObPLCollection *>(obj.get_ext());
+            ObNestedTableType *nested_type = NULL;
+            ObPLDataType element_type;
+            if (OB_ISNULL(nested_type =
+              reinterpret_cast<ObNestedTableType*>(allocator.alloc(sizeof(ObNestedTableType))))) {
+              ret = OB_ALLOCATE_MEMORY_FAILED;
+              OB_LOG(WARN, "failed to alloc memory for ObNestedTableType", K(ret));
+            } else if (OB_ISNULL(coll)) {
+              ret = OB_ERR_UNEXPECTED;
+              OB_LOG(WARN, "coll is null", K(ret));
+            } else if (FALSE_IT(new (nested_type) ObNestedTableType())) {
+            } else if (FALSE_IT(element_type.reset())) {
+            } else if (FALSE_IT(element_type.set_data_type(coll->get_element_type()))) {
+            } else if (FALSE_IT(nested_type->set_element_type(element_type))) {
+            } else if (OB_FAIL(nested_type->serialize(
+                                *schema_guard, dtc_params.tz_info_, type, src, buf, len, pos))) {
+              OB_LOG(WARN, "failed to serialize anonymous collection", K(ret));
+            } else {
+              OB_LOG(DEBUG, "success to serialize anonymous collection", K(ret));
+            }
+#endif
           } else {
             ret = OB_ERR_UNEXPECTED;
             OB_LOG(WARN, "type owner or type name is empty", KPC(field), K(ret));
@@ -297,7 +322,7 @@ int ObSMUtils::cell_str(
         break;
       }
       case ObUserDefinedSQLTC: {
-        ret = ObMySQLUtil::sql_utd_cell_str(buf, len, obj.get_string(), pos);
+        ret = ObMySQLUtil::sql_utd_cell_str(MTL_ID(), buf, len, obj.get_string(), pos);
         break;
       }
       default:
@@ -404,7 +429,7 @@ int ObSMUtils::get_mysql_type(ObObjType ob_type, EMySQLFieldType &mysql_type,
   return ret;
 }
 
-int ObSMUtils::get_ob_type(ObObjType &ob_type, EMySQLFieldType mysql_type)
+int ObSMUtils::get_ob_type(ObObjType &ob_type, EMySQLFieldType mysql_type, const bool is_unsigned)
 {
   int ret = OB_SUCCESS;
   switch (mysql_type) {
@@ -412,16 +437,16 @@ int ObSMUtils::get_ob_type(ObObjType &ob_type, EMySQLFieldType mysql_type)
       ob_type = ObNullType;
       break;
     case EMySQLFieldType::MYSQL_TYPE_TINY:
-      ob_type = ObTinyIntType;
+      ob_type = is_unsigned ? ObUTinyIntType : ObTinyIntType;
       break;
     case EMySQLFieldType::MYSQL_TYPE_SHORT:
-      ob_type = ObSmallIntType;
+      ob_type = is_unsigned ? ObUSmallIntType : ObSmallIntType;
       break;
     case EMySQLFieldType::MYSQL_TYPE_LONG:
-      ob_type = ObInt32Type;
+      ob_type = is_unsigned ? ObUInt32Type : ObInt32Type;
       break;
     case EMySQLFieldType::MYSQL_TYPE_LONGLONG:
-      ob_type = ObIntType;
+      ob_type = is_unsigned ? ObUInt64Type : ObIntType;
       break;
     case EMySQLFieldType::MYSQL_TYPE_FLOAT:
       ob_type = ObFloatType;

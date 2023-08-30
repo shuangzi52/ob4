@@ -17,7 +17,7 @@
 #define protected public
 #include "storage/test_dml_common.h"
 #include "share/schema/ob_table_dml_param.h"
-#include "observer/ob_safe_destroy_thread.h"
+#include "storage/test_tablet_helper.h"
 
 namespace oceanbase
 {
@@ -38,6 +38,10 @@ public:
 public:
   static void SetUpTestCase();
   static void TearDownTestCase();
+  void SetUp()
+  {
+    ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
+  }
 public:
   void insert_data_to_tablet(MockObAccessService *access_service);
   void table_scan(
@@ -47,6 +51,7 @@ protected:
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
   common::ObTabletID tablet_id_;
+  common::ObArenaAllocator allocator_;
 };
 
 TestTableScanPureDataTable::TestTableScanPureDataTable()
@@ -59,19 +64,19 @@ TestTableScanPureDataTable::TestTableScanPureDataTable()
 
 void TestTableScanPureDataTable::SetUpTestCase()
 {
+  uint64_t version = cal_version(4, 2, 0, 0);
+  ASSERT_EQ(OB_SUCCESS, ObClusterVersion::get_instance().init(version));
+  ASSERT_EQ(OB_SUCCESS, omt::ObTenantConfigMgr::get_instance().add_tenant_config(MTL_ID()));
+  ObClusterVersion::get_instance().tenant_config_mgr_ = &omt::ObTenantConfigMgr::get_instance();
+
   ASSERT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
   // MTL(transaction::ObTransService*)->tx_desc_mgr_.tx_id_allocator_ =
   //   [](transaction::ObTransID &tx_id) { tx_id = transaction::ObTransID(1001); return OB_SUCCESS; };
-  SAFE_DESTROY_INSTANCE.init();
-  SAFE_DESTROY_INSTANCE.start();
   ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
 }
 
 void TestTableScanPureDataTable::TearDownTestCase()
 {
-  SAFE_DESTROY_INSTANCE.stop();
-  SAFE_DESTROY_INSTANCE.wait();
-  SAFE_DESTROY_INSTANCE.destroy();
   MockTenantModuleEnv::get_instance().destroy();
 }
 
@@ -109,7 +114,7 @@ void TestTableScanPureDataTable::insert_data_to_tablet(MockObAccessService *acce
   // 2. create savepoint (can be rollbacked)
   ObTxParam tx_param;
   TestDmlCommon::build_tx_param(tx_param);
-  int64_t savepoint = 0;
+  ObTxSEQ savepoint;
   ASSERT_EQ(OB_SUCCESS, tx_service->create_implicit_savepoint(*tx_desc, tx_param, savepoint, true));
   // 3. acquire snapshot (write also need snapshot)
   ObTxIsolationLevel isolation = ObTxIsolationLevel::RC;
@@ -224,8 +229,12 @@ TEST_F(TestTableScanPureDataTable, table_scan_pure_data_table)
 {
   int ret = OB_SUCCESS;
 
-  ret = TestDmlCommon::create_data_tablet(tenant_id_, ls_id_, tablet_id_);
-  ASSERT_EQ(OB_SUCCESS, ret);
+  ObLSHandle ls_handle;
+  TestDmlCommon::create_ls(tenant_id_, ls_id_, ls_handle);
+
+  ObTableSchema table_schema;
+  TestDmlCommon::build_data_table_schema(tenant_id_, table_schema);
+  ASSERT_EQ(OB_SUCCESS, TestTabletHelper::create_tablet(ls_handle, tablet_id_, table_schema, allocator_));
 
   // mock ls tablet service and access service
   ObLSTabletService *tablet_service = nullptr;
@@ -243,6 +252,7 @@ TEST_F(TestTableScanPureDataTable, table_scan_pure_data_table)
   // table scan
   ObNewRowIterator *iter = nullptr;
   table_scan(access_service, iter);
+
 
   // clean env
   TestDmlCommon::delete_mocked_access_service(access_service);

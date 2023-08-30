@@ -51,9 +51,10 @@ public:
     GOTO_LABEL_INVALID = -1,
     GOTO_LABEL_EXIST,
     GOTO_LABEL_NONEXIST,
+    GOTO_LABEL_CG,
   };
   typedef common::hash::ObHashMap<int64_t,
-                  common::hash::HashMapPair<goto_label_flag,  jit::ObLLVMBasicBlock>,
+                  common::hash::HashMapPair<goto_label_flag,  std::pair<jit::ObLLVMBasicBlock, jit::ObLLVMBasicBlock>>,
                   common::hash::NoPthreadDefendMode> goto_label_map;
 
 public:
@@ -194,7 +195,7 @@ public:
     debug_mode_(session_info_.is_pl_debug_on() && func_ast.is_routine()),
     oracle_mode_(oracle_mode)
     {
-      goto_label_map_.create(func_ast.get_body()->get_stmts().count(), ObModIds::OB_PL);
+      goto_label_map_.create(func_ast.get_body()->get_stmts().count(), "PlCodeGen");
     }
 
   virtual ~ObPLCodeGenerator() {}
@@ -247,6 +248,7 @@ public:
                          bool in_notfound,
                          bool in_warning,
                          bool signal);
+  int clean_for_loop_cursor(bool is_from_exception);
   int raise_exception(jit::ObLLVMValue &exception,
                       jit::ObLLVMValue &error_code,
                       jit::ObLLVMValue &sql_staten,
@@ -336,6 +338,7 @@ public:
   const ObSqlExpression *get_expr(int64_t i) const { return i < 0 || i >= exprs_.count() ? NULL : exprs_.at(i); }
   ObSqlExpression *get_expr(int64_t i) { return i < 0 || i >= exprs_.count() ? NULL : exprs_.at(i); }
   int generate_goto_label(const ObPLStmt &stmt);
+  int generate_destruct_obj(const ObPLStmt &s, jit::ObLLVMValue &src_datum);
   int generate_out_param(
     const ObPLStmt &s,
     const ObIArray<InOutParam> &param_desc,
@@ -654,6 +657,7 @@ private:
                                            const ObObjAccessIdx &current_access,
                                            int64_t access_i,
                                            bool for_write,
+                                           bool is_assoc_array,
                                            jit::ObLLVMValue &current_value,
                                            jit::ObLLVMValue &ret_value_ptr,
                                            jit::ObLLVMBasicBlock& exit);
@@ -661,6 +665,14 @@ private:
                              int64_t param_count, const
                              common::ObString &func_name,
                              bool for_write);
+#ifdef OB_BUILD_ORACLE_PL
+  int build_nested_table_type(const ObNestedTableType &table_type, ObIArray<jit::ObLLVMType> &elem_type_array);
+  int build_assoc_array_type(const ObAssocArrayType &table_type, ObIArray<jit::ObLLVMType> &elem_type_array);
+  int build_varray_type(const ObVArrayType &array_type, ObIArray<jit::ObLLVMType> &elem_type_array);
+  int build_collection_type(const ObCollectionType &collection_type, ObIArray<jit::ObLLVMType> &elem_type_array);
+  int build_subtype(const ObUserDefinedSubType &subtype, ObIArray<jit::ObLLVMType> &elem_type_array);
+  int build_opaque_type(const ObUserDefinedType &opaque_type, ObIArray<jit::ObLLVMType> &elem_type_array);
+#endif
   int build_record_type(const ObRecordType &record_type, ObIArray<jit::ObLLVMType> &elem_type_array);
   int build_composite(ObIArray<jit::ObLLVMType> &elem_type_array);
   int generate_spi_calc(int64_t expr_idx,
@@ -723,6 +735,9 @@ public:
   int get_di_llvm_type(const ObPLDataType &pl_type, jit::ObLLVMDIType &di_type);
   int get_di_datum_type(const ObPLDataType &pl_type, jit::ObLLVMDIType &di_type);
   int generate_di_user_type(const ObUserDefinedType &type, uint32_t line);
+#ifdef OB_BUILD_ORACLE_PL
+  int generate_di_table_type(const ObNestedTableType &table_type, uint32_t line);
+#endif
   int generate_di_record_type(const ObRecordType &record_type, uint32_t line);
   int generate_di_argument();
   // generate debug info for variables which have a llvm::Value,

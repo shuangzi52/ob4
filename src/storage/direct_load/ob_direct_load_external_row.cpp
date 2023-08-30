@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_external_row.h"
@@ -14,6 +21,7 @@ namespace storage
 {
 using namespace common;
 using namespace blocksstable;
+using namespace table;
 
 ObDirectLoadExternalRow::ObDirectLoadExternalRow()
   : allocator_("TLD_ext_row"), buf_size_(0), buf_(nullptr)
@@ -24,6 +32,7 @@ ObDirectLoadExternalRow::ObDirectLoadExternalRow()
 void ObDirectLoadExternalRow::reset()
 {
   rowkey_datum_array_.reset();
+  seq_no_.reset();
   buf_size_ = 0;
   buf_ = nullptr;
   allocator_.reset();
@@ -32,6 +41,7 @@ void ObDirectLoadExternalRow::reset()
 void ObDirectLoadExternalRow::reuse()
 {
   rowkey_datum_array_.reuse();
+  seq_no_.reset();
   buf_size_ = 0;
   buf_ = nullptr;
   allocator_.reuse();
@@ -50,7 +60,7 @@ int64_t ObDirectLoadExternalRow::get_deep_copy_size() const
 int ObDirectLoadExternalRow::deep_copy(const ObDirectLoadExternalRow &src, char *buf,
                                        const int64_t len, int64_t &pos)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_deep_copy_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_deep_copy_time_us);
   int ret = OB_SUCCESS;
   const int64_t deep_copy_size = src.get_deep_copy_size();
   if (OB_UNLIKELY(!src.is_valid() || len - pos < deep_copy_size)) {
@@ -62,6 +72,7 @@ int ObDirectLoadExternalRow::deep_copy(const ObDirectLoadExternalRow &src, char 
       LOG_WARN("fail to deep copy datum array", KR(ret));
     } else {
       buf_size_ = src.buf_size_;
+      seq_no_ = src.seq_no_;
       buf_ = buf + pos;
       MEMCPY(buf + pos, src.buf_, buf_size_);
       pos += buf_size_;
@@ -71,9 +82,9 @@ int ObDirectLoadExternalRow::deep_copy(const ObDirectLoadExternalRow &src, char 
 }
 
 int ObDirectLoadExternalRow::from_datums(ObStorageDatum *datums, int64_t column_count,
-                                         int64_t rowkey_column_count)
+                                         int64_t rowkey_column_count, const ObTableLoadSequenceNo &seq_no)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(transfer_external_row_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, transfer_external_row_time_us);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(nullptr == datums || column_count < rowkey_column_count)) {
     ret = OB_INVALID_ARGUMENT;
@@ -98,6 +109,7 @@ int ObDirectLoadExternalRow::from_datums(ObStorageDatum *datums, int64_t column_
       } else {
         buf_ = buf;
         buf_size_ = buf_size;
+        seq_no_ = seq_no;
       }
     }
   }
@@ -106,7 +118,7 @@ int ObDirectLoadExternalRow::from_datums(ObStorageDatum *datums, int64_t column_
 
 int ObDirectLoadExternalRow::to_datums(ObStorageDatum *datums, int64_t column_count) const
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(transfer_datum_row_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, transfer_datum_row_time_us);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;
@@ -151,9 +163,9 @@ int ObDirectLoadExternalRow::get_rowkey(ObDatumRowkey &rowkey) const
 
 OB_DEF_SERIALIZE_SIMPLE(ObDirectLoadExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_serialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_serialize_time_us);
   int ret = OB_SUCCESS;
-  LST_DO_CODE(OB_UNIS_ENCODE, rowkey_datum_array_, buf_size_);
+  LST_DO_CODE(OB_UNIS_ENCODE, rowkey_datum_array_, seq_no_, buf_size_);
   if (OB_SUCC(ret) && OB_NOT_NULL(buf_)) {
     MEMCPY(buf + pos, buf_, buf_size_);
     pos += buf_size_;
@@ -163,10 +175,10 @@ OB_DEF_SERIALIZE_SIMPLE(ObDirectLoadExternalRow)
 
 OB_DEF_DESERIALIZE_SIMPLE(ObDirectLoadExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_deserialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_deserialize_time_us);
   int ret = OB_SUCCESS;
   reuse();
-  LST_DO_CODE(OB_UNIS_DECODE, rowkey_datum_array_, buf_size_);
+  LST_DO_CODE(OB_UNIS_DECODE, rowkey_datum_array_, seq_no_, buf_size_);
   if (OB_SUCC(ret)) {
     buf_ = buf + pos;
     pos += buf_size_;
@@ -176,9 +188,9 @@ OB_DEF_DESERIALIZE_SIMPLE(ObDirectLoadExternalRow)
 
 OB_DEF_SERIALIZE_SIZE_SIMPLE(ObDirectLoadExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_serialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_serialize_time_us);
   int64_t len = 0;
-  LST_DO_CODE(OB_UNIS_ADD_LEN, rowkey_datum_array_, buf_size_);
+  LST_DO_CODE(OB_UNIS_ADD_LEN, rowkey_datum_array_, seq_no_, buf_size_);
   len += buf_size_;
   return len;
 }

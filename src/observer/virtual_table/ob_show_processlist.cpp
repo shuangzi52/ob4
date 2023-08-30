@@ -17,6 +17,7 @@
 //#include "sql/engine/expr/ob_expr_promotion_util.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/privilege_check/ob_ora_priv_check.h"
+#include "lib/utility/ob_print_utils.h"
 
 using namespace oceanbase::common;
 namespace oceanbase
@@ -308,7 +309,8 @@ bool ObShowProcesslist::FillScanner::operator()(sql::ObSQLSessionMgr::Key key, O
             if (obmysql::COM_QUERY == sess_info->get_mysql_cmd() ||
                 obmysql::COM_STMT_EXECUTE == sess_info->get_mysql_cmd() ||
                 obmysql::COM_STMT_PREPARE == sess_info->get_mysql_cmd() ||
-                obmysql::COM_STMT_PREXECUTE == sess_info->get_mysql_cmd()) {
+                obmysql::COM_STMT_PREXECUTE == sess_info->get_mysql_cmd() ||
+                obmysql::COM_STMT_FETCH == sess_info->get_mysql_cmd()) {
               int len = sess_info->get_current_trace_id().to_string(trace_id_, sizeof(trace_id_));
               cur_row_->cells_[cell_idx].set_varchar(trace_id_, len);
               cur_row_->cells_[cell_idx].set_collation_type(default_collation);
@@ -377,6 +379,66 @@ bool ObShowProcesslist::FillScanner::operator()(sql::ObSQLSessionMgr::Key key, O
           }
           case EFFECTIVE_TENANT_ID: {
             cur_row_->cells_[cell_idx].set_int(sess_info->get_effective_tenant_id());
+            break;
+          }
+          case LEVEL: {
+            cur_row_->cells_[cell_idx].set_int(sess_info->get_control_info().level_);
+          } break;
+          case SAMPLE_PERCENTAGE: {
+            cur_row_->cells_[cell_idx].set_int((sess_info->get_control_info().sample_pct_ == -1)
+                                                  ? -1 : sess_info->get_control_info().sample_pct_*100);
+          } break;
+          case RECORD_POLICY: {
+            if (sess_info->get_control_info().rp_ ==
+                                    sql::FLTControlInfo::RecordPolicy::RP_ALL) {
+              cur_row_->cells_[cell_idx].set_varchar("ALL");
+              cur_row_->cells_[cell_idx].set_collation_type(ObCharset::get_default_collation(
+                                         ObCharset::get_default_charset()));
+            } else if (sess_info->get_control_info().rp_ ==
+                                     sql::FLTControlInfo::RecordPolicy::RP_ONLY_SLOW_QUERY) {
+              cur_row_->cells_[cell_idx].set_varchar("ONLY_SLOW_QUERY");
+              cur_row_->cells_[cell_idx].set_collation_type(ObCharset::get_default_collation(
+                                         ObCharset::get_default_charset()));
+            } else if (sess_info->get_control_info().rp_ ==
+                                      sql::FLTControlInfo::RecordPolicy::RP_SAMPLE_AND_SLOW_QUERY) {
+              cur_row_->cells_[cell_idx].set_varchar("SAMPLE_AND_SLOW_QUERY");
+              cur_row_->cells_[cell_idx].set_collation_type(ObCharset::get_default_collation(
+                                         ObCharset::get_default_charset()));
+            } else {
+              cur_row_->cells_[cell_idx].set_null();
+            }
+          } break;
+          case VID: {
+            if (OB_INVALID_ID == sess_info->get_vid()) {
+              cur_row_->cells_[cell_idx].set_null();
+            } else {
+              cur_row_->cells_[cell_idx].set_int(sess_info->get_vid());
+            }
+            break;
+          }
+          case VIP: {
+            if (sess_info->get_vip().empty()) {
+              cur_row_->cells_[cell_idx].set_null();
+            } else {
+              cur_row_->cells_[cell_idx].set_varchar(sess_info->get_vip());
+              cur_row_->cells_[cell_idx].set_collation_type(default_collation);
+            }
+            break;
+          }
+          case VPORT: {
+            if (!sess_info->get_vport()) {
+              cur_row_->cells_[cell_idx].set_null();
+            } else {
+              cur_row_->cells_[cell_idx].set_int(sess_info->get_vport());
+            }
+            break;
+          }
+          case IN_BYTES: {
+            cur_row_->cells_[cell_idx].set_int(sess_info->get_in_bytes());
+            break;
+          }
+          case OUT_BYTES: {
+            cur_row_->cells_[cell_idx].set_int(sess_info->get_out_bytes());
             break;
           }
           default: {

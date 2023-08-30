@@ -23,6 +23,7 @@
 #include "pl/ob_pl_resolver.h"
 #include "pl/ob_pl_code_generator.h"
 #include "pl/ob_pl_package.h"
+#include "lib/alloc/malloc_hook.h"
 
 namespace oceanbase {
 using namespace common;
@@ -65,6 +66,31 @@ int ObPLCompiler::init_anonymous_ast(
         CK (OB_NOT_NULL(user_type));
         OX (pl_type.reset());
         OX (pl_type = *user_type);
+#ifdef OB_BUILD_ORACLE_PL
+      } else if (PL_REF_CURSOR_TYPE == param.get_meta().get_extend_type()) {
+        pl_type.reset();
+        pl_type.set_type(pl::PL_REF_CURSOR_TYPE);
+        pl_type.set_type_from(pl::PL_TYPE_SYS_REFCURSOR);
+      } else if (PL_NESTED_TABLE_TYPE == param.get_meta().get_extend_type()) {
+        ObPLCollection *coll = reinterpret_cast<ObPLCollection *>(param.get_ext());
+        ObNestedTableType *nested_type = NULL;
+        ObPLDataType element_type;
+        if (OB_ISNULL(nested_type =
+          reinterpret_cast<ObNestedTableType*>(allocator.alloc(sizeof(ObNestedTableType))))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("failed to alloc memory for ObNestedTableType", K(ret));
+        }
+        CK (OB_NOT_NULL(coll));
+        OX (new(nested_type)ObNestedTableType());
+        OX (element_type.reset());
+        OX (element_type.set_data_type(coll->get_element_type()));
+        OX (nested_type->set_element_type(element_type));
+        OX (nested_type->set_user_type_id(
+          func_ast.get_user_type_table().generate_user_type_id(OB_INVALID_ID)));
+        OZ (func_ast.get_user_type_table().add_type(nested_type));
+        OZ (func_ast.get_user_type_table().add_external_type(nested_type));
+        OX (pl_type = *nested_type);
+#endif
       } else {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN(
@@ -159,6 +185,7 @@ int ObPLCompiler::compile(
                func.get_di_helper(),
                lib::is_oracle_mode()) {
   #endif
+        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "PlCodeGen"));
         if (OB_FAIL(cg.init())) {
           LOG_WARN("failed to init code generator", K(ret));
         } else if (OB_FAIL(cg.generate(func))) {
@@ -336,7 +363,7 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
     if (OB_SUCC(ret)) {
       ObString body = proc->get_routine_body(); //获取body字符串
       ObDataTypeCastParams dtc_params = session_info_.get_dtc_params();
-      ObPLParser parser(allocator_, dtc_params.connection_collation_);
+      ObPLParser parser(allocator_, dtc_params.connection_collation_, session_info_.get_sql_mode());
       if (OB_FAIL(ObSQLUtils::convert_sql_text_from_schema_for_resolve(
                     allocator_, dtc_params, body))) {
         LOG_WARN("fail to do charset convert", K(ret), K(body));
@@ -385,6 +412,7 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
                func.get_di_helper(),
                lib::is_oracle_mode()) {
   #endif
+        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "PlCodeGen"));
         if (OB_FAIL(cg.init())) {
           LOG_WARN("failed to init code generator", K(ret));
         } else if (OB_FAIL(cg.generate(func))) {
@@ -426,23 +454,18 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
         session_info_.set_database_id(old_db_id);
       }
     }
-
-    OZ (update_schema_object_dep_info(func_ast,
-                                      proc->get_tenant_id(),
-                                      proc->get_routine_id(),
-                                      proc->get_schema_version(),
-                                      proc->get_owner_id(),
-                                      proc->get_object_type()));
     int64_t final_end = ObTimeUtility::current_time();
     LOG_INFO(">>>>>>>>Final Time: ", K(id), K(final_end - cg_end));
   }
   return ret;
 }
 
-int ObPLCompiler::update_schema_object_dep_info(ObPLCompileUnitAST &ast,
+int ObPLCompiler::update_schema_object_dep_info(ObIArray<ObSchemaObjVersion> &dp_tbl,
                                                 uint64_t tenant_id,
-                                                uint64_t dep_obj_id, uint64_t schema_version,
-                                                uint64_t owner_id, ObObjectType dep_obj_type)
+                                                uint64_t owner_id,
+                                                uint64_t dep_obj_id,
+                                                uint64_t schema_version,
+                                                ObObjectType dep_obj_type)
 {
   int ret = OB_SUCCESS;
   ObMySQLProxy *sql_proxy = nullptr;
@@ -470,7 +493,7 @@ int ObPLCompiler::update_schema_object_dep_info(ObPLCompileUnitAST &ast,
                                               dep_obj_type));
       ObSArray<ObDependencyInfo> dep_infos;
       ObString dummy;
-      OZ (ObDependencyInfo::collect_dep_infos(ast.get_dependency_table(),
+      OZ (ObDependencyInfo::collect_dep_infos(dp_tbl,
                                               dep_infos,
                                               dep_obj_type,
                                               0, dummy, dummy));
@@ -567,7 +590,7 @@ int ObPLCompiler::analyze_package(const ObString &source,
   CK (!source.empty());
   CK (package_ast.is_inited());
   if (OB_SUCC(ret)) {
-    ObPLParser parser(allocator_, session_info_.get_local_collation_connection());
+    ObPLParser parser(allocator_, session_info_.get_local_collation_connection(), session_info_.get_sql_mode());
     ObStmtNodeTree *parse_tree = NULL;
     CHECK_COMPATIBILITY_MODE(&session_info_);
     ObPLResolver resolver(allocator_,
@@ -704,6 +727,7 @@ int ObPLCompiler::compile_package(const ObPackageInfo &package_info,
                package.get_di_helper(),
                lib::is_oracle_mode()) {
 #endif
+      lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "PlCodeGen"));
       OZ (cg.init());
       OZ (cg.generate(package));
     }
@@ -713,11 +737,11 @@ int ObPLCompiler::compile_package(const ObPackageInfo &package_info,
   OX (package.set_can_cached(package_ast.get_can_cached()));
   OX (package_ast.get_serially_reusable() ? package.set_serially_reusable() : void(NULL));
   session_info_.set_for_trigger_package(saved_trigger_flag);
-  OZ (update_schema_object_dep_info(package_ast,
+  OZ (update_schema_object_dep_info(package_ast.get_dependency_table(),
                                     package_info.get_tenant_id(),
+                                    package_info.get_owner_id(),
                                     package_info.get_package_id(),
                                     package_info.get_schema_version(),
-                                    package_info.get_owner_id(),
                                     package_info.get_object_type()));
   if (OB_SUCC(ret)) {
     ObErrorInfo error_info;
@@ -1039,6 +1063,88 @@ int ObPLCompiler::compile_types(const ObIArray<const ObUserDefinedType*> &types,
         }
       }
         break;
+#ifdef OB_BUILD_ORACLE_PL
+      case PL_NESTED_TABLE_TYPE: {
+        ObNestedTableType *table_type = static_cast<ObNestedTableType *>(alloc.alloc(sizeof(ObNestedTableType)));
+        if (OB_ISNULL(table_type)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate memory failed", K(ret), KPC(ast_type), K(i));
+        } else {
+          new (table_type) ObNestedTableType();
+          if (OB_FAIL(table_type->deep_copy(alloc, *(static_cast<ObNestedTableType *>(ast_type))))) {
+            LOG_WARN("pl user type deep copy failed", K(ret), KPC(ast_type), K(i));
+          } else {
+            user_type = table_type;
+          }
+        }
+      }
+        break;
+      case PL_ASSOCIATIVE_ARRAY_TYPE: {
+        ObAssocArrayType *assoc_array_type = static_cast<ObAssocArrayType *>(alloc.alloc(sizeof(ObAssocArrayType)));
+        if (OB_ISNULL(assoc_array_type)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate memory failed", K(ret), KPC(ast_type), K(i));
+        } else {
+          new (assoc_array_type) ObAssocArrayType();
+          if (OB_FAIL(assoc_array_type->deep_copy(alloc, *(static_cast<ObAssocArrayType *>(ast_type))))) {
+            LOG_WARN("pl user type deep copy failed", K(ret), KPC(ast_type), K(i));
+          } else {
+            user_type = assoc_array_type;
+          }
+        }
+      }
+        break;
+      case PL_VARRAY_TYPE: {
+        ObVArrayType *varray_type = static_cast<ObVArrayType *>(alloc.alloc(sizeof(ObVArrayType)));
+        if (OB_ISNULL(varray_type)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate memory for varray type failed", K(ret), K(varray_type), KPC(ast_type), K(i));
+        } else {
+          new (varray_type) ObVArrayType();
+          if (OB_FAIL(varray_type->deep_copy(alloc, *(static_cast<ObVArrayType *>(ast_type))))) {
+            LOG_WARN("deep copy varray type failed", K(ret), KPC(ast_type), K(i));
+          } else {
+            user_type = varray_type;
+          }
+        }
+      }
+        break;
+      case PL_SUBTYPE:  {
+        ObUserDefinedSubType *subtype =
+          static_cast<ObUserDefinedSubType*>(alloc.alloc(sizeof(ObUserDefinedSubType)));
+        if (OB_ISNULL(subtype)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("failed to allocate memory for user define sub type",
+                   K(ret), K(subtype), KPC(ast_type), K(i));
+        } else {
+          new(subtype)ObUserDefinedSubType();
+          OZ (subtype->deep_copy(alloc,
+                                 *(static_cast<ObUserDefinedSubType*>(ast_type))),
+                                 ast_type, i);
+          OX (user_type = subtype);
+        }
+      }
+        break;
+      case PL_OPAQUE_TYPE:  {
+        ObOpaqueType *opaqua_type = static_cast<ObOpaqueType *>(alloc.alloc(sizeof(ObOpaqueType)));
+        if (OB_ISNULL(opaqua_type)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate memory for cursor type failed",
+                   K(ret),
+                   K(opaqua_type),
+                   KPC(ast_type),
+                   K(i));
+        } else {
+          new (opaqua_type) ObOpaqueType();
+          if (OB_FAIL(opaqua_type->deep_copy(alloc, *(static_cast<ObOpaqueType *>(ast_type))))) {
+            LOG_WARN("deep copy ref cursor type failed", K(ret), KPC(ast_type), K(i));
+          } else {
+            user_type = opaqua_type;
+          }
+        }
+      }
+        break;
+#endif
       default: {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid pl type", K(ret), KPC(ast_type), K(i));
@@ -1121,6 +1227,7 @@ int ObPLCompiler::compile_subprogram_table(common::ObIAllocator &allocator,
                    routine->get_di_helper(),
                    lib::is_oracle_mode()) {
 #endif
+            lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "PlCodeGen"));
             if (OB_FAIL(cg.init())) {
               LOG_WARN("init code generator failed", K(ret));
             } else if (OB_FAIL(cg.generate(*routine))) {

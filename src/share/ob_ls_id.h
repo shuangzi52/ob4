@@ -69,8 +69,10 @@ public:
   // compare operator
   bool operator == (const ObLSID &other) const { return id_ == other.id_; }
   bool operator >  (const ObLSID &other) const { return id_ > other.id_; }
+  bool operator >= (const ObLSID &other) const { return id_ >= other.id_; }
   bool operator != (const ObLSID &other) const { return id_ != other.id_; }
   bool operator <  (const ObLSID &other) const { return id_ < other.id_; }
+  bool operator <= (const ObLSID &other) const { return id_ <= other.id_; }
   int compare(const ObLSID &other) const
   {
     if (id_ == other.id_) {
@@ -86,6 +88,7 @@ public:
   int hash(uint64_t &hash_val) const;
   NEED_SERIALIZE_AND_DESERIALIZE;
   TO_STRING_KV(K_(id));
+
 private:
   int64_t id_;
 };

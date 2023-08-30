@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_fast_heap_table_builder.h"
@@ -29,6 +36,7 @@ ObDirectLoadFastHeapTableBuildParam::ObDirectLoadFastHeapTableBuildParam()
   : snapshot_version_(0),
     datum_utils_(nullptr),
     col_descs_(nullptr),
+    cmp_funcs_(nullptr),
     insert_table_ctx_(nullptr),
     fast_heap_table_ctx_(nullptr),
     dml_row_handler_(nullptr),
@@ -43,8 +51,8 @@ ObDirectLoadFastHeapTableBuildParam::~ObDirectLoadFastHeapTableBuildParam()
 bool ObDirectLoadFastHeapTableBuildParam::is_valid() const
 {
   return tablet_id_.is_valid() && snapshot_version_ > 0 && table_data_desc_.is_valid() &&
-         nullptr != col_descs_ && nullptr != insert_table_ctx_ && nullptr != fast_heap_table_ctx_ &&
-         nullptr != dml_row_handler_ && nullptr != datum_utils_;
+         nullptr != col_descs_ && nullptr != cmp_funcs_ && nullptr != insert_table_ctx_ &&
+         nullptr != fast_heap_table_ctx_ && nullptr != dml_row_handler_ && nullptr != datum_utils_;
 }
 
 /**
@@ -53,6 +61,7 @@ bool ObDirectLoadFastHeapTableBuildParam::is_valid() const
 
 ObDirectLoadFastHeapTableBuilder::ObDirectLoadFastHeapTableBuilder()
   : allocator_("TLD_FastHTable"),
+    slice_writer_allocator_("TLD_SliceWriter"),
     fast_heap_table_tablet_ctx_(nullptr),
     slice_writer_(nullptr),
     row_count_(0),
@@ -65,12 +74,13 @@ ObDirectLoadFastHeapTableBuilder::~ObDirectLoadFastHeapTableBuilder()
 {
   if (nullptr != slice_writer_) {
     slice_writer_->~ObSSTableInsertSliceWriter();
-    allocator_.free(slice_writer_);
+    slice_writer_allocator_.free(slice_writer_);
     slice_writer_ = nullptr;
   }
   for (int64_t i = 0; i < column_stat_array_.count(); ++i) {
     ObOptOSGColumnStat *col_stat = column_stat_array_.at(i);
     col_stat->~ObOptOSGColumnStat();
+    allocator_.free(col_stat);
     col_stat = nullptr;
   }
 }
@@ -104,9 +114,8 @@ int ObDirectLoadFastHeapTableBuilder::collect_obj(const ObDatumRow &datum_row)
   for (int64_t i = 0; OB_SUCC(ret) && i < param_.table_data_desc_.column_count_; i++) {
     const ObStorageDatum &datum =
       datum_row.storage_datums_[i + extra_rowkey_cnt + 1];
-    const common::ObCmpFunc &cmp_func = param_.datum_utils_->get_cmp_funcs().at(
-                                                i + extra_rowkey_cnt + 1).get_cmp_func();
     const ObColDesc &col_desc = param_.col_descs_->at(i + 1);
+    const ObCmpFunc &cmp_func = param_.cmp_funcs_->at(i + 1).get_cmp_func();
     ObOptOSGColumnStat *col_stat = column_stat_array_.at(i);
     bool is_valid = ObColumnStatParam::is_valid_opt_col_type(col_desc.col_type_.get_type());
     if (col_stat != nullptr && is_valid) {
@@ -132,6 +141,7 @@ int ObDirectLoadFastHeapTableBuilder::init(const ObDirectLoadFastHeapTableBuildP
   } else {
     param_ = param;
     allocator_.set_tenant_id(MTL_ID());
+    slice_writer_allocator_.set_tenant_id(MTL_ID());
     if (param_.online_opt_stat_gather_ && OB_FAIL(init_sql_statistics())) {
       LOG_WARN("fail to inner init sql statistics", KR(ret));
     } else if (OB_FAIL(param_.fast_heap_table_ctx_->get_tablet_context(
@@ -163,7 +173,7 @@ int ObDirectLoadFastHeapTableBuilder::init_sstable_slice_ctx()
                fast_heap_table_tablet_ctx_->get_target_tablet_id(),
                write_ctx_.start_seq_,
                slice_writer_,
-               allocator_))) {
+               slice_writer_allocator_))) {
     LOG_WARN("fail to construct sstable slice writer", KR(ret));
   }
   return ret;
@@ -179,7 +189,7 @@ int ObDirectLoadFastHeapTableBuilder::switch_sstable_slice()
     LOG_WARN("fail to close sstable slice builder", KR(ret));
   } else {
     slice_writer_->~ObSSTableInsertSliceWriter();
-    allocator_.reuse();
+    slice_writer_allocator_.reuse();
     if (OB_FAIL(init_sstable_slice_ctx())) {
       LOG_WARN("fail to init sstable slice ctx", KR(ret));
     }
@@ -188,9 +198,11 @@ int ObDirectLoadFastHeapTableBuilder::switch_sstable_slice()
 }
 
 int ObDirectLoadFastHeapTableBuilder::append_row(const ObTabletID &tablet_id,
+                                                 const table::ObTableLoadSequenceNo &seq_no,
                                                  const ObDatumRow &datum_row)
 {
   UNUSED(tablet_id);
+  UNUSED(seq_no);
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;

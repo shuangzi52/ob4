@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -72,9 +80,11 @@ public:
       ctx_(ctx),
       mem_ctx_(mem_ctx),
       index_dir_id_(-1),
-      data_dir_id_(-1)
+      data_dir_id_(-1),
+      heap_table_allocator_("TLD_MHTCompact")
   {
     ctx_->inc_ref_count();
+    heap_table_allocator_.set_tenant_id(MTL_ID());
   }
   virtual ~CompactTaskProcessor()
   {
@@ -87,7 +97,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(table_compactor_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, table_compactor_time_us);
     int ret = OB_SUCCESS;
     // alloc dir id
     if (OB_FAIL(mem_ctx_->file_mgr_->alloc_dir(index_dir_id_))) {
@@ -319,6 +329,7 @@ int ObTableLoadMultipleHeapTableCompactor::inner_init()
   mem_ctx_.column_count_ = param_->column_count_;
   mem_ctx_.dml_row_handler_ = store_ctx_->error_row_handler_;
   mem_ctx_.file_mgr_ = store_ctx_->tmp_file_mgr_;
+  mem_ctx_.dup_action_ = param_->dup_action_;
 
   if (OB_SUCC(ret)) {
     if (OB_FAIL(mem_ctx_.init())) {

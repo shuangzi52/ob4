@@ -37,30 +37,27 @@ class ObRequest;
 namespace omt
 {
 class ObTenantConfig;
-#define VIRTUAL_TENANTS_CPU_RESERVED_QUOTA \
-  (GCONF.user_location_cpu_quota() + GCONF.sys_location_cpu_quota() \
-  + GCONF.root_location_cpu_quota() + GCONF.core_location_cpu_quota() \
-  + OB_SVR_BLACKLIST_CPU + OB_DATA_CPU + OB_DTL_CPU + OB_DIAG_CPU)
 
 struct ObCtxMemConfig
 {
   ObCtxMemConfig()
-    : ctx_id_(0), idle_size_(0) {}
+    : ctx_id_(0), idle_size_(0), limit_(INT64_MAX) {}
   uint64_t ctx_id_;
   int64_t idle_size_;
-  TO_STRING_KV(K_(ctx_id), K_(idle_size));
+  int64_t limit_;
+  TO_STRING_KV(K_(ctx_id), K_(idle_size), K_(limit));
 };
 
 class ObICtxMemConfigGetter
 {
 public:
-  virtual int get(common::ObIArray<ObCtxMemConfig> &configs) = 0;
+  virtual int get(int64_t tenant_id, int64_t tenant_limit, common::ObIArray<ObCtxMemConfig> &configs) = 0;
 };
 
 class ObCtxMemConfigGetter : public ObICtxMemConfigGetter
 {
 public:
-  virtual int get(common::ObIArray<ObCtxMemConfig> &configs);
+  virtual int get(int64_t tenant_id, int64_t tenant_limit, common::ObIArray<ObCtxMemConfig> &configs);
 };
 
 // Forward declearation
@@ -109,14 +106,19 @@ public:
   int convert_real_to_hidden_sys_tenant();
   int update_tenant_cpu(const uint64_t tenant_id, const double min_cpu, const double max_cpu);
   int update_tenant_memory(const uint64_t tenant_id, const int64_t mem_limit, int64_t &allowed_mem_limit);
+  int update_tenant_memory(const share::ObUnitInfoGetter::ObTenantConfig &unit,
+                           const int64_t extra_memory = 0);
   int update_tenant_log_disk_size(const uint64_t tenant_id,
-                                  const int64_t expected_log_disk_size);
+                                  const int64_t old_log_disk_size,
+                                  const int64_t new_log_disk_size,
+                                  int64_t &allowed_log_disk_size);
   int modify_tenant_io(const uint64_t tenant_id, const share::ObUnitConfig &unit_config);
   int update_tenant_config(uint64_t tenant_id);
   int update_palf_config();
   int update_tenant_dag_scheduler_config();
   int get_tenant(const uint64_t tenant_id, ObTenant *&tenant) const;
   int get_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
+  int get_active_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
   int update_tenant(uint64_t tenant_id, std::function<int(ObTenant&)> &&func);
   int recv_request(const uint64_t tenant_id, rpc::ObRequest &req);
   int update_tenant_freezer_mem_limit(const uint64_t tenant_id,
@@ -136,6 +138,7 @@ public:
   inline int64_t get_times_of_workers() const;
   int get_tenant_cpu_usage(const uint64_t tenant_id, double &usage) const;
   int get_tenant_worker_time(const uint64_t tenant_id, int64_t &worker_time) const;
+  int get_tenant_cpu_time(const uint64_t tenant_id, int64_t &rusage_time) const;
   int get_tenant_cpu(
       const uint64_t tenant_id,
       double &min_cpu, double &max_cpu) const;
@@ -176,6 +179,9 @@ protected:
   int remove_tenant(const uint64_t tenant_id, bool &remove_tenant_succ);
   uint32_t get_tenant_lock_bucket_idx(const uint64_t tenant_id);
   int update_tenant_unit_no_lock(const share::ObUnitInfoGetter::ObTenantConfig &unit);
+  int construct_allowed_unit_config(const int64_t allowed_log_disk_size,
+                                    const share::ObUnitInfoGetter::ObTenantConfig &expected_unit_config,
+                                    share::ObUnitInfoGetter::ObTenantConfig &allowed_unit);
 
 protected:
       static const int DEL_TRY_TIMES = 30;
@@ -250,6 +256,20 @@ bool ObMultiTenant::has_synced() const
 {
   return has_synced_;
 }
+
+class ObSharedTimer
+{
+public:
+  ObSharedTimer() : tg_id_(-1) {}
+  static int mtl_init(ObSharedTimer *&st);
+  static int mtl_start(ObSharedTimer *&st);
+  static void mtl_stop(ObSharedTimer *&st);
+  static void mtl_wait(ObSharedTimer *&st);
+  void destroy();
+  int get_tg_id() const { return tg_id_; }
+private:
+  int tg_id_;
+};
 
 } // end of namespace omt
 } // end of namespace oceanbase

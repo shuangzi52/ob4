@@ -43,14 +43,13 @@ public:
   ObDASCtx(common::ObIAllocator &allocator)
     : table_locs_(allocator),
       external_table_locs_(allocator),
-      schema_guard_(nullptr),
+      sql_ctx_(nullptr),
       location_router_(allocator),
       das_factory_(allocator),
       related_tablet_map_(allocator),
       allocator_(allocator),
-      self_schema_guard_(false),
       snapshot_(),
-      savepoint_(0),
+      savepoint_(),
       del_ctx_list_(allocator),
       jump_read_group_id_(-1),
       flags_(0)
@@ -60,16 +59,13 @@ public:
   }
   ~ObDASCtx()
   {
-    if (schema_guard_ != nullptr && self_schema_guard_) {
-      schema_guard_->~ObSchemaGetterGuard();
-      schema_guard_ = nullptr;
-    }
   }
 
   int init(const ObPhysicalPlan &plan, ObExecContext &ctx);
   ObDASTableLoc *get_table_loc_by_id(uint64_t table_loc_id, uint64_t ref_table_id);
   ObDASTableLoc *get_external_table_loc_by_id(uint64_t table_loc_id, uint64_t ref_table_id);
   DASTableLocList &get_table_loc_list() { return table_locs_; }
+  const DASTableLocList &get_table_loc_list() const { return table_locs_; }
   DASDelCtxList& get_das_del_ctx_list() {return  del_ctx_list_;}
   DASTableLocList &get_external_table_loc_list() { return external_table_locs_; }
   int extended_tablet_loc(ObDASTableLoc &table_loc,
@@ -85,12 +81,12 @@ public:
   int get_das_tablet_mapper(const uint64_t ref_table_id,
                             ObDASTabletMapper &tablet_mapper,
                             const DASTableIDArrayWrap *related_table_ids = nullptr);
-  bool has_same_lsid(share::ObLSID *lsid);
+  int get_all_lsid(share::ObLSArray &ls_ids);
   int64_t get_related_tablet_cnt() const;
   void set_snapshot(const transaction::ObTxReadSnapshot &snapshot) { snapshot_ = snapshot; }
   transaction::ObTxReadSnapshot &get_snapshot() { return snapshot_; }
-  int64_t get_savepoint() const { return savepoint_; }
-  void set_savepoint(const int64_t savepoint) { savepoint_ = savepoint; }
+  transaction::ObTxSEQ get_savepoint() const { return savepoint_; }
+  void set_savepoint(const transaction::ObTxSEQ savepoint) { savepoint_ = savepoint; }
   ObDASLocationRouter &get_location_router() { return location_router_; }
   int build_related_tablet_loc(ObDASTabletLoc &tablet_loc);
   int build_related_table_loc(ObDASTableLoc &table_loc);
@@ -100,9 +96,10 @@ public:
     table_locs_.clear();
     related_tablet_map_.clear();
     external_table_locs_.clear();
+    same_server_ = 1;
   }
   ObDASTaskFactory &get_das_factory() { return das_factory_; }
-  ObSchemaGetterGuard *&get_schema_guard() { return schema_guard_; }
+  void set_sql_ctx(ObSqlCtx *sql_ctx) { sql_ctx_ = sql_ctx; }
   DASRelatedTabletMap &get_related_tablet_map() { return related_tablet_map_; }
   bool is_partition_hit();
   void unmark_need_check_server();
@@ -125,14 +122,13 @@ private:
    *  external_cached_table_locs_ are "cached values" which only used by QC and do not need to serialized to SQC.
    */
   DASTableLocList external_table_locs_;
-  share::schema::ObSchemaGetterGuard *schema_guard_;
+  ObSqlCtx *sql_ctx_;
   ObDASLocationRouter location_router_;
   ObDASTaskFactory das_factory_;
   DASRelatedTabletMap related_tablet_map_;
   common::ObIAllocator &allocator_;
-  bool self_schema_guard_;
   transaction::ObTxReadSnapshot snapshot_;           // Mvcc snapshot
-  int64_t savepoint_;                                // DML savepoint
+  transaction::ObTxSEQ savepoint_;                   // DML savepoint
   //@todo: save snapshot version
   DASDelCtxList del_ctx_list_;
 public:

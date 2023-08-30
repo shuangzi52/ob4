@@ -20,7 +20,6 @@ ob_set_subtarget(ob_share allocator
   allocator/ob_tenant_mutil_allocator_mgr.cpp
 )
 
-
 ob_set_subtarget(ob_share backup
   backup/ob_archive_piece.cpp
   backup/ob_archive_struct.cpp
@@ -31,18 +30,12 @@ ob_set_subtarget(ob_share backup
   backup/ob_backup_clean_struct.cpp
   backup/ob_backup_clean_util.cpp
   backup/ob_backup_connectivity.cpp
-  backup/ob_backup_file_lock_mgr.cpp
-  backup/ob_backup_info_mgr.cpp
   backup/ob_backup_io_adapter.cpp
-  backup/ob_backup_lease_info_mgr.cpp
-  backup/ob_backup_manager.cpp
-  backup/ob_backup_operator.cpp
   backup/ob_backup_path.cpp
+  backup/ob_backup_server_mgr.cpp
   backup/ob_backup_struct.cpp
-  backup/ob_log_archive_backup_info_mgr.cpp
   backup/ob_tenant_archive_mgr.cpp
   backup/ob_tenant_archive_round.cpp
-  backup/ob_backup_data_store.cpp
   backup/ob_backup_data_table_operator.cpp
   backup/ob_backup_helper.cpp
   backup/ob_archive_persist_helper.cpp
@@ -52,6 +45,9 @@ ob_set_subtarget(ob_share backup
   backup/ob_archive_checkpoint.cpp
   backup/ob_archive_path.cpp
   backup/ob_backup_config.cpp
+  backup/ob_log_restore_config.cpp
+  backup/ob_log_restore_struct.cpp
+  backup/ob_archive_checkpoint_mgr.cpp
 )
 
 ob_set_subtarget(ob_share cache
@@ -95,7 +91,7 @@ ob_set_subtarget(ob_share common
   ob_disk_usage_table_operator.cpp
   ob_dml_sql_splicer.cpp
   ob_encryption_struct.cpp
-  ob_encryption_util.cpp
+  ob_encryption_util_os.cpp
   ob_errno.cpp
   ob_event_history_table_operator.cpp
   ob_tenant_id_schema_version.cpp
@@ -168,7 +164,6 @@ ob_set_subtarget(ob_share common
   ob_time_zone_info_manager.cpp
   ob_unique_index_row_transformer.cpp
   ob_unit_getter.cpp
-  ob_unit_stat_table_operator.cpp
   ob_unit_table_operator.cpp
   ob_upgrade_utils.cpp
   ob_virtual_table_iterator.cpp
@@ -185,6 +180,7 @@ ob_set_subtarget(ob_share common
   ob_inner_table_operator.cpp
   ob_standby_upgrade.cpp
   ob_primary_standby_service.cpp
+  ob_common_id.cpp
   ob_cluster_event_history_table_operator.cpp
   scn.cpp
   ob_throttling_utils.cpp
@@ -241,15 +237,16 @@ ob_set_subtarget(ob_share common_mixed
   table/ob_table.cpp
   table/ob_table_rpc_struct.cpp
   table/ob_table_load_define.cpp
-  table/ob_table_load_rpc_struct.cpp
-  table/ob_table_load_shared_allocator.cpp
   table/ob_table_load_row.cpp
+  transfer/ob_transfer_info.cpp
+  transfer/ob_transfer_task_operator.cpp
   detect/ob_detect_manager.cpp
   detect/ob_detectable_id.cpp
   detect/ob_detect_callback.cpp
   detect/ob_detect_rpc_proxy.cpp
   detect/ob_detect_rpc_processor.cpp
   detect/ob_detect_manager_utils.cpp
+  table/ob_table_load_sql_statistics.cpp
 )
 
 ob_set_subtarget(ob_share tablet
@@ -260,6 +257,7 @@ ob_set_subtarget(ob_share tablet
   tablet/ob_tablet_to_ls_iterator.cpp
   tablet/ob_tablet_filter.cpp
   tablet/ob_tablet_to_table_history_operator.cpp
+  tablet/ob_tenant_tablet_to_ls_map.cpp
 )
 
 ob_set_subtarget(ob_share config
@@ -477,6 +475,31 @@ ob_set_subtarget(ob_share unit
   unit/ob_unit_config.cpp
   unit/ob_unit_resource.cpp
   unit/ob_unit_info.cpp
+)
+ob_set_subtarget(ob_share balance
+  ob_balance_define.cpp
+  balance/ob_balance_job_table_operator.cpp
+  balance/ob_balance_task_table_operator.cpp
+  balance/ob_balance_task_helper_operator.cpp
+)
+
+if (OB_ERRSIM)
+ ob_set_subtarget(ob_share errsim_module
+   errsim_module/ob_tenant_errsim_module_mgr.cpp
+   errsim_module/ob_tenant_errsim_event_mgr.cpp
+   errsim_module/ob_errsim_module_interface_imp.cpp
+ )
+endif()
+
+ob_set_subtarget(ob_share throttle
+  throttle/ob_throttle_common.cpp
+)
+
+ob_set_subtarget(ob_share wr
+  wr/ob_wr_service.cpp
+  wr/ob_wr_task.cpp
+  wr/ob_wr_snapshot_rpc_processor.cpp
+  wr/ob_wr_collector.cpp
 )
 
 ob_add_new_object_target(ob_share ob_share)

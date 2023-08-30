@@ -86,6 +86,7 @@
 #define N_PARTITION_EXPR "partition_express"
 #define N_SUBPARTITION_EXPR "partition_express"
 #define N_IDX "idx"
+#define N_TYPE_VALUE "type_value"
 #define N_CHILDREN_OPS "child_operators"
 #define N_PHY_OP_ID "phy_operator_id"
 #define N_CHILDREN_NUM "child_operators_num"
@@ -843,6 +844,11 @@
 #define N_DES_ENCRYPT "des_encrypt"
 #define N_ENCRYPT "encrypt"
 
+//*********** for spm
+#define N_SPM_LOAD_PLANS_FROM_PLAN_CACHE "spm_load_plans_from_plan_cache"
+#define N_SPM_ALTER_BASELINE "spm_alter_baseline"
+#define N_SPM_DROP_BASELINE "spm_drop_baseline"
+//*********** for spm end
 
 #define N_UID "uid"
 #define N_PL_INTEGER_CHECKER "pl_integer_checker"
@@ -1061,4 +1067,5 @@
 #define N_XMLCAST                           "xmlcast"
 #define N_UPDATEXML                         "updatexml"
 #define N_NLS_INITCAP                       "nls_initcap"
+#define N_TEMP_TABLE_SSID                   "temp_table_ssid"
 #endif //OCEANBASE_LIB_OB_NAME_DEF_H_

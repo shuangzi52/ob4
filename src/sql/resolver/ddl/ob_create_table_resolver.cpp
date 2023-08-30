@@ -56,9 +56,10 @@ ObCreateTableResolver::ObCreateTableResolver(ObResolverParams &params)
       column_name_set_(),
       if_not_exist_(false),
       is_oracle_temp_table_(false),
+      is_temp_table_pk_added_(false),
       index_arg_(),
       current_index_name_set_(),
-      cur_column_group_id_(0)
+      cur_udt_set_id_(0)
 {
 }
 
@@ -71,9 +72,9 @@ uint64_t ObCreateTableResolver::gen_column_id()
   return ++cur_column_id_;
 }
 
-uint64_t ObCreateTableResolver::gen_column_group_id()
+uint64_t ObCreateTableResolver::gen_udt_set_id()
 {
-  return ++cur_column_group_id_;
+  return ++cur_udt_set_id_;
 }
 
 int64_t ObCreateTableResolver::get_primary_key_size() const
@@ -402,6 +403,7 @@ int ObCreateTableResolver::add_pk_key_for_oracle_temp_table(ObArray<ObColumnReso
     if (OB_FAIL(add_primary_key_part(key_name, stats, pk_data_length))) {
       SQL_RESV_LOG(WARN, "add primary key part failed", K(ret), K(key_name));
     }
+    is_temp_table_pk_added_ = true;
   }
   return ret;
 }
@@ -483,6 +485,9 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
             case T_TEMPORARY:
               if (create_table_node->children_[5] != NULL) { //临时表不支持分区
                 ret = OB_ERR_TEMPORARY_TABLE_WITH_PARTITION;
+              } else if (lib::is_mysql_mode()) {
+                ret = OB_NOT_SUPPORTED;
+                LOG_USER_ERROR(OB_NOT_SUPPORTED, "MySQL compatible temporary table");
               } else {
                 is_temporary_table = true;
                 is_oracle_temp_table_ = (is_mysql_mode == false);
@@ -794,6 +799,11 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
       } else if (is_uk_uk_duplicate(uk_idx, index_arg_list)) {
         ret = OB_ERR_UK_PK_DUPLICATE;
         SQL_RESV_LOG(WARN, "uk and pk is duplicate", K(ret));
+      }
+    }
+    if (OB_SUCC(ret)){
+      if (OB_FAIL(deep_copy_string_in_part_expr(create_table_stmt))) {
+        LOG_WARN("failed to deep copy string in part expr");
       }
     }
   }
@@ -1411,7 +1421,7 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
           }
 
           if (OB_SUCC(ret) && column.is_xmltype()) {
-            column.set_udt_set_id(gen_column_group_id());
+            column.set_udt_set_id(gen_udt_set_id());
           }
 
           if (OB_SUCC(ret)) {
@@ -1690,6 +1700,7 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
 {
   int ret = OB_SUCCESS;
   ObCreateTableStmt *create_table_stmt = static_cast<ObCreateTableStmt *>(stmt_);
+  const ObTableSchema *base_table_schema = NULL;
   ParseNode *sub_sel_node = parse_tree.children_[CREATE_TABLE_AS_SEL_NUM_CHILD - 1];
   ObSelectStmt *select_stmt = NULL;
   ObSelectResolver select_resolver(params_);
@@ -1801,7 +1812,9 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
       }
       for (int64_t i = 0; OB_SUCC(ret) && i < select_items.count(); ++i) {
         const SelectItem &select_item = select_items.at(i);
-        const ObRawExpr *expr = select_item.expr_;
+        ObRawExpr *expr = select_item.expr_;
+        ObColumnRefRawExpr *new_col_ref = static_cast<ObColumnRefRawExpr *>(expr);
+        TableItem *new_table_item = select_stmt->get_table_item_by_id(new_col_ref->get_table_id());
         if (OB_UNLIKELY(NULL == expr)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("select item expr is null", K(ret), K(i));
@@ -1812,11 +1825,44 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
           } else {
             column.set_column_name(select_item.expr_name_);
           }
-          if (ObResolverUtils::is_restore_user(*session_info_)
+          if (OB_SUCC(ret) && is_mysql_mode()) {
+            if (new_table_item != NULL && new_table_item->is_basic_table()) {
+              if (base_table_schema == NULL &&
+                  OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
+                                                            new_table_item->ref_id_, base_table_schema))) {
+                LOG_WARN("get table schema failed", K(ret));
+              } else if (OB_ISNULL(base_table_schema)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("NULL table schema", K(ret));
+              } else {
+                const ObColumnSchemaV2 *org_column = base_table_schema->get_column_schema(select_item.expr_name_);
+                if (NULL != org_column &&
+                    !org_column->is_generated_column() &&
+                    !org_column->get_cur_default_value().is_null()) {
+                    column.set_cur_default_value(org_column->get_cur_default_value());
+                  }
+              }
+            } else if (new_table_item == NULL &&
+                       (ObRawExpr::EXPR_CONST == expr->get_expr_class() ||
+                        (ObRawExpr::EXPR_OPERATOR == expr->get_expr_class() &&
+                         expr->is_static_const_expr())) &&
+                        !expr->get_result_type().is_null()) {
+              common::ObObjType result_type = expr->get_result_type().get_obj_meta().get_type();
+              if (ob_is_numeric_type(result_type) || ob_is_string_tc(result_type) || ob_is_time_tc(result_type)) {
+                common::ObObj zero_obj(0);
+                if (OB_FAIL(column.set_cur_default_value(zero_obj))) {
+                  LOG_WARN("set default value failed", K(ret));
+                }
+              }
+            } else { /*do nothing*/ }
+          }
+          if (OB_SUCC(ret) && ObResolverUtils::is_restore_user(*session_info_)
               && ObCharset::case_insensitive_equal(column.get_column_name_str(), OB_HIDDEN_PK_INCREMENT_COLUMN_NAME)) {
             continue;
           }
-          if (expr->get_result_type().is_null()) { //bug16503918, NULL需要替换为binary(0)
+          if (OB_FAIL(ret)) {
+            // do nothing
+          } else if (expr->get_result_type().is_null()) { //bug16503918, NULL需要替换为binary(0)
             if (is_oracle_mode()) {
               ret = OB_ERR_ZERO_LEN_COL;
               LOG_WARN("add column failed on oracle mode: length is zero", K(ret));
@@ -1839,7 +1885,7 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
               column.set_meta_type(xml_meta);
               column.set_sub_data_type(T_OBJ_XML);
               // udt column is varbinary used for null bitmap
-              column.set_udt_set_id(gen_column_group_id());
+              column.set_udt_set_id(gen_udt_set_id());
             } else {
               ret = OB_ERR_INVALID_DATATYPE;
               LOG_WARN("invalid data type", K(ret), K(*expr));
@@ -1908,6 +1954,13 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
               } else if (column.is_enum_or_set()) {
                 if (OB_FAIL(org_column->set_extended_type_info(column.get_extended_type_info()))) {
                   LOG_WARN("set enum or set info failed", K(ret), K(*expr));
+                }
+              } else if (is_oracle_mode() && column.is_xmltype()) {
+                org_column->set_sub_data_type(T_OBJ_XML);
+                // udt column is varbinary used for null bitmap
+                org_column->set_udt_set_id(gen_udt_set_id());
+                if (OB_FAIL(add_generated_hidden_column_for_udt(table_schema, *org_column))) {
+                  LOG_WARN("add udt hidden column to table_schema failed", K(ret), K(column));
                 }
               }
             }
@@ -2336,6 +2389,14 @@ int ObCreateTableResolver::set_table_option_to_schema(ObTableSchema &table_schem
     }
 
     if (OB_SUCC(ret)) {
+      if (compress_method_ == all_compressor_name[ZLIB_COMPRESSOR]) {
+        ret = OB_NOT_SUPPORTED;
+        SQL_RESV_LOG(WARN, "Not allowed to use zlib compressor!", K(ret));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "zlib compressor");
+      }
+    }
+
+    if (OB_SUCC(ret)) {
       table_schema.set_row_store_type(row_store_type_);
       table_schema.set_store_format(store_format_);
       table_schema.set_progressive_merge_round(progressive_merge_round);
@@ -2350,9 +2411,10 @@ int ObCreateTableResolver::set_table_option_to_schema(ObTableSchema &table_schem
 
     if (OB_SUCC(ret) && table_schema.is_external_table()) {
       if (table_schema.get_external_file_format().empty()
-          || table_schema.get_external_file_location().empty())
+          || table_schema.get_external_file_location().empty()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "Default format or location option for external table");
+      }
     }
   }
   return ret;

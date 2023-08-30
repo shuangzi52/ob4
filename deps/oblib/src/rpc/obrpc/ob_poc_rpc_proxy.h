@@ -56,15 +56,14 @@ class ObAsyncRespCallback
 public:
   ObAsyncRespCallback(ObRpcMemPool& pool, UAsyncCB* ucb): pkt_nio_cb_(NULL), pool_(pool), ucb_(ucb) {}
   ~ObAsyncRespCallback() {}
-  static ObAsyncRespCallback* create(ObRpcMemPool& pool, UAsyncCB* ucb);
+  // static ObAsyncRespCallback* create(ObRpcMemPool& pool, UAsyncCB* ucb);
+  static int create(ObRpcMemPool& pool, UAsyncCB* ucb, ObAsyncRespCallback*& ret_cb);
   UAsyncCB* get_ucb() { return ucb_; }
   int handle_resp(int io_err, const char* buf, int64_t sz);
   static int client_cb(void* arg, int io_error, const char* b, int64_t sz) {
     int ret = common::OB_SUCCESS;
     if (arg != NULL) {
       ret = ((ObAsyncRespCallback*)arg)->handle_resp(io_error, b, sz);
-    } else {
-      RPC_LOG(WARN, "async rpc callback is null, it is unexpected", KP(b), K(sz));
     }
     return ret;
   }
@@ -132,28 +131,31 @@ public:
     if (OB_LS_FETCH_LOG2 == pcode) {
       pnio_group_id = ObPocRpcServer::RATELIMIT_PNIO_GROUP;
     }
-    if (OB_FAIL(rpc_encode_req(proxy, pool, pcode, args, opts, req, req_sz, false))) {
-      RPC_LOG(WARN, "rpc encode req fail", K(ret));
-    } else if(OB_FAIL(check_blacklist(addr))) {
-      RPC_LOG(WARN, "check_blacklist failed", K(ret));
-    } else if (0 != (sys_err = pn_send(
-        (pnio_group_id<<32) + thread_id,
-        obaddr2sockaddr(&sock_addr, addr),
-        req,
-        req_sz,
-        static_cast<int16_t>(set.idx_of_pcode(pcode)),
-        start_ts + get_proxy_timeout(proxy),
-        ObSyncRespCallback::client_cb,
-        &cb))) {
-      ret = translate_io_error(sys_err);
-      RPC_LOG(WARN, "pn_send fail", K(sys_err), K(ret));
-    } else if (OB_FAIL(cb.wait())) {
-      RPC_LOG(WARN, "sync rpc execute fail", K(ret), K(addr));
-    } else if (NULL == (resp = cb.get_resp(resp_sz))) {
-      ret = common::OB_ERR_UNEXPECTED;
-      RPC_LOG(WARN, "sync rpc execute success but resp is null", K(ret), K(addr));
-    } else if (OB_FAIL(rpc_decode_resp(resp, resp_sz, out, resp_pkt, rcode))) {
-      RPC_LOG(WARN, "rpc decode response fail", KP(resp), K(resp_sz), K(ret));
+    {
+      lib::Thread::RpcGuard guard(addr);
+      if (OB_FAIL(rpc_encode_req(proxy, pool, pcode, args, opts, req, req_sz, false))) {
+        RPC_LOG(WARN, "rpc encode req fail", K(ret));
+      } else if(OB_FAIL(check_blacklist(addr))) {
+        RPC_LOG(WARN, "check_blacklist failed", K(ret));
+      } else if (0 != (sys_err = pn_send(
+          (pnio_group_id<<32) + thread_id,
+          obaddr2sockaddr(&sock_addr, addr),
+          req,
+          req_sz,
+          static_cast<int16_t>(set.idx_of_pcode(pcode)),
+          start_ts + get_proxy_timeout(proxy),
+          ObSyncRespCallback::client_cb,
+          &cb))) {
+        ret = translate_io_error(sys_err);
+        RPC_LOG(WARN, "pn_send fail", K(sys_err), K(addr), K(pcode));
+      } else if (OB_FAIL(cb.wait())) {
+        RPC_LOG(WARN, "sync rpc execute fail", K(ret), K(addr), K(pcode));
+      } else if (NULL == (resp = cb.get_resp(resp_sz))) {
+        ret = common::OB_ERR_UNEXPECTED;
+        RPC_LOG(WARN, "sync rpc execute success but resp is null", K(ret), K(addr), K(pcode));
+      } else if (OB_FAIL(rpc_decode_resp(resp, resp_sz, out, resp_pkt, rcode))) {
+        RPC_LOG(WARN, "execute rpc fail", K(addr), K(pcode), K(ret));
+      }
     }
     if (rcode.rcode_ != OB_DESERIALIZE_ERROR) {
       int wb_ret = OB_SUCCESS;
@@ -174,6 +176,7 @@ public:
     const int64_t start_ts = common::ObTimeUtility::current_time();
     ObRpcMemPool* pool = NULL;
     uint64_t pnio_group_id = ObPocRpcServer::DEFAULT_PNIO_GROUP;
+    ObTimeGuard timeguard("poc_rpc_post", 10 * 1000);
     // TODO:@fangwu.lcc map proxy.group_id_ to pnio_group_id
     if (OB_LS_FETCH_LOG2 == pcode) {
       pnio_group_id = ObPocRpcServer::RATELIMIT_PNIO_GROUP;
@@ -183,32 +186,31 @@ public:
     if (get_proxy_group_id(proxy) == ObPocServerHandleContext::OBCG_ELECTION) {
       src_tenant_id = OB_SERVER_TENANT_ID;
     }
-#ifndef PERF_MODE
     const int init_alloc_sz = 0;
-#else
-    const int init_alloc_sz = 400<<10;
-#endif
     auto &set = obrpc::ObRpcPacketSet::instance();
     const char* pcode_label = set.name_of_idx(set.idx_of_pcode(pcode));
+    ObAsyncRespCallback* cb = NULL;
     if (NULL == (pool = ObRpcMemPool::create(src_tenant_id, pcode_label, init_alloc_sz))) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
     } else {
-      ObAsyncRespCallback* cb = NULL;
       char* req = NULL;
       int64_t req_sz = 0;
+      timeguard.click();
       if (OB_FAIL(rpc_encode_req(proxy, *pool, pcode, args, opts, req, req_sz, NULL == ucb))) {
         RPC_LOG(WARN, "rpc encode req fail", K(ret));
       } else if(OB_FAIL(check_blacklist(addr))) {
         RPC_LOG(WARN, "check_blacklist failed", K(addr));
-      } else if (NULL == (cb = ObAsyncRespCallback::create(*pool, ucb))) {
-        ret = common::OB_ALLOCATE_MEMORY_FAILED;
-      } else {
+      } else if (FALSE_IT(timeguard.click())) {
+      } else if (OB_FAIL(ObAsyncRespCallback::create(*pool, ucb, cb))) {
+        RPC_LOG(WARN, "create ObAsyncRespCallback failed", K(ucb));
+      } else if (OB_NOT_NULL(cb)) {
         auto newcb = reinterpret_cast<UCB*>(cb->get_ucb());
         if (newcb) {
           set_ucb_args(newcb, args);
           init_ucb(proxy, cb->get_ucb(), addr, start_ts, req_sz);
         }
       }
+      timeguard.click();
       if (OB_SUCC(ret)) {
         sockaddr_in sock_addr;
         if (0 != (sys_err = pn_send(
@@ -222,12 +224,15 @@ public:
             cb)
             )) {
           ret = translate_io_error(sys_err);
-          RPC_LOG(WARN, "pn_send fail", K(sys_err), K(ret));
+          RPC_LOG(WARN, "pn_send fail", K(sys_err), K(addr), K(pcode));
         }
       }
     }
-    if (common::OB_SUCCESS != ret && NULL != pool) {
-      pool->destroy();
+    if (NULL != pool) {
+      if (ret != OB_SUCCESS || cb == NULL) {
+        // if ucb is null, the ObAsyncRespCallback::create will return OB_SUCCESS and cb will set to null, in this case we should release pool in place
+        pool->destroy();
+      }
     }
     return ret;
   }

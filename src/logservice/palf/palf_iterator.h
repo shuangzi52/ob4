@@ -93,6 +93,7 @@ public:
   //                  need read data from storage eagin.(data in cache will not been clean up, therefore,
   //                  user need used a new iterator to read data again)
   //   OB_ERR_OUT_LOWER_BOUND, block has been recycled
+  //   OB_PARTIAL_LOG, this replica has not finished flashback, and iterator start lsn is not the header of LogGroupEntry.
   int next()
   {
     int ret = OB_SUCCESS;
@@ -118,6 +119,7 @@ public:
   //                  need read data from storage eagin.(data in cache will not been clean up, therefore,
   //                  user need used a new iterator to read data again)
   //   OB_ERR_OUT_LOWER_BOUND, block has been recycled
+  //   OB_PARTIAL_LOG, this replica has not finished flashback, and iterator start lsn is not the header of LogGroupEntry.
   int next(const share::SCN &replayable_point_scn)
   {
     int ret = OB_SUCCESS;
@@ -144,6 +146,7 @@ public:
   //                  need read data from storage eagin.(data in cache will not been clean up, therefore,
   //                  user need used a new iterator to read data again)
   //   OB_ERR_OUT_LOWER_BOUND, block has been recycled
+  //   OB_PARTIAL_LOG, this replica has not finished flashback, and iterator start lsn is not the header of LogGroupEntry.
   int next(const share::SCN &replayable_point_scn,
            share::SCN &next_min_scn,
            bool &iterate_end_by_replayable_point)
@@ -180,23 +183,6 @@ public:
     }
     return ret;
   }
-  int get_entry(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn, bool &is_raw_write)
-  {
-    int ret = OB_SUCCESS;
-    LogEntryType entry;
-    OB_ASSERT((std::is_same<LogEntryType, LogEntry>::value) == true);
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-    } else if (OB_FAIL(iterator_impl_.get_entry(entry, lsn, is_raw_write)) && OB_ITER_END != ret) {
-      PALF_LOG(WARN, "PalfIterator get_entry failed", K(ret), K(entry), K(lsn), KPC(this));
-    } else {
-      buffer = entry.get_data_buf();
-      nbytes = entry.get_data_len();
-      scn = entry.get_scn();
-      PALF_LOG(TRACE, "PalfIterator get_entry success", K(ret), KPC(this), K(entry), K(is_raw_write));
-    }
-    return ret;
-  }
   int get_entry(const char *&buffer, LogEntryType &entry, LSN& lsn)
   {
     int ret = OB_SUCCESS;
@@ -214,21 +200,23 @@ public:
   }
   int get_entry(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn)
   {
-    int ret = OB_SUCCESS;
-    LogEntryType entry;
     bool unused_is_raw_write = false;
-    OB_ASSERT((std::is_same<LogEntryType, LogEntry>::value) == true);
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-    } else if (OB_FAIL(iterator_impl_.get_entry(entry, lsn, unused_is_raw_write)) && OB_ITER_END != ret) {
-      PALF_LOG(WARN, "PalfIterator get_entry failed", K(ret), K(entry), K(lsn), KPC(this));
-    } else {
-      buffer = entry.get_data_buf();
-      nbytes = entry.get_data_len();
-      scn = entry.get_scn();
-      PALF_LOG(TRACE, "PalfIterator get_entry success", K(iterator_impl_), K(ret), KPC(this), K(entry));
-    }
-    return ret;
+    return get_entry_(buffer, nbytes, scn, lsn, unused_is_raw_write);
+  }
+  int get_entry(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn, bool &is_raw_write)
+  {
+    return get_entry_(buffer, nbytes, scn, lsn, is_raw_write);
+  }
+  int get_entry(const char *&buffer, int64_t &nbytes, LSN &lsn, int64_t &log_proposal_id)
+  {
+    share::SCN unused_scn;
+    bool unused_is_raw_write = false;
+    return get_entry_(buffer, nbytes, unused_scn, lsn, log_proposal_id, unused_is_raw_write);
+  }
+  int get_entry(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn, int64_t &log_proposal_id,
+                bool &is_raw_write)
+  {
+    return get_entry_(buffer, nbytes, scn, lsn, log_proposal_id, is_raw_write);
   }
   bool is_inited() const
   {
@@ -249,7 +237,7 @@ public:
   void print_error_log(int ret) const
   {
     if (need_print_error_ && (OB_INVALID_DATA == ret || OB_CHECKSUM_ERROR == ret)) {
-      PALF_LOG_RET(ERROR, ret, "invliad data or checksum error!!!", KPC(this));
+      PALF_LOG_RET(ERROR, ret, "invalid data or checksum error!!!", KPC(this));
     }
   }
   void set_need_print_error(const bool need_print_error)
@@ -277,6 +265,44 @@ private:
     } else {
       PALF_LOG(INFO, "PalfIterator init success", K(ret), K(start_offset), KPC(this));
       is_inited_ = true;
+    }
+    return ret;
+  }
+
+  int get_entry_(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn, bool &is_raw_write)
+  {
+    int ret = OB_SUCCESS;
+    LogEntryType entry;
+    OB_ASSERT((std::is_same<LogEntryType, LogEntry>::value) == true);
+    if (IS_NOT_INIT) {
+      ret = OB_NOT_INIT;
+    } else if (OB_FAIL(iterator_impl_.get_entry(entry, lsn, is_raw_write)) && OB_ITER_END != ret) {
+      PALF_LOG(WARN, "PalfIterator get_entry failed", K(ret), K(entry), K(lsn), KPC(this));
+    } else {
+      buffer = entry.get_data_buf();
+      nbytes = entry.get_data_len();
+      scn = entry.get_scn();
+      PALF_LOG(TRACE, "PalfIterator get_entry success", K(iterator_impl_), K(ret), KPC(this), K(entry));
+    }
+    return ret;
+  }
+
+  int get_entry_(const char *&buffer, int64_t &nbytes, share::SCN &scn, LSN &lsn, int64_t &log_proposal_id,
+                 bool &is_raw_write)
+  {
+    int ret = OB_SUCCESS;
+    LogEntryType entry;
+    OB_ASSERT((std::is_same<LogEntryType, LogGroupEntry>::value) == true);
+    if (IS_NOT_INIT) {
+      ret = OB_NOT_INIT;
+    } else if (OB_FAIL(iterator_impl_.get_entry(entry, lsn, is_raw_write)) && OB_ITER_END != ret) {
+      PALF_LOG(WARN, "PalfIterator get_group_entry failed", K(ret), K(entry), K(lsn), KPC(this));
+    } else {
+      buffer = entry.get_data_buf() - entry.get_header_size();
+      nbytes = entry.get_serialize_size();
+      scn = entry.get_scn();
+      log_proposal_id = entry.get_header().get_log_proposal_id();
+      PALF_LOG(TRACE, "PalfIterator get_group_entry success", K(iterator_impl_), K(ret), KPC(this), K(entry));
     }
     return ret;
   }

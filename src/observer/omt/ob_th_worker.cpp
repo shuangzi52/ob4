@@ -46,10 +46,10 @@ extern TLOCAL(bool, TLOCAL_NEED_WAIT_IN_LOCK_WAIT_MGR);
 namespace omt
 {
 int create_worker(ObThWorker* &worker, ObTenant *tenant, int32_t group_id,
-                  int32_t level, ObResourceGroup *group)
+                  int32_t level, bool force, ObResourceGroup *group)
 {
   int ret = OB_SUCCESS;
-  if (tenant->total_worker_cnt() >= tenant->max_worker_cnt()) {
+  if (!force && tenant->total_worker_cnt() >= tenant->max_worker_cnt()) {
     ret = OB_RESOURCE_OUT;
     LOG_WARN("create worker fail", K(ret), K(tenant->id()), K(group_id), K(level),
                                     K(tenant->total_worker_cnt()), K(tenant->max_worker_cnt()));
@@ -107,13 +107,13 @@ ObThWorker::ObThWorker()
       priority_limit_(RQ_LOW), is_lq_yield_(false),
       query_start_time_(0), last_check_time_(0),
       can_retry_(true), need_retry_(false),
-      has_add_to_cgroup_(false), last_wakeup_ts_(0)
+      has_add_to_cgroup_(false), last_wakeup_ts_(0), blocking_ts_(nullptr),
+      idle_us_(0)
 {
 }
 
 ObThWorker::~ObThWorker()
 {
-
 }
 
 int ObThWorker::init()
@@ -249,11 +249,11 @@ inline void ObThWorker::process_request(rpc::ObRequest &req)
     LOG_WARN("process request fail", K(ret));
   }
   bool wait_succ = MTL(memtable::ObLockWaitMgr*)->post_process(need_retry_, need_wait_lock);
-  if (wait_succ) {
+  if (OB_LIKELY(wait_succ)) {
     need_retry_ = false;
   }
   // need_retry_ can be set in procor_.process() via THIS_WORKER.set_need_retry()
-  if (need_retry_) {
+  if (OB_UNLIKELY(need_retry_)) {
     int32_t retry_times = req.get_retry_times();
     req.set_retry_times(retry_times + 1);
     if (need_wait_lock) {
@@ -286,24 +286,12 @@ inline void ObThWorker::process_request(rpc::ObRequest &req)
     }
   }
 
-  if (REACH_TIME_INTERVAL(10*1000*1000)) {
-    auto *pm = common::ObPageManager::thread_local_instance();
-    const int64_t pm_hold = (pm != nullptr) ? pm->get_hold() : 0;
-    _OB_LOG(INFO, "thd_flag=%d total=%ld used=%ld pm_hold=%ld",
-            has_req_flag(),
-            get_allocator().total(),
-            get_allocator().used(),
-            pm_hold);
-  }
   set_req_flag(NULL);
   reset_rpc_tenant();
 }
 
-void ObThWorker::set_th_worker_thread_name(uint64_t tenant_id)
+void ObThWorker::set_th_worker_thread_name()
 {
-  // fix compile issue
-  UNUSED(tenant_id);
-
   char buf[32];
   if (serving_tenant_id != tenant_->id()) {
     serving_tenant_id = tenant_->id();
@@ -318,11 +306,10 @@ void ObThWorker::worker(int64_t &tenant_id, int64_t &req_recv_timestamp, int32_t
   Worker::set_worker_to_thread_local(static_cast<lib::Worker*>(this));
   int64_t wait_start_time = 0;
   int64_t wait_end_time = 0;
-  int64_t req_start_time = 0;
-  int64_t req_end_time = 0;
-  th_created();
+  procor_.th_created();
+  blocking_ts_ = &Thread::blocking_ts_;
 
-  ObTLTaGuard ta_guard(tenant_ != NULL? tenant_->id() : OB_SERVER_TENANT_ID);
+  ObTLTaGuard ta_guard(tenant_->id());
   // Avoid adding and deleting entities from the root node for every request, the parameters are meaningless
   CREATE_WITH_TEMP_ENTITY(RESOURCE_OWNER, OB_SERVER_TENANT_ID) {
     auto *pm = common::ObPageManager::thread_local_instance();
@@ -330,36 +317,37 @@ void ObThWorker::worker(int64_t &tenant_id, int64_t &req_recv_timestamp, int32_t
       this->set_worker_level(0);
     }
     while (!has_set_stop()) {
-      worker_level = this->get_worker_level(); // Update backtrace printing parameters
-      if (nullptr != this->tenant_) {
-        tenant_id = this->tenant_->id(); // Update backtrace printing parameters
+      worker_level = get_worker_level();
+      if (OB_NOT_NULL(tenant_)) {
+        tenant_id = tenant_->id();
       }
-      if (OB_ISNULL(tenant_)) {
-        LOG_ERROR("invalid status, unexpected", K(tenant_));
-      } else {
-        if (nullptr != GCTX.cgroup_ctrl_ && nullptr != tenant_ && OB_LIKELY(GCTX.cgroup_ctrl_->is_valid()) && !has_add_to_cgroup_) {
-          if (OB_SUCC(GCTX.cgroup_ctrl_->add_self_to_cgroup(tenant_->id(), get_group_id()))) {
-            has_add_to_cgroup_ = true;
-          }
+      if (OB_NOT_NULL(GCTX.cgroup_ctrl_) && OB_LIKELY(GCTX.cgroup_ctrl_->is_valid()) && !has_add_to_cgroup_) {
+        if (OB_SUCC(GCTX.cgroup_ctrl_->add_self_to_cgroup(tenant_->id(), get_group_id()))) {
+          has_add_to_cgroup_ = true;
         }
-        if (OB_LIKELY(pm != nullptr)) {
-          if (pm->get_used() != 0) {
-            LOG_ERROR("page manager's used should be 0, unexpected!!!", KP(pm));
-          } else {
-            // Ignore the above warning
-            ret = pm->set_tenant_ctx(tenant_->id(), ObCtxIds::DEFAULT_CTX_ID);
-          }
+      }
+      if (OB_NOT_NULL(pm)) {
+        if (pm->get_used() != 0) {
+          LOG_ERROR("page manager's used should be 0, unexpected!!!", KP(pm));
+        } else {
+          // Ignore the above warning
+          ret = pm->set_tenant_ctx(tenant_->id(), ObCtxIds::DEFAULT_CTX_ID);
         }
-        CLEAR_INTERRUPTABLE();
-        set_th_worker_thread_name(tenant_->id());
-        lib::ContextTLOptGuard guard(true);
-        lib::ContextParam param;
-        param.set_mem_attr(tenant_->id(), ObModIds::OB_SQL_EXECUTOR, ObCtxIds::DEFAULT_CTX_ID)
-          .set_page_size(!lib::is_mini_mode() ?
-              OB_MALLOC_BIG_BLOCK_SIZE : OB_MALLOC_MIDDLE_BLOCK_SIZE)
-          .set_properties(lib::USE_TL_PAGE_OPTIONAL)
-          .set_ablock_size(lib::INTACT_MIDDLE_AOBJECT_SIZE);
-        CREATE_WITH_TEMP_CONTEXT(param) {
+      }
+      CLEAR_INTERRUPTABLE();
+      set_th_worker_thread_name();
+      lib::ContextTLOptGuard guard(true);
+      lib::ContextParam param;
+      param.set_mem_attr(tenant_->id(), ObModIds::OB_SQL_EXECUTOR, ObCtxIds::DEFAULT_CTX_ID)
+        .set_page_size(!lib::is_mini_mode() ?
+            OB_MALLOC_BIG_BLOCK_SIZE : OB_MALLOC_MIDDLE_BLOCK_SIZE)
+        .set_properties(lib::USE_TL_PAGE_OPTIONAL)
+        .set_ablock_size(lib::INTACT_MIDDLE_AOBJECT_SIZE);
+      CREATE_WITH_TEMP_CONTEXT(param) {
+        const uint64_t owner_id =
+          (!is_virtual_tenant_id(tenant_->id()) || is_virtual_tenant_for_memory(tenant_->id())) ?
+          tenant_->id() : OB_SERVER_TENANT_ID;
+        CREATE_WITH_TEMP_ENTITY(RESOURCE_OWNER, owner_id) {
           class AllocatorGuard {
           public:
             AllocatorGuard(ObIAllocator **allocator)
@@ -374,66 +362,54 @@ void ObThWorker::worker(int64_t &tenant_id, int64_t &req_recv_timestamp, int32_t
           private:
             ObIAllocator **allocator_;
           } allocator_guard(&allocator_);
-          const uint64_t owner_id =
-            (!is_virtual_tenant_id(tenant_->id()) || is_virtual_tenant_for_memory(tenant_->id())) ?
-            tenant_->id() : OB_SERVER_TENANT_ID;
-          CREATE_WITH_TEMP_ENTITY(RESOURCE_OWNER, owner_id) {
-            WITH_ENTITY(&tenant_->ctx()) {
-              ObTenantStatEstGuard guard(tenant_->id());
-              set_compatibility_mode(tenant_->get_compat_mode());
-
-              // get request from queue and process it
-              rpc::ObRequest *req = NULL;
-              wait_start_time = ObTimeUtility::current_time();
-
-              /// get request from tenant
-              {
-                ObWaitEventGuard wait_guard(ObWaitEventIds::OMT_IDLE, 0, wait_start_time, 0, 0);
-                ret = tenant_->get_new_request(*this, is_level_worker() ? NESTING_REQUEST_WAIT_TIME : REQUEST_WAIT_TIME, req);
-                wait_end_time = ObTimeUtility::current_time();
+          WITH_ENTITY(&tenant_->ctx()) {
+            ObTenantStatEstGuard guard(tenant_->id());
+            set_compatibility_mode(tenant_->get_compat_mode());
+            // get request from queue and process it
+            rpc::ObRequest *req = NULL;
+            wait_start_time = ObTimeUtility::current_time();
+            /// get request from tenant
+            {
+              ObWaitEventGuard wait_guard(ObWaitEventIds::OMT_IDLE, 0, wait_start_time, 0, 0);
+              ret = tenant_->get_new_request(*this, is_level_worker() ? NESTING_REQUEST_WAIT_TIME : REQUEST_WAIT_TIME, req);
+              wait_end_time = ObTimeUtility::current_time();
+            }
+            if (OB_SUCC(ret)) {
+              if (OB_NOT_NULL(req)) {
+                req_recv_timestamp = req->get_receive_timestamp();
+                EVENT_ADD(REQUEST_QUEUE_TIME, wait_end_time - req->get_enqueue_timestamp());
+                req->set_push_pop_diff(wait_end_time);
+                query_start_time_ = wait_end_time;
+                query_enqueue_time_ = req->get_enqueue_timestamp();
+                last_check_time_ = wait_end_time;
+                set_last_wakeup_ts(query_start_time_);
+                set_rpc_stat_srv(&(tenant_->rpc_stat_info_->rpc_stat_srv_));
+                process_request(*req);
+                query_enqueue_time_ = INT64_MAX;
+                query_start_time_ = INT64_MAX;
+              } else {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_ERROR(
+                    "got NULL request from tenant",
+                    K(tenant_), K(ret), K(req));
               }
-
-              if (OB_SUCC(ret)) {
-                if (OB_LIKELY(nullptr != req)) {
-                  req_recv_timestamp = req->get_receive_timestamp(); // Update backtrace printing parameters
-                  EVENT_ADD(REQUEST_QUEUE_TIME, wait_end_time - req->get_enqueue_timestamp());
-                  req->set_push_pop_diff(wait_end_time);
-                  query_start_time_ = wait_end_time;
-                  query_enqueue_time_ = req->get_enqueue_timestamp();
-                  last_check_time_ = wait_end_time;
-                  set_last_wakeup_ts(query_start_time_);
-                  set_rpc_stat_srv(&(tenant_->rpc_stat_info_->rpc_stat_srv_));
-                  req_start_time = ObTimeUtility::current_time();
-                  process_request(*req);
-                  req_end_time = ObTimeUtility::current_time();
-                  tenant_->add_worker_time(req_end_time - req_start_time);
-                  query_enqueue_time_ = INT64_MAX;
-                  query_start_time_ = INT64_MAX;
-                } else {
-                  ret = OB_ERR_UNEXPECTED;
-                  LOG_ERROR(
-                      "got NULL request from tenant",
-                      K(tenant_), K(ret), K(req));
-                }
-              } else if (OB_ENTRY_NOT_EXIST == ret) {
-                // timeout while waiting for request from tenant request queue
-                ret = OB_SUCCESS;
-              }
-              tenant_->add_idle_time(wait_end_time - wait_start_time);
-              if (this->get_worker_level() == 0 && !is_group_worker()) {
-                tenant_->check_worker_count(*this);
-                tenant_->lq_end(*this);
-              } else if (this->is_group_worker()) {
-                group_->check_worker_count(*this);
-              }
+            } else if (OB_ENTRY_NOT_EXIST == ret) {
+              // timeout while waiting for request from tenant request queue
+              ret = OB_SUCCESS;
+            }
+            IGNORE_RETURN ATOMIC_FAA(&idle_us_, (wait_end_time - wait_start_time));
+            if (this->get_worker_level() == 0 && !is_group_worker()) {
+              tenant_->check_worker_count(*this);
+              tenant_->lq_end(*this);
+            } else if (this->is_group_worker()) {
+              group_->check_worker_count(*this);
             }
           }
         }
       }
     }
   }
-
-  th_destroy();
+  procor_.th_destroy();
 }
 
 void ObThWorker::run(int64_t idx)
@@ -469,16 +445,6 @@ int ObThWorker::check_large_query_quota()
     ret = OB_EAGAIN;
   }
   return ret;
-}
-
-void ObThWorker::th_created()
-{
-  procor_.th_created();
-}
-
-void ObThWorker::th_destroy()
-{
-  procor_.th_destroy();
 }
 
 int ObThWorker::check_status()

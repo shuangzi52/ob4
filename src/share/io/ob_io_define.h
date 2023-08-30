@@ -31,8 +31,8 @@ namespace common
 
 static constexpr int64_t DEFAULT_IO_WAIT_TIME_MS = 5000L; // 5s
 static constexpr int64_t MAX_IO_WAIT_TIME_MS = 300L * 1000L; // 5min
-static constexpr int64_t GROUP_START_ID = 10000L; // start id = 10000
 static constexpr int64_t GROUP_START_NUM = 8L;
+static constexpr int64_t MAX_DETECT_READ_TIMES = 10L;
 enum class ObIOMode : uint8_t
 {
   READ = 0,
@@ -43,6 +43,31 @@ enum class ObIOMode : uint8_t
 const char *get_io_mode_string(const ObIOMode mode);
 ObIOMode get_io_mode_enum(const char *mode_string);
 
+enum ObIOModule {
+  SLOG_IO = 20000,
+  CALIBRATION_IO = 20001,
+  DETECT_IO = 20002,
+  DIRECT_LOAD_IO = 20003,
+  SHARED_BLOCK_RW_IO = 20004,
+  SSTABLE_WHOLE_SCANNER_IO = 20005,
+  INSPECT_BAD_BLOCK_IO = 20006,
+  SSTABLE_INDEX_BUILDER_IO = 20007,
+  BACKUP_READER_IO = 20008,
+  BLOOM_FILTER_IO = 20009,
+  SHARED_MACRO_BLOCK_MGR_IO = 20010,
+  INDEX_BLOCK_TREE_CURSOR_IO = 20011,
+  MICRO_BLOCK_CACHE_IO = 20012,
+  ROOT_BLOCK_IO = 20013,
+  TMP_PAGE_CACHE_IO = 20014,
+  INDEX_BLOCK_MICRO_ITER_IO = 20015,
+  HA_COPY_MACRO_BLOCK_IO = 20016,
+  LINKED_MACRO_BLOCK_IO = 20017,
+  HA_MACRO_BLOCK_WRITER_IO = 20018,
+  TMP_TENANT_MEM_BLOCK_IO = 20019,
+  MAX_IO = 20020
+};
+
+const char *get_io_sys_group_name(ObIOModule module);
 struct ObIOFlag final
 {
 public:
@@ -52,9 +77,11 @@ public:
   bool is_valid() const;
   void set_mode(ObIOMode mode);
   ObIOMode get_mode() const;
+  void set_group_id(ObIOModule module);
   void set_group_id(int64_t group_id);
   void set_wait_event(int64_t wait_event_id);
   int64_t get_group_id() const;
+  ObIOModule get_io_module() const;
   int64_t get_wait_event() const;
   void set_read();
   bool is_read() const;
@@ -66,9 +93,11 @@ public:
   void set_unlimited(const bool is_unlimited = true);
   bool is_unlimited() const;
   void set_detect(const bool is_detect = true);
+  void set_time_detect(const bool is_time_detect = true);
   bool is_detect() const;
+  bool is_time_detect() const;
   TO_STRING_KV("mode", common::get_io_mode_string(static_cast<ObIOMode>(mode_)),
-               K(group_id_), K(wait_event_id_), K(is_sync_), K(is_unlimited_), K(reserved_), K(is_detect_));
+               K(group_id_), K(wait_event_id_), K(is_sync_), K(is_unlimited_), K(reserved_), K(is_detect_), K(is_time_detect_));
 private:
   static constexpr int64_t IO_MODE_BIT = 4; // read, write, append
   static constexpr int64_t IO_GROUP_ID_BIT = 16; // for consumer group in resource manager
@@ -76,11 +105,13 @@ private:
   static constexpr int64_t IO_SYNC_FLAG_BIT = 1; // indicate if the caller is waiting io finished
   static constexpr int64_t IO_DETECT_FLAG_BIT = 1; // notify a retry task
   static constexpr int64_t IO_UNLIMITED_FLAG_BIT = 1; // indicate if the io is unlimited
+  static constexpr int64_t IO_TIME_DETECT_FLAG_BIT = 1; // indicate if the io is unlimited
   static constexpr int64_t IO_RESERVED_BIT = 64 - IO_MODE_BIT
                                                 - IO_GROUP_ID_BIT
                                                 - IO_WAIT_EVENT_BIT
                                                 - IO_SYNC_FLAG_BIT
                                                 - IO_UNLIMITED_FLAG_BIT
+                                                - IO_TIME_DETECT_FLAG_BIT
                                                 - IO_DETECT_FLAG_BIT;
 
   union {
@@ -92,6 +123,7 @@ private:
       bool is_sync_ : IO_SYNC_FLAG_BIT;
       bool is_unlimited_ : IO_UNLIMITED_FLAG_BIT;
       bool is_detect_ : IO_DETECT_FLAG_BIT;
+      bool is_time_detect_ : IO_TIME_DETECT_FLAG_BIT;
       int64_t reserved_ : IO_RESERVED_BIT;
     };
   };
@@ -104,12 +136,11 @@ public:
   ObIOCallback();
   virtual ~ObIOCallback();
 
-  int process(const bool is_success);
+  int process(const char *data_buffer, const int64_t size);
   int deep_copy(char *buf, const int64_t buf_len, ObIOCallback *&copied_callback) const;
   virtual const char *get_data() = 0;
   virtual int64_t size() const = 0;
-  virtual int alloc_io_buf(char *&io_buf, int64_t &io_buf_size, int64_t &aligned_offset) = 0;
-  virtual int inner_process(const bool is_success) = 0;
+  virtual int inner_process(const char *data_buffer, const int64_t size) = 0;
   virtual int inner_deep_copy(char *buf, const int64_t buf_len, ObIOCallback *&copied_callback) const = 0;
   DECLARE_PURE_VIRTUAL_TO_STRING;
 
@@ -212,13 +243,14 @@ public:
   int64_t get_data_size() const;
   int64_t get_group_id() const;
   uint64_t get_io_usage_index();
-  const char *get_data();
+  const char *get_data(); //get data buf after io_buf recycle
   const ObIOFlag &get_flag() const;
   ObIOMode get_mode() const;
   void cancel();
   int alloc_io_buf();
   int prepare();
   bool can_callback() const;
+  void free_io_buffer();
   void finish(const ObIORetCode &ret_code);
   void inc_ref(const char *msg = nullptr);
   void dec_ref(const char *msg = nullptr);
@@ -229,6 +261,8 @@ public:
       K(time_log_), KP(channel_), K(ref_cnt_), K(out_ref_cnt_),
       K(trace_id_), K(ret_code_), K(retry_count_), K(callback_buf_size_), KP(copied_callback_), K(tenant_io_mgr_));
 private:
+  friend class ObIORunner;
+  const char *get_io_data_buf(); //get data buf for MEMCPY before io_buf recycle
   int alloc_aligned_io_buf();
 public:
   bool is_inited_;
@@ -239,8 +273,8 @@ public:
   int64_t deadline_ts_;
   int64_t sender_index_;
   ObIOCB *control_block_;
-  void *raw_buf_;
-  char *io_buf_;
+  void *raw_buf_;//actual allocated buf
+  char *io_buf_;//the aligned one of raw_buf_, interact with the operating system
   int64_t io_offset_;
   int64_t io_size_;
   int64_t complete_size_;

@@ -128,6 +128,14 @@ public:
       const int64_t fetch_log_count,
       const int64_t accepted_mode_pid);
 
+  int submit_batch_fetch_log_resp(
+    const common::ObAddr &server,
+    const int64_t msg_proposal_id,
+    const int64_t prev_log_proposal_id,
+    const LSN &prev_lsn,
+    const LSN &curr_lsn,
+    const LogWriteBuf &write_buf);
+
   int submit_notify_rebuild_req(
     const ObAddr &server,
     const LSN &base_lsn,
@@ -191,6 +199,12 @@ public:
       const int64_t timeout_us,
       LogGetMCStResp &resp);
 
+#ifdef OB_BUILD_ARBITRATION
+  int submit_get_arb_member_info_req(
+      const common::ObAddr &server,
+      const int64_t timeout_us,
+      LogGetArbMemberInfoResp &resp);
+#endif
 
   int submit_register_parent_req(
       const common::ObAddr &server,
@@ -261,8 +275,7 @@ int LogNetService::post_request_to_server_(
 {
   int ret = common::OB_SUCCESS;
   if (OB_FAIL(log_rpc_->post_request(server, palf_id_, req))) {
-    // PALF_LOG(WARN, "LogRpc post_request failed", K(ret), K(palf_id_),
-    //     K(req), K(server));
+    PALF_LOG(WARN, "LogRpc post_request failed", K(ret), K(palf_id_), K(req), K(server));
   } else {
     PALF_LOG(TRACE, "post_request_to_server_ success", K(ret), K(server), K(palf_id_), K(req));
   }

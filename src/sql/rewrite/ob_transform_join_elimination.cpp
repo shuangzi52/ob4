@@ -88,17 +88,10 @@ int ObTransformJoinElimination::construct_transform_hint(ObDMLStmt &stmt, void *
     hint->set_qb_name(ctx_->src_qb_name_);
     for (int64_t i = 0; OB_SUCC(ret) && i < eliminated_tables->count(); ++i) {
       ObSEArray<ObTableInHint, 4> single_or_joined_hint_table;
-      for (int64_t j = 0; OB_SUCC(ret) && j < eliminated_tables->at(i).count(); ++j) {
-        TableItem *table = eliminated_tables->at(i).at(j);
-        if (OB_ISNULL(table)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get unexpected null", K(ret));
-        } else if (OB_FAIL(single_or_joined_hint_table.push_back(ObTableInHint(table->qb_name_,
-                                              table->database_name_, table->get_object_name())))) {
-          LOG_WARN("failed to push back hint table", K(ret));
-        }
-      }
-      if (OB_SUCC(ret) && OB_FAIL(hint->get_tb_name_list().push_back(single_or_joined_hint_table))) {
+      if (OB_FAIL(ObTransformUtils::get_sorted_table_hint(eliminated_tables->at(i),
+                                                          single_or_joined_hint_table))) {
+        LOG_WARN("failed to get table hint", K(ret));
+      } else if (OB_FAIL(hint->get_tb_name_list().push_back(single_or_joined_hint_table))) {
         LOG_WARN("failed to push back table name list", K(ret));
       }
     }
@@ -501,15 +494,15 @@ int ObTransformJoinElimination::adjust_table_items(ObDMLStmt *stmt,
                                                 stmt_map_info.select_item_map_,
                                                 column_map))) {
       LOG_WARN("failed to reverse select items map", K(ret));
+    } else if (OB_FAIL(create_missing_select_items(source_stmt, target_stmt,
+                                                   column_map,
+                                                   stmt_map_info.table_map_))) {
+      LOG_WARN("failed to create missing select items", K(ret));
     } else if (OB_FAIL(ObTransformUtils::merge_table_items(stmt,
                                                            source_table,
                                                            target_table,
                                                            &column_map))) {
       LOG_WARN("failed to merge table items", K(ret));
-    } else if (OB_FAIL(create_missing_select_items(source_stmt, target_stmt,
-                                                   column_map,
-                                                   stmt_map_info.table_map_))) {
-      LOG_WARN("failed to create missing select items", K(ret));
     } else { /*do nothing*/ }
   } else { /*do nothing*/ }
 
@@ -518,7 +511,7 @@ int ObTransformJoinElimination::adjust_table_items(ObDMLStmt *stmt,
 
 int ObTransformJoinElimination::create_missing_select_items(ObSelectStmt *source_stmt,
                                                             ObSelectStmt *target_stmt,
-                                                            const ObIArray<int64_t> &column_map,
+                                                            ObIArray<int64_t> &column_map,
                                                             const ObIArray<int64_t> &table_map)
 {
   int ret = OB_SUCCESS;
@@ -534,11 +527,14 @@ int ObTransformJoinElimination::create_missing_select_items(ObSelectStmt *source
     ObSEArray<ObRawExpr*, 16> new_exprs;
     ObSEArray<ObRawExpr*, 16> old_exprs;
     ObSEArray<SelectItem*, 16> miss_select_items;
+    ObSEArray<int64_t, 16> miss_select_item_idx_array;
     for (int64_t i = 0; OB_SUCC(ret) && i < target_stmt->get_select_item_size(); i++) {
       if (OB_INVALID_ID != column_map.at(i)) {
         /*do nothing*/
       } else if (OB_FAIL(miss_select_items.push_back(&target_stmt->get_select_item(i)))) {
         LOG_WARN("failed to push back select item", K(ret));
+      } else if (OB_FAIL(miss_select_item_idx_array.push_back(i))) {
+        LOG_WARN("failed to push back select item idx", K(ret));
       } else { /*do nothing*/ }
     }
 
@@ -551,6 +547,7 @@ int ObTransformJoinElimination::create_missing_select_items(ObSelectStmt *source
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get unexpected null", K(temp_source_table), K(temp_target_table), K(ret));
         } else if ((temp_source_table->is_basic_table() && temp_target_table->is_basic_table()) ||
+                    (temp_source_table->is_link_table() && temp_target_table->is_link_table()) ||
                    (temp_source_table->is_temp_table() && temp_target_table->is_temp_table()) ||
                    (temp_source_table->is_generated_table() && temp_target_table->is_generated_table())) {
           if (OB_FAIL(ObTransformUtils::merge_table_items(source_stmt,
@@ -585,7 +582,15 @@ int ObTransformJoinElimination::create_missing_select_items(ObSelectStmt *source
       } else if (OB_FAIL(ObTransformUtils::extract_query_ref_expr(miss_select_items.at(i)->expr_,
                                                                   source_stmt->get_subquery_exprs()))) {
         LOG_WARN("failed to extract query ref exprs", K(ret));
-      } else { /*do nothing*/ }
+      } else {
+        int64_t miss_select_item_idx = miss_select_item_idx_array.at(i);
+        if (OB_UNLIKELY(miss_select_item_idx < 0 || miss_select_item_idx >= column_map.count())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get unexpected idx", K(miss_select_item_idx), K(column_map), K(ret));
+        } else {
+          column_map.at(miss_select_item_idx) = source_stmt->get_select_item_size() - 1;
+        }
+      }
     }
   }
   return ret;
@@ -1240,11 +1245,8 @@ int ObTransformJoinElimination::left_join_can_be_eliminated(ObDMLStmt *stmt,
           LOG_WARN("failed to calc const or calculable expr", K(ret));
         } else if (got_result) {
           can_be_eliminated = value.is_false();
-          // add constraints
-          if (condition->is_static_const_expr()) {
-            if (OB_FAIL(ObTransformUtils::add_param_bool_constraint(ctx_, condition, false))) {
-              LOG_WARN("failed to add param bool constraint", K(ret));
-            }
+          if (can_be_eliminated && OB_FAIL(ObTransformUtils::add_param_bool_constraint(ctx_, condition, false))) {
+            LOG_WARN("failed to add param bool constraint", K(ret));
           }
         }
       }
@@ -1703,8 +1705,6 @@ int ObTransformJoinElimination::eliminate_semi_join_self_foreign_key(ObDMLStmt *
       if (OB_ISNULL(semi_info = semi_infos.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null", K(ret), K(semi_info));
-      } else if (OB_FAIL(preprocess_generate_right_table(*stmt, *semi_info))) {
-        LOG_WARN("failed to preprocess generate right table", K(ret));
       } else if (OB_FAIL(eliminate_semi_join_self_key(stmt,
                                                       semi_info,
                                                       candi_conds,
@@ -1730,23 +1730,6 @@ int ObTransformJoinElimination::eliminate_semi_join_self_foreign_key(ObDMLStmt *
         trans_happened = true;
       }
     }
-  }
-  return ret;
-}
-
-// flatten joined table in right table
-int ObTransformJoinElimination::preprocess_generate_right_table(ObDMLStmt &stmt,
-                                                                SemiInfo &semi_info)
-{
-  int ret = OB_SUCCESS;
-  TableItem *right_table = NULL;
-  if (OB_ISNULL(right_table = stmt.get_table_item_by_id(semi_info.right_table_id_))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(right_table), K(ret));
-  } else if (!right_table->is_generated_table()) {
-    /* do nothing */
-  } else if (OB_FAIL(ObTransformUtils::flatten_joined_table(right_table->ref_query_))) {
-    LOG_WARN("failed to faltten joined table", K(ret));
   }
   return ret;
 }
@@ -2078,7 +2061,6 @@ int ObTransformJoinElimination::adjust_source_table(ObDMLStmt *source_stmt,
                                                    target_column_items))) {
     LOG_WARN("failed to get column items", K(ret));
   } else {
-    int64_t miss_output_count = 0;
     uint64_t source_table_id = source_table->table_id_;
     uint64_t target_table_id = target_table->table_id_;
     ColumnItem new_col;
@@ -2102,16 +2084,12 @@ int ObTransformJoinElimination::adjust_source_table(ObDMLStmt *source_stmt,
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get unexpected array count", K(output_id),
               K(output_map->count()), K(ret));
-        } else if (OB_INVALID_ID != output_map->at(output_id)) {
-          column_id = output_map->at(output_id) + OB_APP_MIN_COLUMN_ID;
-          source_col = source_stmt->get_column_item_by_id(source_table_id,
-                                                          column_id);
-        } else if (OB_ISNULL(source_table->ref_query_)) {
+        } else if (OB_UNLIKELY(OB_INVALID_ID == output_map->at(output_id))) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get unexpected null", K(ret));
+          LOG_WARN("invalid output idx", K(output_id), K(ret));
         } else {
-          column_id = source_table->ref_query_->get_select_item_size() + OB_APP_MIN_COLUMN_ID + miss_output_count;
-          ++miss_output_count;
+          column_id = output_map->at(output_id) + OB_APP_MIN_COLUMN_ID;
+          source_col = source_stmt->get_column_item_by_id(source_table_id, column_id);
         }
       }
       if (OB_FAIL(ret) || NULL != source_col) { // add new column to source_stmt
@@ -2203,12 +2181,12 @@ int ObTransformJoinElimination::convert_target_table_column_exprs(ObDMLStmt *sou
                                                   stmt_map_infos.at(i).select_item_map_,
                                                   column_map))) {
         LOG_WARN("failed to reverse select items map", K(ret));
-      } else if (OB_FAIL(adjust_source_table(source_stmt, target_stmt, source_table, target_table,
-                                             &column_map, source_col_exprs, target_col_exprs))) {
-        LOG_WARN("failed to merge table items", K(ret));
       } else if (OB_FAIL(create_missing_select_items(source_ref_query, target_ref_query,
                                                      column_map,
                                                      stmt_map_infos.at(i).table_map_))) {
+      } else if (OB_FAIL(adjust_source_table(source_stmt, target_stmt, source_table, target_table,
+                                             &column_map, source_col_exprs, target_col_exprs))) {
+        LOG_WARN("failed to merge table items", K(ret));
         LOG_WARN("failed to create missing select items", K(ret));
       }
     }
@@ -2948,14 +2926,16 @@ int ObTransformJoinElimination::trans_semi_condition_exprs(ObDMLStmt *stmt,
     }
     /*将所有改写的condition转成NOT(join_cond1) OR NOT(join_cond2) OR ...
       OR LNNVL(expr1) OR LNNVL(expr2) OR ...*/
-    if (OB_SUCC(ret) && !new_conditions.empty()) {
-      ObRawExpr *or_expr = NULL;
-      if (OB_FAIL(ObRawExprUtils::build_or_exprs(*ctx_->expr_factory_, new_conditions, or_expr))) {
+    if (OB_SUCC(ret) ) {
+      ObRawExpr *filter_expr = NULL;
+      if (!new_conditions.empty() && OB_FAIL(ObRawExprUtils::build_or_exprs(*ctx_->expr_factory_, new_conditions, filter_expr))) {
         LOG_WARN("make or expr failed", K(ret));
-      } else if (OB_ISNULL(or_expr)) {
+      } else if (new_conditions.empty() && OB_FAIL(ObRawExprUtils::build_const_bool_expr(ctx_->expr_factory_, filter_expr, false))) {
+        LOG_WARN("make or expr failed", K(ret));
+      } else if (OB_ISNULL(filter_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("or expr is null", K(ret));
-      } else if (OB_FAIL(stmt->get_condition_exprs().push_back(or_expr))) {
+      } else if (OB_FAIL(stmt->get_condition_exprs().push_back(filter_expr))) {
         LOG_WARN("failed to push back cond", K(ret));
       } else {/*do nothing*/}
     } else {/*do nothing*/}

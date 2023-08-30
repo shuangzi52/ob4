@@ -62,6 +62,12 @@ struct ObPLExecRecursionCtx;
 struct ObPLSqlCodeInfo;
 class ObPLContext;
 class ObDbmsCursorInfo;
+#ifdef OB_BUILD_ORACLE_PL
+namespace debugger
+{
+class ObPLDebugger;
+}
+#endif
 } // namespace pl
 
 namespace obmysql
@@ -213,6 +219,7 @@ enum SessionSyncInfoType {
   SESSION_SYNC_TXN_PARTICIPANTS_INFO = 7, // 7: txn dynamic info
   SESSION_SYNC_TXN_EXTRA_INFO = 8,        // 8: txn dynamic info
   SESSION_SYNC_SEQUENCE_CURRVAL = 9, // for sequence currval
+  SESSION_SYNC_ERROR_SYS_VAR = 10, // for error scene need sync sysvar info
   SESSION_SYNC_MAX_TYPE,
 };
 
@@ -362,6 +369,24 @@ public:
   static const int16_t CONINFO_BY_SESS = 0xC078;
 };
 
+// The current system variable synchronization will not trigger synchronization in
+// the error reporting scenario. A new type is added here for variables that still
+// need to be synchronized in the error reporting scenario
+class ObErrorSyncSysVarEncoder : public ObSessInfoEncoder {
+public:
+  ObErrorSyncSysVarEncoder() : ObSessInfoEncoder() {}
+  virtual ~ObErrorSyncSysVarEncoder() {}
+  virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
+  virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
+  virtual int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;
+  virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
+  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
+  virtual int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length,
+                                const char* last_sess_buf, int64_t last_sess_length) override;
+  virtual int display_sess_info(ObSQLSessionInfo &sess, const char* current_sess_buf,
+                                int64_t current_sess_length, const char* last_sess_buf, int64_t last_sess_length) override;
+};
+
 #define DEF_SESSION_TXN_ENCODER(CLS)                                    \
 class CLS final : public ObSessInfoEncoder {                            \
 public:                                                                 \
@@ -426,8 +451,8 @@ struct ObInnerContextMap {
     } else {
       new (context_map_) ObInnerContextHashMap ();
       if (OB_FAIL(context_map_->create(hash::cal_next_prime(32),
-                                      ObModIds::OB_HASH_BUCKET,
-                                      ObModIds::OB_HASH_NODE))) {
+                                       ObModIds::OB_HASH_BUCKET,
+                                       ObModIds::OB_HASH_NODE))) {
         SQL_ENG_LOG(WARN, "failed to init hash map", K(ret));
       }
     }
@@ -506,12 +531,18 @@ public:
       session_type_ = INVALID_TYPE;
       inner_flag_ = false;
       is_ignore_stmt_ = false;
+    #ifdef OB_BUILD_SPM
+      select_plan_type_ = ObSpmCacheCtx::INVALID_TYPE;
+    #endif
     }
   public:
     ObAuditRecordData audit_record_;
     SessionType session_type_;
     bool inner_flag_;
     bool is_ignore_stmt_;
+  #ifdef OB_BUILD_SPM
+    ObSpmCacheCtx::SpmSelectPlanType select_plan_type_;
+  #endif
   };
 
   class CursorCache {
@@ -596,6 +627,8 @@ public:
                                  sort_area_size_(128*1024*1024),
                                  hash_area_size_(128*1024*1024),
                                  enable_query_response_time_stats_(false),
+                                 enable_user_defined_rewrite_rules_(false),
+                                 range_optimizer_max_mem_size_(128*1024*1024),
                                  print_sample_ppm_(0),
                                  last_check_ec_ts_(0),
                                  session_(session)
@@ -611,9 +644,11 @@ public:
     int64_t get_sort_area_size() const { return ATOMIC_LOAD(&sort_area_size_); }
     int64_t get_hash_area_size() const { return ATOMIC_LOAD(&hash_area_size_); }
     bool enable_query_response_time_stats() const { return enable_query_response_time_stats_; }
+    bool enable_udr() const { return ATOMIC_LOAD(&enable_user_defined_rewrite_rules_); }
     int64_t get_print_sample_ppm() const { return ATOMIC_LOAD(&print_sample_ppm_); }
     bool get_px_join_skew_handling() const { return px_join_skew_handling_; }
     int64_t get_px_join_skew_minfreq() const { return px_join_skew_minfreq_; }
+    int64_t get_range_optimizer_max_mem_size() const { return range_optimizer_max_mem_size_; }
   private:
     //租户级别配置项缓存session 上，避免每次获取都需要刷新
     bool is_external_consistent_;
@@ -627,6 +662,8 @@ public:
     int64_t sort_area_size_;
     int64_t hash_area_size_;
     bool enable_query_response_time_stats_;
+    bool enable_user_defined_rewrite_rules_;
+    int64_t range_optimizer_max_mem_size_;
     // for record sys config print_sample_ppm
     int64_t print_sample_ppm_;
     int64_t last_check_ec_ts_;
@@ -649,7 +686,7 @@ public:
 
 
 public:
-  ObSQLSessionInfo();
+  ObSQLSessionInfo(const uint64_t tenant_id=OB_SERVER_TENANT_ID);
   virtual ~ObSQLSessionInfo();
 
   int init(uint32_t sessid, uint64_t proxy_sessid,
@@ -690,6 +727,7 @@ public:
     }
   }
   void set_restore_auto_commit() { restore_auto_commit_ = true; }
+  bool need_restore_auto_commit() const { return restore_auto_commit_; }
   void reset_show_warnings_buf() { show_warnings_buf_.reset(); }
   ObPrivSet get_user_priv_set() const { return user_priv_set_; }
   ObPrivSet get_db_priv_set() const { return db_priv_set_; }
@@ -755,6 +793,14 @@ public:
   int drop_reused_oracle_temp_tables();
   int delete_from_oracle_temp_tables(const obrpc::ObDropTableArg &const_drop_table_arg);
 
+  //To generate an unique key for Oracle Global Temporary Table
+  int64_t get_gtt_session_scope_unique_id() const { return gtt_session_scope_unique_id_; }
+  int64_t get_gtt_trans_scope_unique_id() const { return gtt_trans_scope_unique_id_; }
+  void gen_gtt_session_scope_unique_id();
+  void gen_gtt_trans_scope_unique_id();
+  common::ObIArray<uint64_t> &get_gtt_session_scope_ids() { return gtt_session_scope_ids_; }
+  common::ObIArray<uint64_t> &get_gtt_trans_scope_ids() { return gtt_trans_scope_ids_; }
+
   void set_for_trigger_package(bool value) { is_for_trigger_package_ = value; }
   bool is_for_trigger_package() const { return is_for_trigger_package_; }
   void set_trans_type(transaction::ObTxClass t) { trans_type_ = t; }
@@ -798,6 +844,9 @@ public:
     pl_context_ = pl_stack_ctx;
   }
 
+#ifdef OB_BUILD_ORACLE_PL
+  inline pl::debugger::ObPLDebugger *get_pl_debugger() const { return pl_debugger_; }
+#endif
   bool is_pl_debug_on();
 
   inline void set_pl_attached_id(uint32_t id) { pl_attach_session_id_ = id; }
@@ -830,6 +879,12 @@ public:
   int set_package_variable(ObExecContext &ctx,
     const common::ObString &key, const common::ObObj &value, bool from_proxy = false);
 
+#ifdef OB_BUILD_ORACLE_PL
+  int initialize_pl_debugger();
+  int free_pl_debugger();
+  int get_pl_debugger(uint32_t id, pl::debugger::ObPLDebugger *& pl_debugger);
+  int release_pl_debugger(pl::debugger::ObPLDebugger *pl_debugger);
+#endif
   inline bool get_pl_can_retry() { return pl_can_retry_; }
   inline void set_pl_can_retry(bool can_retry) { pl_can_retry_ = can_retry; }
 
@@ -877,6 +932,14 @@ public:
     inner_flag_ = false;
     session_type_ = USER_SESSION;
   }
+#ifdef OB_BUILD_SPM
+  inline void set_spm_select_plan_type(ObSpmCacheCtx::SpmSelectPlanType type)
+  {
+    select_plan_type_ = type;
+  }
+  inline ObSpmCacheCtx::SpmSelectPlanType get_spm_select_plan_type() const { return select_plan_type_; }
+  inline void reset_spm_select_plan_type() { select_plan_type_ = ObSpmCacheCtx::INVALID_TYPE; }
+#endif
   void set_session_type_with_flag();
   void set_session_type(SessionType session_type) { session_type_ = session_type; }
   inline SessionType get_session_type() const { return session_type_; }
@@ -975,11 +1038,12 @@ public:
   int clear_context(const common::ObString &context_name,
                     const common::ObString &attribute);
   int64_t get_curr_session_context_size() const { return curr_session_context_size_; }
-  void reuse_context_map() 
+  void reuse_context_map()
   {
     for (auto it = contexts_map_.begin(); it != contexts_map_.end(); ++it) {
       if (OB_NOT_NULL(it->second)) {
         it->second->destroy();
+        mem_context_->get_malloc_allocator().free(it->second);
       }
     }
     contexts_map_.reuse();
@@ -1018,6 +1082,7 @@ public:
   ObAppCtxInfoEncoder &get_app_ctx_encoder() { return app_ctx_info_encoder_; }
   ObClientIdInfoEncoder &get_client_info_encoder() { return client_id_info_encoder_;}
   ObControlInfoEncoder &get_control_info_encoder() { return control_info_encoder_;}
+  ObErrorSyncSysVarEncoder &get_error_sync_sys_var_encoder() { return error_sync_sys_var_encoder_;}
   ObSequenceCurrvalEncoder &get_sequence_currval_encoder() { return sequence_currval_encoder_; }
   ObContextsMap &get_contexts_map() { return contexts_map_; }
   ObSequenceCurrvalMap &get_sequence_currval_map() { return sequence_currval_map_; }
@@ -1041,6 +1106,8 @@ public:
   int is_force_temp_table_materialize(bool &force_materialize) const;
   int is_temp_table_transformation_enabled(bool &transformation_enabled) const;
   int is_groupby_placement_transformation_enabled(bool &transformation_enabled) const;
+  bool is_in_range_optimization_enabled() const;
+  int is_better_inlist_enabled(bool &enabled) const;
 
   ObSessionDDLInfo &get_ddl_info() { return ddl_info_; }
   void set_ddl_info(const ObSessionDDLInfo &ddl_info) { ddl_info_ = ddl_info; }
@@ -1096,8 +1163,8 @@ public:
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.get_enable_sql_extension();
   }
-  bool is_ps_prepare_stage() const { return is_ps_prepare_stage_; }
-  void set_is_ps_prepare_stage(bool v) { is_ps_prepare_stage_ = v; }
+  bool is_varparams_sql_prepare() const { return is_varparams_sql_prepare_; }
+  void set_is_varparams_sql_prepare(bool v) { is_varparams_sql_prepare_ = v; }
   int get_tenant_audit_trail_type(ObAuditTrailType &at_type)
   {
     cached_tenant_config_info_.refresh();
@@ -1118,6 +1185,16 @@ public:
   {
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.enable_query_response_time_stats();
+  }
+  bool enable_udr()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.enable_udr();
+  }
+  int64_t get_range_optimizer_max_mem_size()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.get_range_optimizer_max_mem_size();
   }
   int64_t get_tenant_print_sample_ppm()
   {
@@ -1210,7 +1287,8 @@ private:
     if (OB_UNLIKELY(!ps_session_info_map_.created())) {
       ret = ps_session_info_map_.create(common::hash::cal_next_prime(PS_BUCKET_NUM),
                                         common::ObModIds::OB_HASH_BUCKET_PS_SESSION_INFO,
-                                        common::ObModIds::OB_HASH_NODE_PS_SESSION_INFO);
+                                        common::ObModIds::OB_HASH_NODE_PS_SESSION_INFO,
+                                        orig_tenant_id_);
     }
     return ret;
   }
@@ -1225,7 +1303,8 @@ private:
     if (OB_UNLIKELY(!ps_name_id_map_.created())) {
       ret = ps_name_id_map_.create(common::hash::cal_next_prime(PS_BUCKET_NUM),
                                    common::ObModIds::OB_HASH_BUCKET_PS_SESSION_INFO,
-                                   common::ObModIds::OB_HASH_NODE_PS_SESSION_INFO);
+                                   common::ObModIds::OB_HASH_NODE_PS_SESSION_INFO,
+                                   orig_tenant_id_);
     }
     return ret;
   }
@@ -1245,6 +1324,12 @@ private:
   // if false == pl_can_retry_, we can only retry query in PL blocks locally
   bool pl_can_retry_; //标记当前执行的PL是否可以整体重试
 
+#ifdef OB_BUILD_ORACLE_PL
+  pl::debugger::ObPLDebugger *pl_debugger_; // 如果开启了debug, 该字段不为null
+#endif
+#ifdef OB_BUILD_SPM
+  ObSpmCacheCtx::SpmSelectPlanType select_plan_type_;
+#endif
   uint32_t pl_attach_session_id_; // 如果当前session执行过dbms_debug.attach_session, 记录目标session的ID
 
   observer::ObQueryDriver *pl_query_sender_; // send query result in mysql pl
@@ -1281,7 +1366,7 @@ private:
   void *piece_cache_;
   bool is_load_data_exec_session_;
   ObSqlString pl_exact_err_msg_;
-  bool is_ps_prepare_stage_;
+  bool is_varparams_sql_prepare_;
   // Record whether this session has got connection resource, which means it increased connections count.
   // It's used for on_user_disconnect.
   // No matter whether apply for resource successfully, a session will call on_user_disconnect when disconnect.
@@ -1318,7 +1403,8 @@ private:
                             &txn_dynamic_info_encoder_,
                             &txn_participants_info_encoder_,
                             &txn_extra_info_encoder_,
-                            &sequence_currval_encoder_
+                            &sequence_currval_encoder_,
+                            &error_sync_sys_var_encoder_
                             };
   ObSysVarEncoder sys_var_encoder_;
   //ObUserVarEncoder usr_var_encoder_;
@@ -1331,6 +1417,7 @@ private:
   ObTxnParticipantsInfoEncoder txn_participants_info_encoder_;
   ObTxnExtraInfoEncoder txn_extra_info_encoder_;
   ObSequenceCurrvalEncoder sequence_currval_encoder_;
+  ObErrorSyncSysVarEncoder error_sync_sys_var_encoder_;
 public:
   void post_sync_session_info();
   void prep_txn_free_route_baseline(bool reset_audit = true);
@@ -1341,6 +1428,16 @@ public:
   transaction::ObTxnFreeRouteCtx &get_txn_free_route_ctx() { return txn_free_route_ctx_; }
   uint64_t get_txn_free_route_flag() const { return txn_free_route_ctx_.get_audit_record(); }
   void check_txn_free_route_alive();
+  inline int64_t get_vid() const { return vid_; }
+  inline void set_vid(int64_t vid) { vid_ = vid; }
+  inline const common::ObString get_vip() const { return ObString::make_string(vip_buf_);; }
+  inline void set_vip(char *vip_buf) { MEMCPY(vip_buf_, vip_buf, sizeof(vip_buf_)); }
+  inline int32_t get_vport() const { return vport_; }
+  inline void set_vport(int32_t vport) { vport_ = vport; }
+  inline int64_t get_in_bytes() const { return ATOMIC_LOAD(&in_bytes_); }
+  inline void inc_in_bytes(int64_t in_bytes) { IGNORE_RETURN ATOMIC_FAA(&in_bytes_, in_bytes); }
+  inline int64_t get_out_bytes() const { return ATOMIC_LOAD(&out_bytes_); }
+  inline void inc_out_bytes(int64_t out_bytes) { IGNORE_RETURN ATOMIC_FAA(&out_bytes_, out_bytes); }
 private:
   transaction::ObTxnFreeRouteCtx txn_free_route_ctx_;
   //save the current sql exec context in session
@@ -1355,6 +1452,18 @@ private:
   // This situation is unexpected and will report a warning to user.
   bool group_id_not_expected_;
   ObOptimizerTraceImpl optimizer_tracer_;
+  //For Oracle Global Temporary Table
+  //unique key: obs_id(16bit) + timestamp(48bit)
+  int64_t gtt_session_scope_unique_id_;
+  int64_t gtt_trans_scope_unique_id_;
+  //storing table ids of accessed gtts in the session
+  common::ObSEArray<uint64_t, 1> gtt_session_scope_ids_;
+  common::ObSEArray<uint64_t, 1> gtt_trans_scope_ids_;
+  int64_t vid_;
+  char vip_buf_[MAX_IP_ADDR_LENGTH];
+  int32_t vport_;
+  int64_t in_bytes_;
+  int64_t out_bytes_;
 };
 
 inline bool ObSQLSessionInfo::is_terminate(int &ret) const

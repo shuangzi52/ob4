@@ -36,10 +36,10 @@ ObLockID            TABLE_LOCK_ID2;
 ObLockID            TABLE_LOCK_ID3;
 ObTableLockMode     DEFAULT_LOCK_MODE = ROW_EXCLUSIVE;
 ObTableLockMode     DEFAULT_COFLICT_LOCK_MODE = EXCLUSIVE;
-ObTableLockOwnerID  DEFAULT_OWNER_ID = 0;
-ObTableLockOwnerID  CONFLICT_OWNER_ID = 1;
-ObTableLockOwnerID  OWNER_ID2 = 2;
-ObTableLockOwnerID  OWNER_ID3 = 3;
+ObTableLockOwnerID  DEFAULT_OWNER_ID(0);
+ObTableLockOwnerID  CONFLICT_OWNER_ID(1);
+ObTableLockOwnerID  OWNER_ID2(2);
+ObTableLockOwnerID  OWNER_ID3(3);
 ObTableLockOpType   DEFAULT_LOCK_OP_TYPE = ObTableLockOpType::IN_TRANS_DML_LOCK;
 ObTableLockOpType   OUT_TRANS_LOCK_OP_TYPE = ObTableLockOpType::OUT_TRANS_LOCK;
 ObTableLockOpType   OUT_TRANS_UNLOCK_OP_TYPE = ObTableLockOpType::OUT_TRANS_UNLOCK;
@@ -58,7 +58,7 @@ ObTableLockOp       DEFAULT_CONFLICT_OUT_TRANS_LOCK_OP;
 void init_default_lock_test_value()
 {
   int ret = OB_SUCCESS;
-  const int64_t seq_no = 0;
+  const ObTxSEQ seq_no;
   const int64_t create_timestamp = 1;
   const int64_t create_schema_version = 1;
 

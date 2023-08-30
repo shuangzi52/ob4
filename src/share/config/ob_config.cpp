@@ -23,6 +23,8 @@ namespace oceanbase
 {
 namespace common
 {
+ObMemAttr g_config_mem_attr = SET_USE_UNEXPECTED_500("ConfigChecker");
+
 const char *log_archive_config_keywords[] =
 {
   "MANDATORY",
@@ -53,21 +55,51 @@ const char *log_archive_encryption_algorithm_values[] =
   "",
 };
 
+template<typename T>
+static bool check_range(const ObConfigRangeOpts left_opt,
+                        const ObConfigRangeOpts right_opt,
+                        T &&value,
+                        T &&min_value,
+                        T &&max_value)
+{
+  bool left_ret = true;
+  bool right_ret = true;
+  if (ObConfigRangeOpts::OB_CONF_RANGE_NONE == left_opt) {
+    // do nothing
+  } else if (ObConfigRangeOpts::OB_CONF_RANGE_GREATER_THAN == left_opt) {
+    left_ret = value > min_value;
+  } else if (ObConfigRangeOpts::OB_CONF_RANGE_GREATER_EQUAL == left_opt) {
+    left_ret = value >= min_value;
+  } else {
+    left_ret = false;
+  }
+  if (left_ret) {
+    if (ObConfigRangeOpts::OB_CONF_RANGE_NONE == right_opt) {
+      // do nothing
+    } else if (ObConfigRangeOpts::OB_CONF_RANGE_LESS_THAN == right_opt) {
+      right_ret = value < max_value;
+    } else if (ObConfigRangeOpts::OB_CONF_RANGE_LESS_EQUAL == right_opt) {
+      right_ret = value <= max_value;
+    } else {
+      right_ret = false;
+    }
+  }
+  return left_ret && right_ret;
+}
+
 // ObConfigItem
 ObConfigItem::ObConfigItem()
     : ck_(NULL), version_(0), dumped_version_(0), inited_(false), initial_value_set_(false),
-      value_updated_(false), dump_value_updated_(false), value_valid_(false), name_str_(nullptr), info_str_(nullptr),
+      value_updated_(false), value_valid_(false), name_str_(nullptr), info_str_(nullptr),
       range_str_(nullptr), lock_()
 {
-  MEMSET(value_str_, 0, sizeof(value_str_));
-  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
-  MEMSET(value_dump_str_, 0, sizeof(value_dump_str_));
 }
 
 ObConfigItem::~ObConfigItem()
 {
   if (NULL != ck_) {
-    delete ck_;
+    ObConfigChecker *ck = const_cast<ObConfigChecker*>(ck_);
+    OB_DELETE(ObConfigChecker, "unused", ck);
   }
 }
 
@@ -101,6 +133,8 @@ ObConfigIntListItem::ObConfigIntListItem(ObConfigContainer *container,
                                          const ObParameterAttr attr)
     : value_()
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -151,6 +185,8 @@ ObConfigStrListItem::ObConfigStrListItem(ObConfigContainer *container,
                                          const ObParameterAttr attr)
     : value_()
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -340,29 +376,47 @@ bool ObConfigIntegralItem::parse_range(const char *range)
       *p_middle = '\0';
 
       if ('\0' != p_left[1]) {
-        parse(p_left + 1, valid);
+        int64_t val_left = parse(p_left + 1, valid);
         if (valid) {
           if (*p_left == '(') {
-            add_checker(new(std::nothrow) ObConfigGreaterThan(p_left + 1));
+            min_value_ = val_left;
+            left_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_GREATER_THAN;
           } else if (*p_left == '[') {
-            add_checker(new(std::nothrow) ObConfigGreaterEqual(p_left + 1));
+            min_value_ = val_left;
+            left_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_GREATER_EQUAL;
           }
         }
       }
 
       if ('\0' != p_middle[1]) {
-        parse(p_middle + 1, valid);
+        int64_t val_right = parse(p_middle + 1, valid);
         if (valid) {
           if (')' == ch_right) {
-            add_checker(new(std::nothrow) ObConfigLessThan(p_middle + 1));
+            max_value_ = val_right;
+            right_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_LESS_THAN;
           } else if (']' == ch_right) {
-            add_checker(new(std::nothrow) ObConfigLessEqual(p_middle + 1));
+            max_value_ = val_right;
+            right_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_LESS_EQUAL;
           }
         }
       }
 
       bool_ret = true;
     }
+  }
+  return bool_ret;
+}
+
+bool ObConfigIntegralItem::check() const
+{
+  // check order: value_valid_ --> range --> customized checker (for DEF_XXX_WITH_CHECKER)
+  bool bool_ret = false;
+  if (!value_valid_) {
+  } else if (!check_range(left_interval_opt_, right_interval_opt_,
+                          value_, min_value_, max_value_)) {
+  } else if (ck_ && !ck_->check(*this)) {
+  } else {
+    bool_ret = true;
   }
   return bool_ret;
 }
@@ -375,8 +429,12 @@ ObConfigDoubleItem::ObConfigDoubleItem(ObConfigContainer *container,
                                        const char *range,
                                        const char *info,
                                        const ObParameterAttr attr)
-    : value_(0)
+    : value_(0), min_value_(0), max_value_(0),
+      left_interval_opt_(ObConfigRangeOpts::OB_CONF_RANGE_NONE),
+      right_interval_opt_(ObConfigRangeOpts::OB_CONF_RANGE_NONE)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -389,8 +447,12 @@ ObConfigDoubleItem::ObConfigDoubleItem(ObConfigContainer *container,
                                        const char *def,
                                        const char *info,
                                        const ObParameterAttr attr)
-    : value_(0)
+    : value_(0), min_value_(0), max_value_(0),
+      left_interval_opt_(ObConfigRangeOpts::OB_CONF_RANGE_NONE),
+      right_interval_opt_(ObConfigRangeOpts::OB_CONF_RANGE_NONE)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -467,25 +529,43 @@ bool ObConfigDoubleItem::parse_range(const char *range)
       *p_right = '\0';
       *p_middle = '\0';
 
-      parse(p_left + 1, valid);
+      double val_left = parse(p_left + 1, valid);
       if (valid) {
         if (*p_left == '(') {
-          add_checker(new(std::nothrow) ObConfigGreaterThan(p_left + 1));
+          min_value_ = val_left;
+          left_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_GREATER_THAN;
         } else if (*p_left == '[') {
-          add_checker(new(std::nothrow) ObConfigGreaterEqual(p_left + 1));
+          min_value_ = val_left;
+          left_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_GREATER_EQUAL;
         }
       }
 
-      parse(p_middle + 1, valid);
+      double val_right = parse(p_middle + 1, valid);
       if (valid) {
         if (')' == ch_right) {
-          add_checker(new(std::nothrow) ObConfigLessThan(p_middle + 1));
+          max_value_ = val_right;
+          right_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_LESS_THAN;
         } else if (']' == ch_right) {
-          add_checker(new(std::nothrow) ObConfigLessEqual(p_middle + 1));
+          max_value_ = val_right;
+          right_interval_opt_ = ObConfigRangeOpts::OB_CONF_RANGE_LESS_EQUAL;
         }
       }
       bool_ret = true;
     }
+  }
+  return bool_ret;
+}
+
+bool ObConfigDoubleItem::check() const
+{
+  // check order: value_valid_ --> range --> customized checker (for DEF_XXX_WITH_CHECKER)
+  bool bool_ret = false;
+  if (!value_valid_) {
+  } else if (!check_range(left_interval_opt_, right_interval_opt_,
+                          value_, min_value_, max_value_)) {
+  } else if (ck_ && !ck_->check(*this)) {
+  } else {
+    bool_ret = true;
   }
   return bool_ret;
 }
@@ -499,6 +579,8 @@ ObConfigCapacityItem::ObConfigCapacityItem(ObConfigContainer *container,
                                            const char *info,
                                            const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -512,6 +594,8 @@ ObConfigCapacityItem::ObConfigCapacityItem(ObConfigContainer *container,
                                            const char *info,
                                            const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -536,6 +620,8 @@ ObConfigTimeItem::ObConfigTimeItem(ObConfigContainer *container,
                                    const char *info,
                                    const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -549,6 +635,8 @@ ObConfigTimeItem::ObConfigTimeItem(ObConfigContainer *container,
                                    const char *info,
                                    const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -573,6 +661,8 @@ ObConfigIntItem::ObConfigIntItem(ObConfigContainer *container,
                                  const char *info,
                                  const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -586,6 +676,8 @@ ObConfigIntItem::ObConfigIntItem(ObConfigContainer *container,
                                  const char *info,
                                  const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -610,6 +702,8 @@ ObConfigMomentItem::ObConfigMomentItem(ObConfigContainer *container,
                                        const ObParameterAttr attr)
     :  value_()
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -643,6 +737,8 @@ ObConfigBoolItem::ObConfigBoolItem(ObConfigContainer *container,
                                    const ObParameterAttr attr)
     : value_(false)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -684,6 +780,8 @@ ObConfigStringItem::ObConfigStringItem(ObConfigContainer *container,
                                        const char *info,
                                        const ObParameterAttr attr)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -697,6 +795,17 @@ int ObConfigStringItem::copy(char *buf, const int64_t buf_len)
 
   if (OB_FAIL(databuff_printf(buf, buf_len, "%s", inner_value))) {
     OB_LOG(WARN, "buffer not enough", K(ret), K(buf_len), K_(value_str));
+  }
+  return ret;
+}
+
+int ObConfigStringItem::deep_copy_value_string(ObIAllocator &allocator, ObString &dst)
+{
+  int ret = OB_SUCCESS;
+  ObLatchRGuard rd_guard(const_cast<ObLatch&>(lock_), ObLatchIds::CONFIG_LOCK);
+  ObString src = ObString::make_string(value_str_);
+  if (OB_FAIL(ob_write_string(allocator, src, dst))) {
+    OB_LOG(WARN, "fail to deep copy", KR(ret), K(src));
   }
   return ret;
 }
@@ -905,7 +1014,7 @@ int ObConfigLogArchiveOptionsItem::ObInnerConfigLogArchiveOptionsItem::set_defau
   if (ObBackupEncryptionMode::NONE == encryption_mode_) {
     //do nothing
   } else if (ObBackupEncryptionMode::TRANSPARENT_ENCRYPTION == encryption_mode_) {
-    encryption_algorithm_ = ObAesOpMode::ob_aes_128_ecb;
+    encryption_algorithm_ = ObCipherOpMode::ob_aes_128_ecb;
   } else {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid mode for log_archive", K(encryption_mode_));
@@ -919,10 +1028,44 @@ bool ObConfigLogArchiveOptionsItem::ObInnerConfigLogArchiveOptionsItem::is_encry
   if (ObBackupEncryptionMode::NONE == encryption_mode_) {
     //do nothing
   } else if (ObBackupEncryptionMode::TRANSPARENT_ENCRYPTION == encryption_mode_) {
-    is_valid = (ObAesOpMode::ob_aes_128_ecb == encryption_algorithm_
-                || ObAesOpMode::ob_aes_192_ecb == encryption_algorithm_
-                || ObAesOpMode::ob_aes_256_ecb == encryption_algorithm_
-                || ObAesOpMode::ob_sm4_cbc_mode == encryption_algorithm_);
+    switch (encryption_algorithm_) {
+      case ObCipherOpMode::ob_aes_128_ecb:
+      case ObCipherOpMode::ob_aes_192_ecb:
+      case ObCipherOpMode::ob_aes_256_ecb:
+      case ObCipherOpMode::ob_aes_128_gcm:
+      case ObCipherOpMode::ob_aes_192_gcm:
+      case ObCipherOpMode::ob_aes_256_gcm:
+      case ObCipherOpMode::ob_sm4_cbc_mode:
+      case ObCipherOpMode::ob_sm4_gcm:
+        is_valid = true;
+        break;
+      case ObCipherOpMode::ob_aes_128_cbc:
+      case ObCipherOpMode::ob_aes_192_cbc:
+      case ObCipherOpMode::ob_aes_256_cbc:
+      case ObCipherOpMode::ob_aes_128_cfb1:
+      case ObCipherOpMode::ob_aes_192_cfb1:
+      case ObCipherOpMode::ob_aes_256_cfb1:
+      case ObCipherOpMode::ob_aes_128_cfb8:
+      case ObCipherOpMode::ob_aes_192_cfb8:
+      case ObCipherOpMode::ob_aes_256_cfb8:
+      case ObCipherOpMode::ob_aes_128_cfb128:
+      case ObCipherOpMode::ob_aes_192_cfb128:
+      case ObCipherOpMode::ob_aes_256_cfb128:
+      case ObCipherOpMode::ob_aes_128_ofb:
+      case ObCipherOpMode::ob_aes_192_ofb:
+      case ObCipherOpMode::ob_aes_256_ofb:
+      case ObCipherOpMode::ob_sm4_mode:
+      case ObCipherOpMode::ob_sm4_cbc:
+      case ObCipherOpMode::ob_sm4_ecb:
+      case ObCipherOpMode::ob_sm4_ofb:
+      case ObCipherOpMode::ob_sm4_ctr:
+      case ObCipherOpMode::ob_sm4_cfb128:
+        is_valid = false;
+        break;
+      default:
+        is_valid = false;
+        break;
+    }
   } else {
     is_valid = false;
   }
@@ -975,7 +1118,11 @@ ObConfigVersionItem::ObConfigVersionItem(ObConfigContainer *container,
                                          const char *range,
                                          const char *info,
                                          const ObParameterAttr attr)
+    : dump_value_updated_(false)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
+  MEMSET(value_dump_str_, 0, sizeof(value_dump_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }
@@ -988,7 +1135,11 @@ ObConfigVersionItem::ObConfigVersionItem(ObConfigContainer *container,
                                          const char *def,
                                          const char *info,
                                          const ObParameterAttr attr)
+    : dump_value_updated_(false)
 {
+  MEMSET(value_str_, 0, sizeof(value_str_));
+  MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));
+  MEMSET(value_dump_str_, 0, sizeof(value_dump_str_));
   if (OB_LIKELY(NULL != container)) {
     container->set_refactored(ObConfigStringKey(name), this, 1);
   }

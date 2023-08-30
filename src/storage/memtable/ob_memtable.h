@@ -16,6 +16,7 @@
 
 #include "share/ob_tenant_mgr.h"
 #include "share/ob_cluster_version.h"
+#include "lib/literals/ob_literals.h"
 #include "lib/worker.h"
 #include "storage/memtable/ob_memtable_interface.h"
 #include "storage/memtable/mvcc/ob_query_engine.h"
@@ -58,6 +59,7 @@ struct ObMtStat
   int64_t ready_for_flush_time_;
   int64_t create_flush_dag_time_;
   int64_t release_time_;
+  int64_t push_table_into_gc_queue_time_;
   int64_t last_print_time_;
 };
 
@@ -189,16 +191,14 @@ public:
   // old_row is the old version of the row for set action, it contains all columns(NB: it works for liboblog only currently)
   // new_row is the new version of the row for set action, it only contains the necessary columns for update and entire columns for insert
   virtual int set(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObTableIterParam &param,
+      storage::ObTableAccessContext &context,
       const common::ObIArray<share::schema::ObColDesc> &columns, // TODO: remove columns
       const storage::ObStoreRow &row,
       const share::ObEncryptMeta *encrypt_meta);
   virtual int set(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObTableIterParam &param,
+	  storage::ObTableAccessContext &context,
       const common::ObIArray<share::schema::ObColDesc> &columns, // TODO: remove columns
       const ObIArray<int64_t> &update_idx,
       const storage::ObStoreRow &old_row,
@@ -210,20 +210,14 @@ public:
   // tablet_id is necessary for the query_engine's key engine(NB: do we need it now?)
   // columns is the schema of the new_row, it contains the row key
   // row/rowkey/row_iter is the row key or row key iterator for lock
+
   virtual int lock(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
-      common::ObNewRowIterator &row_iter);
-  virtual int lock(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObTableIterParam &param,
+      storage::ObTableAccessContext &context,
       const common::ObNewRow &row);
   virtual int lock(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObTableIterParam &param,
+      storage::ObTableAccessContext &context,
       const blocksstable::ObDatumRowkey &rowkey);
 
   // exist/prefix_exist is used to ensure the (prefix) existance of the row
@@ -237,12 +231,11 @@ public:
   // all_rows_found returns the existance of all of the rowkey(may be deleted) or existance of one of the rowkey(must not be deleted)
   // may_exist returns the possible existance of the rowkey(may be deleted)
   virtual int exist(
-      storage::ObStoreCtx &ctx,
-      const uint64_t table_id,
-      const storage::ObTableReadInfo &read_info,
-      const blocksstable::ObDatumRowkey &rowkey,
-      bool &is_exist,
-      bool &has_found);
+      const storage::ObTableIterParam &param,
+	  storage::ObTableAccessContext &context,
+	  const blocksstable::ObDatumRowkey &rowkey,
+	  bool &is_exist,
+	  bool &has_found);
   virtual int exist(
       storage::ObRowsInfo &rows_info,
       bool &is_exist,
@@ -304,11 +297,10 @@ public:
   // rowkey is the row key used for lock
   // locked returns whether lock is locked by myself
   int check_row_locked_by_myself(
-    storage::ObStoreCtx &ctx,
-    const uint64_t table_id,
-    const storage::ObTableReadInfo &read_info,
+    const storage::ObTableIterParam &param,
+    storage::ObTableAccessContext &context,
     const blocksstable::ObDatumRowkey &rowkey,
-    bool &locked);
+	bool &locked);
 
   // // TODO: ==================== Memtable Other Interface ==================
   int set_freezer(storage::ObFreezer *handler);
@@ -323,9 +315,18 @@ public:
   ObMtStat& get_mt_stat() { return mt_stat_; }
   int64_t get_size() const;
   int64_t get_occupied_size() const;
+  int64_t get_physical_row_cnt() const { return query_engine_.btree_size(); }
   inline bool not_empty() const { return INT64_MAX != get_protection_clock(); };
   void set_max_schema_version(const int64_t schema_version);
   virtual int64_t get_max_schema_version() const override;
+  void set_max_data_schema_version(const int64_t schema_version);
+  int64_t get_max_data_schema_version() const;
+  void set_max_column_cnt(const int64_t column_cnt);
+  int64_t get_max_column_cnt() const;
+  int get_schema_info(
+    const int64_t input_column_cnt,
+    int64_t &max_schema_version_on_memtable,
+    int64_t &max_column_cnt_on_memtable) const;
   int row_compact(ObMvccRow *value,
                   const share::SCN snapshot_version,
                   const int64_t flag);
@@ -363,7 +364,6 @@ public:
   inline void set_resolve_active_memtable_left_boundary(bool flag) { ATOMIC_STORE(&resolve_active_memtable_left_boundary_, flag); }
   inline bool get_resolve_active_memtable_left_boundary() { return ATOMIC_LOAD(&resolve_active_memtable_left_boundary_); }
   void set_freeze_state(const int64_t state);
-  int get_merge_priority_info(ObMergePriorityInfo &merge_priority_info) const;
   void set_minor_merged();
   int64_t get_minor_merged_time() const { return minor_merged_time_; }
   common::ObIAllocator &get_allocator() {return local_allocator_;}
@@ -372,6 +372,11 @@ public:
   virtual int64_t get_upper_trans_version() const override;
   virtual int estimate_phy_size(const ObStoreRowkey* start_key, const ObStoreRowkey* end_key, int64_t& total_bytes, int64_t& total_rows) override;
   virtual int get_split_ranges(const ObStoreRowkey* start_key, const ObStoreRowkey* end_key, const int64_t part_cnt, common::ObIArray<common::ObStoreRange> &range_array) override;
+  int split_ranges_for_sample(const blocksstable::ObDatumRange &table_scan_range,
+                              const double sample_rate_percentage,
+                              ObIAllocator &allocator,
+                              ObIArray<blocksstable::ObDatumRange> &sample_memtable_ranges);
+
   ObQueryEngine &get_query_engine() { return query_engine_; }
   ObMvccEngine &get_mvcc_engine() { return mvcc_engine_; }
   const ObMvccEngine &get_mvcc_engine() const { return mvcc_engine_; }
@@ -415,6 +420,7 @@ public:
   int set_start_scn(const share::SCN start_ts);
   int set_end_scn(const share::SCN freeze_ts);
   int set_max_end_scn(const share::SCN scn);
+  int set_max_end_scn_to_inc_start_scn();
   inline int set_logging_blocked()
   {
     logging_blocked_start_time = common::ObTimeUtility::current_time();
@@ -430,6 +436,16 @@ public:
     }
   }
   inline bool get_logging_blocked() { return ATOMIC_LOAD(&logging_blocked_); }
+  // User should take response of the recommend scn. All version smaller than
+  // recommend scn should belong to the tables before the memtable and the
+  // memtable. And under exception case, user need guarantee all new data is
+  // bigger than the recommend_scn.
+  inline void set_transfer_freeze(const share::SCN recommend_scn)
+  {
+    recommend_snapshot_version_.atomic_set(recommend_scn);
+    ATOMIC_STORE(&transfer_freeze_flag_, true);
+  }
+  inline bool is_transfer_freeze() const { return ATOMIC_LOAD(&transfer_freeze_flag_); }
   int64_t get_unsubmitted_cnt() const { return ATOMIC_LOAD(&unsubmitted_cnt_); }
   int inc_unsubmitted_cnt();
   int dec_unsubmitted_cnt();
@@ -442,7 +458,6 @@ public:
   virtual OB_INLINE int64_t get_timestamp() const override { return timestamp_; }
   void inc_timestamp(const int64_t timestamp) { timestamp_ = MAX(timestamp_, timestamp + 1); }
   int get_active_table_ids(common::ObIArray<uint64_t> &table_ids);
-  bool is_partition_memtable_empty(const uint64_t table_id) const;
   blocksstable::ObDatumRange &m_get_real_range(blocksstable::ObDatumRange &real_range,
                                         const blocksstable::ObDatumRange &range, const bool is_reverse) const;
   int get_tx_table_guard(storage::ObTxTableGuard &tx_table_guard);
@@ -451,28 +466,15 @@ public:
   int resolve_right_boundary_for_migration();
   void unset_logging_blocked_for_active_memtable();
   void resolve_left_boundary_for_active_memtable();
-  inline void set_allow_freeze(const bool allow_freeze) { ATOMIC_STORE(&allow_freeze_, allow_freeze); }
+  void set_allow_freeze(const bool allow_freeze);
   inline bool allow_freeze() const { return ATOMIC_LOAD(&allow_freeze_); }
 
-  /* multi source data operations */
-  virtual int get_multi_source_data_unit(
-      ObIMultiSourceDataUnit *multi_source_data_unit,
-      ObIAllocator *allocator,
-      const bool get_lastest = true);
-  template<class T>
-  int get_multi_source_data_unit_list(
-      const T * const useless_unit,
-      ObMultiSourceData::ObIMultiSourceDataUnitList &dst_list,
-      ObIAllocator *allocator);
-  bool has_multi_source_data_unit(const MultiSourceDataUnitType type) const;
-
-  template<class T>
-  int save_multi_source_data_unit(const T *const multi_source_data_unit,
-                                  const share::SCN scn,
-                                  const bool for_replay,
-                                  const MemtableRefOp ref_op = MemtableRefOp::NONE,
-                                  const bool is_callback = false);
-
+#ifdef OB_BUILD_TDE_SECURITY
+  /*clog encryption related*/
+  int save_encrypt_meta(const uint64_t table_id, const share::ObEncryptMeta *encrypt_meta);
+  int get_encrypt_meta(transaction::ObTxEncryptMeta *&encrypt_meta);
+  bool need_for_save(const share::ObEncryptMeta *encrypt_meta);
+#endif
 
   // Print stat data in log.
   // For memtable debug.
@@ -481,33 +483,38 @@ public:
                      bool &is_all_delay_cleanout,
                      int64_t &count);
   int dump2text(const char *fname);
+  // TODO(handora.qc) ready_for_flush interface adjustment
+  bool is_can_flush() { return ObMemtableFreezeState::READY_FOR_FLUSH == freeze_state_ && share::SCN::max_scn() != get_end_scn(); }
   INHERIT_TO_STRING_KV("ObITable", ObITable, KP(this), KP_(memtable_mgr), K_(timestamp), K_(state),
-                       K_(freeze_clock), K_(max_schema_version), K_(write_ref_cnt), K_(local_allocator),
-                       K_(unsubmitted_cnt), K_(unsynced_cnt),
+                       K_(freeze_clock), K_(max_schema_version), K_(max_data_schema_version), K_(max_column_cnt),
+                       K_(write_ref_cnt), K_(local_allocator), K_(unsubmitted_cnt), K_(unsynced_cnt),
                        K_(logging_blocked), K_(unset_active_memtable_logging_blocked), K_(resolve_active_memtable_left_boundary),
                        K_(contain_hotspot_row), K_(max_end_scn), K_(rec_scn), K_(snapshot_version), K_(migration_clog_checkpoint_scn),
                        K_(is_tablet_freeze), K_(is_force_freeze), K_(contain_hotspot_row),
                        K_(read_barrier), K_(is_flushed), K_(freeze_state), K_(allow_freeze),
                        K_(mt_stat_.frozen_time), K_(mt_stat_.ready_for_flush_time),
                        K_(mt_stat_.create_flush_dag_time), K_(mt_stat_.release_time),
-                       K_(mt_stat_.last_print_time));
+                       K_(mt_stat_.push_table_into_gc_queue_time),
+                       K_(mt_stat_.last_print_time), K_(ls_id), K_(transfer_freeze_flag), K_(recommend_snapshot_version));
 private:
   static const int64_t OB_EMPTY_MEMSTORE_MAX_SIZE = 10L << 20; // 10MB
-  int mvcc_write_(storage::ObStoreCtx &ctx,
-                  const ObMemtableKey *key,
-                  const storage::ObTableReadInfo &read_info,
-                  const ObTxNodeArg &arg,
-                  bool &is_new_locked);
+  int mvcc_write_(
+      const storage::ObTableIterParam &param,
+	  storage::ObTableAccessContext &context,
+	  const ObMemtableKey *key,
+	  const ObTxNodeArg &arg,
+	  bool &is_new_locked);
+
   int mvcc_replay_(storage::ObStoreCtx &ctx,
                    const ObMemtableKey *key,
                    const ObTxNodeArg &arg);
 
   int lock_row_on_frozen_stores_(
-      storage::ObStoreCtx &ctx,
+      const storage::ObTableIterParam &param,
       const ObTxNodeArg &arg,
+      storage::ObTableAccessContext &context,
       const ObMemtableKey *key,
       ObMvccRow *value,
-      const storage::ObTableReadInfo &read_info,
       ObMvccWriteResult &res);
 
   void get_begin(ObMvccAccessCtx &ctx);
@@ -520,22 +527,22 @@ private:
   int check_standby_cluster_schema_condition_(storage::ObStoreCtx &ctx,
                                               const int64_t table_id,
                                               const int64_t table_version);
-  int set_(storage::ObStoreCtx &ctx,
-           const uint64_t table_id,
-           const storage::ObTableReadInfo &read_info,
-           const common::ObIArray<share::schema::ObColDesc> &columns,
-           const storage::ObStoreRow &new_row,
-           const storage::ObStoreRow *old_row,
-           const common::ObIArray<int64_t> *update_idx);
-  int lock_(storage::ObStoreCtx &ctx,
-            const uint64_t table_id,
-            const storage::ObTableReadInfo &read_info,
-            const common::ObStoreRowkey &rowkey);
-  int lock_(storage::ObStoreCtx &ctx,
-            const uint64_t table_id,
-            const storage::ObTableReadInfo &read_info,
-            const common::ObStoreRowkey &rowkey,
-            ObMemtableKey &mtk);
+
+
+  int set_(
+	  const storage::ObTableIterParam &param,
+	  storage::ObTableAccessContext &context,
+      const common::ObIArray<share::schema::ObColDesc> &columns,
+      const storage::ObStoreRow &new_row,
+      const storage::ObStoreRow *old_row,
+      const common::ObIArray<int64_t> *update_idx);
+  int lock_(
+      const storage::ObTableIterParam &param,
+      storage::ObTableAccessContext &context,
+      const common::ObStoreRowkey &rowkey);
+
+
+
   int post_row_write_conflict_(ObMvccAccessCtx &acc_ctx,
                                const ObMemtableKey &row_key,
                                storage::ObStoreRowLockState &lock_state,
@@ -548,6 +555,12 @@ private:
   int64_t dec_unsubmitted_cnt_();
   int64_t inc_unsynced_cnt_();
   int64_t dec_unsynced_cnt_();
+  int64_t try_split_range_for_sample_(const ObStoreRowkey &start_key,
+                                      const ObStoreRowkey &end_key,
+                                      const int64_t range_count,
+                                      ObIAllocator &allocator,
+                                      ObIArray<blocksstable::ObDatumRange> &sample_memtable_ranges);
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMemtable);
   bool is_inited_;
@@ -560,7 +573,8 @@ private:
   ObQueryEngine query_engine_;
   ObMvccEngine mvcc_engine_;
   mutable ObMtStat mt_stat_;
-  int64_t max_schema_version_;  // to record the max schema version of all data
+  int64_t max_schema_version_;  // to record the max schema version of memtable & schema_change_clog
+  int64_t max_data_schema_version_;  // to record the max schema version of write data
   int64_t pending_cb_cnt_; // number of transactions have to sync log
   int64_t unsubmitted_cnt_; // number of trans node to be submitted logs
   int64_t unsynced_cnt_; // number of trans node to be synced logs
@@ -569,6 +583,12 @@ private:
   int64_t logging_blocked_start_time; // record the start time of logging blocked
   bool unset_active_memtable_logging_blocked_;
   bool resolve_active_memtable_left_boundary_;
+  // TODO(handora.qc): remove it as soon as possible
+  // only used for decide special right boundary of memtable
+  bool transfer_freeze_flag_;
+  // only used for decide special snapshot version of memtable
+  share::SCN recommend_snapshot_version_;
+
   share::SCN freeze_scn_;
   share::SCN max_end_scn_;
   share::SCN rec_scn_;
@@ -586,112 +606,10 @@ private:
   lib::Worker::CompatMode mode_;
   int64_t minor_merged_time_;
   bool contain_hotspot_row_;
-  ObMultiSourceData multi_source_data_;
-  mutable common::TCRWLock multi_source_data_lock_;
   transaction::ObTxEncryptMeta *encrypt_meta_;
   common::SpinRWLock encrypt_meta_lock_;
+  int64_t max_column_cnt_; // record max column count of row
 };
-
-template<class T>
-int ObMemtable::save_multi_source_data_unit(const T *const multi_source_data_unit,
-                                            const share::SCN scn,
-                                            const bool for_replay,
-                                            const MemtableRefOp ref_op,
-                                            const bool is_callback)
-{
-  int ret = OB_SUCCESS;
-  TCWLockGuard guard(multi_source_data_lock_);
-
-  if (IS_NOT_INIT) {
-    ret = common::OB_NOT_INIT;
-    TRANS_LOG(WARN, "not inited", K(ret));
-  } else if (OB_ISNULL(multi_source_data_unit)) {
-    ret = common::OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid args", K(ret));
-  } else if (OB_UNLIKELY(!multi_source_data_unit->is_valid())) {
-    ret = common::OB_ERR_UNEXPECTED;
-    TRANS_LOG(WARN, "not valid", K(ret), KPC(multi_source_data_unit));
-  } else {
-    const MultiSourceDataUnitType &type = multi_source_data_unit->type();
-    if (MemtableRefOp::INC_REF == ref_op) {
-      const_cast<T*>(multi_source_data_unit)->inc_unsync_cnt_for_multi_data();
-      TRANS_LOG(INFO, "unsync_cnt_for_multi_data inc", K(key_.tablet_id_), K(type), KPC(multi_source_data_unit));
-    } else if (MemtableRefOp::DEC_REF == ref_op) {
-      const_cast<T*>(multi_source_data_unit)->dec_unsync_cnt_for_multi_data();
-      TRANS_LOG(INFO, "unsync_cnt_for_multi_data dec", K(key_.tablet_id_), K(type), KPC(multi_source_data_unit));
-    }
-    if (MemtableRefOp::INC_REF == ref_op) {
-      inc_unsubmitted_and_unsynced_cnt();
-    }
-    if (OB_FAIL(multi_source_data_.save_multi_source_data_unit(multi_source_data_unit, is_callback))) {
-      TRANS_LOG(WARN, "fail to save to memtable", K(ret), KPC(multi_source_data_unit), K(type), KPC(this));
-      if (MemtableRefOp::INC_REF == ref_op) {
-        const_cast<T*>(multi_source_data_unit)->dec_unsync_cnt_for_multi_data();
-        dec_unsubmitted_and_unsynced_cnt();
-        TRANS_LOG(INFO, "unsync_cnt_for_multi_data dec for rollback", K(key_.tablet_id_), K(type), KPC(multi_source_data_unit));
-      } else if (MemtableRefOp::DEC_REF == ref_op) {
-        const_cast<T*>(multi_source_data_unit)->inc_unsync_cnt_for_multi_data();
-        TRANS_LOG(INFO, "unsync_cnt_for_multi_data inc for rollback", K(key_.tablet_id_), K(type), KPC(multi_source_data_unit));
-      }
-    } else {
-      const share::SCN start_scn = get_start_scn();
-      if (scn > get_start_scn() && scn < share::ObScnRange::MAX_SCN) {
-        if (OB_FAIL(ret)) {
-        }
-        // skip updating max_end_scn of frozen memtable for commit/abort when replay clog.
-        else if ((!for_replay || !is_callback)
-                 && OB_FAIL(set_max_end_scn(scn))) {
-          TRANS_LOG(WARN, "failed to set max_end_scn", K(ret), K(scn), KPC(this));
-        }
-        // commit log is replayed to empty memtable which is frozen after clog switch to follower gracefully, commit status mds will be lost.
-        // so push end_scn to start_scn + 1
-        else if (get_max_end_scn().is_min() && get_end_scn().is_max()) {
-          TRANS_LOG(INFO, "empty memtable push end_scn to start_scn + 1", K(ret), K(scn), KPC(this));
-          if (OB_FAIL(set_end_scn(share::SCN::scn_inc(start_scn)))) {
-            TRANS_LOG(WARN, "failed to set max_end_scn", K(ret), K(scn), KPC(this));
-          }
-        }
-        if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(set_rec_scn(scn))) {
-          TRANS_LOG(WARN, "failed to set rec_scn", K(ret), K(scn), KPC(this));
-        }
-      } else if (share::SCN::invalid_scn() != scn && share::ObScnRange::MAX_SCN != scn) {
-        ret = common::OB_ERR_UNEXPECTED;
-        TRANS_LOG(WARN, "invalid scn", K(ret), K(scn), KPC(this));
-      }
-
-      if (MemtableRefOp::DEC_REF == ref_op) {
-        dec_unsubmitted_and_unsynced_cnt();
-      }
-    }
-    TRANS_LOG(INFO, "memtable save multi source data unit", K(ret), K(scn), K(ref_op),
-              KPC(multi_source_data_unit), K(type), KPC(this));
-  }
-
-  return ret;
-}
-
-template<class T>
-int ObMemtable::get_multi_source_data_unit_list(
-    const T * const useless_unit,
-    ObMultiSourceData::ObIMultiSourceDataUnitList &dst_list,
-    ObIAllocator *allocator)
-{
-  int ret = OB_SUCCESS;
-  TCRLockGuard guard(multi_source_data_lock_);
-
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    TRANS_LOG(WARN, "not inited", K(ret));
-  } else if (OB_UNLIKELY(!multi_source_data_.is_valid())) {
-    ret = OB_ERR_UNEXPECTED;
-    TRANS_LOG(WARN, "multi source data is invalid", K(ret));
-  } else if (OB_FAIL(multi_source_data_.get_multi_source_data_unit_list(useless_unit, dst_list, allocator))) {
-    TRANS_LOG(WARN, "fail to get multi source data unit", K(ret));
-  }
-
-  return ret;
-}
 
 class RowHeaderGetter
 {

@@ -729,7 +729,12 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
     }
-    case USE_FORCE_BLOCK_SAMPLE: {
+    case ENABLE_IN_RANGE_OPTIMIZATION: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
+    case XSOLAPI_GENERATE_WITH_CLAUSE: {
       is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
@@ -868,6 +873,8 @@ ObItemType ObHint::get_hint_type(ObItemType type)
     case T_NO_PRED_DEDUCE:    return T_PRED_DEDUCE;
     case T_NO_PUSH_PRED_CTE:      return T_PUSH_PRED_CTE;
     case T_NO_PULLUP_EXPR :       return T_PULLUP_EXPR;
+    case T_NO_AGGR_FIRST_UNNEST:           return T_AGGR_FIRST_UNNEST;
+    case T_NO_JOIN_FIRST_UNNEST:           return T_JOIN_FIRST_UNNEST;
 
     // optimize hint
     case T_NO_USE_DAS_HINT:     return T_USE_DAS_HINT;
@@ -922,7 +929,9 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_ELIMINATE_JOIN :     return is_enable_hint ? "ELIMINATE_JOIN" : "NO_ELIMINATE_JOIN";
     case T_WIN_MAGIC :          return is_enable_hint ? "WIN_MAGIC" : "NO_WIN_MAGIC";
     case T_PUSH_LIMIT :         return is_enable_hint ? "PUSH_LIMIT" : "NO_PUSH_LIMIT";
-    case T_PULLUP_EXPR :         return is_enable_hint ? "PULLUP_EXPR" : "NO_PULLUP_EXPR";
+    case T_PULLUP_EXPR :        return is_enable_hint ? "PULLUP_EXPR" : "NO_PULLUP_EXPR";
+    case T_AGGR_FIRST_UNNEST:           return is_enable_hint ? "AGGR_FIRST_UNNEST" : "NO_AGGR_FIRST_UNNEST";
+    case T_JOIN_FIRST_UNNEST:           return is_enable_hint ? "JOIN_FIRST_UNNEST" : "NO_JOIN_FIRST_UNNEST";
     // optimize hint
     case T_INDEX_HINT:          return "INDEX";
     case T_FULL_HINT:           return "FULL";
@@ -947,12 +956,13 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_USE_HASH_AGGREGATE:       return is_enable_hint ? "USE_HASH_AGGREGATION"
                                                            : "NO_USE_HASH_AGGREGATION";
     case T_TABLE_PARALLEL:      return "PARALLEL";
-    case T_PQ_DISTRIBUTE_WINDOW:       return "PQ_DISIRIBUTE_WINDOW";
+    case T_PQ_DISTRIBUTE_WINDOW:       return "PQ_DISTRIBUTE_WINDOW";
     case T_GBY_PUSHDOWN:      return is_enable_hint ? "GBY_PUSHDOWN" : "NO_GBY_PUSHDOWN";
     case T_USE_HASH_DISTINCT: return is_enable_hint ? "USE_HASH_DISTINCT" : "NO_USE_HASH_DISTINCT";
     case T_DISTINCT_PUSHDOWN: return is_enable_hint ? "DISTINCT_PUSHDOWN" : "NO_DISTINCT_PUSHDOWN";
     case T_USE_HASH_SET: return is_enable_hint ? "USE_HASH_SET" : "NO_USE_HASH_SET";
     case T_USE_DISTRIBUTED_DML:    return is_enable_hint ? "USE_DISTRIBUTED_DML" : "NO_USE_DISTRIBUTED_DML";
+    case T_TABLE_DYNAMIC_SAMPLING:    return "DYNAMIC_SAMPLING";
     default:                    return NULL;
   }
 }
@@ -1293,6 +1303,59 @@ bool QbNameList::is_equal(const ObIArray<ObString> &qb_name_list) const
     bool all_found = true;
     for (int i = 0; all_found && i < qb_name_list.count(); ++i) {
       if (!has_qb_name(qb_name_list.at(i))) {
+        all_found = false;
+      }
+    }
+    if (all_found) {
+      bret = true;
+    }
+  }
+  return bret;
+}
+
+bool QbNameList::is_subset(const ObIArray<ObSelectStmt*> &stmts) const
+{
+  bool bret = false;
+  if (qb_names_.count() <= stmts.count()) {
+    bool all_found = true;
+    for (int i = 0; all_found && i < qb_names_.count(); ++i) {
+      bool find = false;
+      ObString stmt_qb_name;
+      for (int j = 0; !find && j < stmts.count(); j ++) {
+        int ret = OB_SUCCESS;
+        if (OB_ISNULL(stmts.at(j))) {
+          LOG_WARN("unexpected null stmt");
+        } else if (OB_FAIL(stmts.at(j)->get_qb_name(stmt_qb_name))) {
+          LOG_WARN("failed to get qb name");
+        } else if (0 == stmt_qb_name.case_compare(qb_names_.at(i))) {
+          find = true;
+        }
+      }
+      if (!find) {
+        all_found = false;
+      }
+    }
+    if (all_found) {
+      bret = true;
+    }
+  }
+  return bret;
+}
+
+bool QbNameList::is_subset(const ObIArray<ObString> &qb_name_list) const
+{
+  bool bret = false;
+  if (qb_names_.count() <= qb_name_list.count()) {
+    bool all_found = true;
+    for (int i = 0; all_found && i < qb_names_.count(); ++i) {
+      bool find = false;
+      ObString stmt_qb_name;
+      for (int j = 0; !find && j < qb_name_list.count(); j ++) {
+        if (0 == qb_name_list.at(j).case_compare(qb_names_.at(i))) {
+          find = true;
+        }
+      }
+      if (!find) {
         all_found = false;
       }
     }
@@ -2555,10 +2618,10 @@ void ObTableInHint::set_table(const TableItem& table)
 const char *ObWindowDistHint::get_dist_algo_str(WinDistAlgo dist_algo)
 {
   switch (dist_algo) {
-    case WinDistAlgo::NONE:   return  "NONE";
-    case WinDistAlgo::HASH:   return  "HASH";
-    case WinDistAlgo::RANGE:  return  "RANGE";
-    case WinDistAlgo::LIST:   return  "LIST";
+    case WinDistAlgo::WIN_DIST_NONE:   return  "NONE";
+    case WinDistAlgo::WIN_DIST_HASH:   return  "HASH";
+    case WinDistAlgo::WIN_DIST_RANGE:  return  "RANGE";
+    case WinDistAlgo::WIN_DIST_LIST:   return  "LIST";
     default:  return NULL;
   }
   return NULL;
@@ -2567,15 +2630,128 @@ const char *ObWindowDistHint::get_dist_algo_str(WinDistAlgo dist_algo)
 int ObWindowDistHint::print_hint_desc(PlanText &plan_text) const
 {
   int ret = OB_SUCCESS;
-  char *buf = plan_text.buf_;
-  int64_t &buf_len = plan_text.buf_len_;
-  int64_t &pos = plan_text.pos_;
-  FOREACH_CNT_X(v, algos_, OB_SUCC(ret)) {
-    if (OB_FAIL(BUF_PRINTF(" %s", get_dist_algo_str(*v)))) {
-      LOG_WARN("print failed", K(ret));
+  for (int64_t i = 0; OB_SUCC(ret) && i < win_dist_options_.count(); ++i) {
+    if (OB_FAIL(win_dist_options_.at(i).print_win_dist_option(plan_text))) {
+      LOG_WARN("failed to print win dist option", K(ret), K(i));
     }
   }
   return ret;
+}
+
+int ObWindowDistHint::add_win_dist_option(const ObIArray<ObWinFunRawExpr*> &all_win_funcs,
+                                          const ObIArray<ObWinFunRawExpr*> &cur_win_funcs,
+                                          const WinDistAlgo algo,
+                                          const bool is_push_down,
+                                          const bool use_hash_sort)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<int64_t, 4> win_func_idxs;
+  int64_t idx = OB_INVALID_INDEX;
+  for (int64_t i = 0; OB_SUCC(ret) && i < cur_win_funcs.count(); ++i) {
+    if (OB_UNLIKELY(!ObOptimizerUtil::find_item(all_win_funcs, cur_win_funcs.at(i), &idx))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to find item", K(ret), K(all_win_funcs), K(cur_win_funcs));
+    } else if (OB_FAIL(win_func_idxs.push_back(idx))) {
+      LOG_WARN("failed to push back", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && add_win_dist_option(win_func_idxs, algo, is_push_down, use_hash_sort)) {
+    LOG_WARN("failed to add win dist option", K(ret));
+  }
+  return ret;
+}
+
+int ObWindowDistHint::add_win_dist_option(const ObIArray<int64_t> &win_func_idxs,
+                                          const WinDistAlgo algo,
+                                          const bool is_push_down,
+                                          const bool use_hash_sort)
+{
+  int ret = OB_SUCCESS;
+  int64_t idx = win_dist_options_.count();
+  if (OB_FAIL(win_dist_options_.prepare_allocate(win_dist_options_.count() + 1))) {
+    LOG_WARN("array prepare allocate failed", K(ret));
+  } else {
+    WinDistOption &win_dist_option = win_dist_options_.at(idx);
+    win_dist_option.algo_ = algo;
+    win_dist_option.is_push_down_ = is_push_down;
+    win_dist_option.use_hash_sort_ = use_hash_sort;
+    if (win_dist_option.win_func_idxs_.assign(win_func_idxs)) {
+      LOG_WARN("failed to add win dist option", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObWindowDistHint::WinDistOption::print_win_dist_option(PlanText &plan_text) const
+{
+  int ret = OB_SUCCESS;
+  char *buf = plan_text.buf_;
+  int64_t &buf_len = plan_text.buf_len_;
+  int64_t &pos = plan_text.pos_;
+  if (OB_UNLIKELY(!is_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid WinDistOption", K(ret), K(*this));
+  } else if (win_func_idxs_.empty()) {
+    /* do nothing */
+  } else if (OB_FAIL(BUF_PRINTF(" (%ld", win_func_idxs_.at(0)))) {
+      LOG_WARN("fail to print win func idx", K(ret), K(win_func_idxs_));
+  } else {
+    for (int64_t i = 1; OB_SUCC(ret) && i < win_func_idxs_.count(); ++i) {
+      if (OB_FAIL(BUF_PRINTF(",%ld", win_func_idxs_.at(i)))) {
+        LOG_WARN("fail to print win func idx", K(ret), K(win_func_idxs_));
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(BUF_PRINTF(")"))) {
+      LOG_WARN("failed to print win func idx", K(ret));
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(BUF_PRINTF(" %s", ObWindowDistHint::get_dist_algo_str(algo_)))) {
+    LOG_WARN("failed to print win func dist algo", K(ret));
+  } else if (use_hash_sort_ && OB_FAIL(BUF_PRINTF(" PARTITION_SORT"))) {
+    LOG_WARN("failed to print win func sort", K(ret));
+  } else if (is_push_down_ && OB_FAIL(BUF_PRINTF(" PUSHDOWN"))) {
+    LOG_WARN("failed to print win func push down", K(ret));
+  }
+  return ret;
+}
+
+bool ObWindowDistHint::WinDistOption::is_valid() const
+{
+  bool bret = true;
+  if (WinDistAlgo::WIN_DIST_INVALID == algo_) {
+    bret = false;
+  } else if (WinDistAlgo::WIN_DIST_HASH != algo_ && is_push_down_) {
+    bret = false;
+  } else if (WinDistAlgo::WIN_DIST_HASH != algo_ && WinDistAlgo::WIN_DIST_NONE != algo_ && use_hash_sort_) {
+    bret = false;
+  } else {
+    for (int64_t i = 0; bret && i < win_func_idxs_.count(); ++i) {
+      bret = win_func_idxs_.at(i) >= 0;
+    }
+  }
+  return bret;
+}
+
+int ObWindowDistHint::WinDistOption::assign(const WinDistOption& other)
+{
+  int ret = OB_SUCCESS;
+  algo_ = other.algo_;
+  use_hash_sort_ = other.use_hash_sort_;
+  is_push_down_ = other.is_push_down_;
+  if (OB_FAIL(win_func_idxs_.assign(other.win_func_idxs_))) {
+    LOG_WARN("failed to assign", K(ret));
+  }
+  return ret;
+}
+
+void ObWindowDistHint::WinDistOption::reset()
+{
+  algo_ = WinDistAlgo::WIN_DIST_INVALID;
+  use_hash_sort_ = false;
+  is_push_down_ = false;
+  win_func_idxs_.reuse();
 }
 
 int ObAggHint::assign(const ObAggHint &other)

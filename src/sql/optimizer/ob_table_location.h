@@ -497,7 +497,8 @@ public:
     is_non_partition_optimized_(false),
     tablet_id_(ObTabletID::INVALID_TABLET_ID),
     object_id_(OB_INVALID_ID),
-    related_list_(allocator_)
+    related_list_(allocator_),
+    check_no_partiton_(false)
   {
   }
 
@@ -545,7 +546,8 @@ public:
     is_non_partition_optimized_(false),
     tablet_id_(ObTabletID::INVALID_TABLET_ID),
     object_id_(OB_INVALID_ID),
-    related_list_(allocator_)
+    related_list_(allocator_),
+    check_no_partiton_(false)
   {
   }
   virtual ~ObTableLocation() { reset(); }
@@ -768,7 +770,10 @@ public:
                                           const bool is_dml_table = true);
 
   int calc_not_partitioned_table_ids(ObExecContext &exec_ctx);
-
+  void set_check_no_partiton(const bool check)
+  {
+    check_no_partiton_ = check;
+  }
   TO_STRING_KV(K_(loc_meta),
                K_(part_projector),
                K_(has_dynamic_exec_param),
@@ -909,7 +914,9 @@ private:
                             RowDesc &row_desc,
                             RowDesc &gen_row_desc,
                             const bool only_gen_cols = false);
-
+  int check_can_replace(ObRawExpr *gen_col_expr,
+                        ObRawExpr *col_expr,
+                        bool &can_replace);
   //add partition column
   //add column to row desc and partiton columns
   int add_partition_column(const ObDMLStmt &stmt,
@@ -922,7 +929,8 @@ private:
                                            ObExecContext *exec_ctx,
                                            const share::schema::ObTableSchema *table_schema,
                                            const common::ObIArray<ObRawExpr*> &filter_exprs,
-                                           const common::ObDataTypeCastParams &dtc_params);
+                                           const common::ObDataTypeCastParams &dtc_params,
+                                           const bool is_in_range_optimization_enabled);
 
   int add_se_value_expr(const ObRawExpr *value_expr,
                         RowDesc &value_row_desc,
@@ -950,7 +958,8 @@ private:
                              bool &get_all,
                              bool &is_range_get,
                              const common::ObDataTypeCastParams &dtc_params,
-                             ObExecContext *exec_ctx);
+                             ObExecContext *exec_ctx,
+                             const bool is_in_range_optimization_enabled);
 
   int analyze_filter(const common::ObIArray<ColumnItem> &partition_columns,
                      const ObRawExpr *partition_expr,
@@ -968,7 +977,8 @@ private:
                            bool &always_true,
                            ObPartLocCalcNode *&calc_node,
                            const common::ObDataTypeCastParams &dtc_params,
-                           ObExecContext *exec_ctx);
+                           ObExecContext *exec_ctx,
+                           const bool is_in_range_optimization_enabled);
 
   int extract_eq_op(ObExecContext *exec_ctx,
                     const ObRawExpr *l_expr,
@@ -1055,7 +1065,8 @@ private:
                              ObPartLocCalcNode *&calc_node,
                              ObPartLocCalcNode *&gen_col_node,
                              bool &get_all,
-                             bool &is_range_get);
+                             bool &is_range_get,
+                             const bool is_in_range_optimization_enabled);
 
   int calc_partition_ids_by_in_expr(
                    ObExecContext &exec_ctx,
@@ -1159,6 +1170,7 @@ private:
   ObTabletID tablet_id_;
   ObObjectID object_id_;
   common::ObList<DASRelatedTabletMap::MapEntry, common::ObIAllocator> related_list_;
+  bool check_no_partiton_;
 };
 
 }

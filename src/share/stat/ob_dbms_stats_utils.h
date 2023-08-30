@@ -47,13 +47,13 @@ public:
                                const bool is_online_stat = false);
 
   static int split_batch_write(share::schema::ObSchemaGetterGuard *schema_guard,
-                               const uint64_t tenant_id,
+                               sql::ObSQLSessionInfo *session_info,
+                               common::ObMySQLProxy *sql_proxy,
                                ObIArray<ObOptTableStat*> &table_stats,
                                ObIArray<ObOptColumnStat*> &column_stats,
                                const bool is_index_stat = false,
                                const bool is_history_stat = false,
-                               const bool is_online_stat = false,
-                               const ObObjPrintParams &print_params = ObObjPrintParams());
+                               const bool is_online_stat = false);
 
   static int batch_write_history_stats(sql::ObExecContext &ctx,
                                        ObIArray<ObOptTableStatHandle> &history_tab_handles,
@@ -124,9 +124,18 @@ public:
                                ObIArray<int64_t> &subpart_ids,
                                OSGPartMap *part_map = NULL);
 
+  static int truncate_string_for_opt_stats(const ObObj *old_obj,
+                                           ObIAllocator &alloc,
+                                           ObObj *&new_obj);
+
+  static int shadow_truncate_string_for_opt_stats(ObObj &obj);
+
+  static int64_t get_truncated_str_len(const ObString &str, const ObCollationType cs_type);
+
 private:
   static int batch_write(share::schema::ObSchemaGetterGuard *schema_guard,
                          const uint64_t tenant_id,
+                         ObMySQLTransaction &trans,
                          ObIArray<ObOptTableStat *> &table_stats,
                          ObIArray<ObOptColumnStat*> &column_stats,
                          const int64_t current_time,

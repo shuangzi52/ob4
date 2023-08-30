@@ -108,7 +108,7 @@ int ObPxSubCoord::pre_process()
     if (IS_INTERRUPTED()) {
       // 当前是被QC中断的，不再向QC发送中断
     } else {
-      (void) ObInterruptUtil::interrupt_qc(sqc_arg_.sqc_, ret);
+      (void) ObInterruptUtil::interrupt_qc(sqc_arg_.sqc_, ret, sqc_arg_.exec_ctx_);
     }
   }
 
@@ -138,10 +138,13 @@ void ObPxSubCoord::notify_dispatched_task_exit(int64_t dispatched_worker_count)
 {
   (void) thread_worker_factory_.join();
   auto &tasks = sqc_ctx_.get_tasks();
-  for (int64_t idx = 0; idx < dispatched_worker_count && dispatched_worker_count <= tasks.count(); ++idx) {
+  bool is_interrupted = false;
+  for (int64_t idx = 0;
+       idx < dispatched_worker_count && dispatched_worker_count <= tasks.count() && !is_interrupted;
+       ++idx) {
     int tick = 1;
     ObPxTask &task = tasks.at(idx);
-    while (false == task.is_task_state_set(SQC_TASK_EXIT)) {
+    while (false == task.is_task_state_set(SQC_TASK_EXIT) && !is_interrupted) {
       // 每秒给当前 sqc 中未完成的 tasks 发送一次中断
       // 首次发中断的时间为 100ms 时。定这个时间是为了
       // cover px pool 调度 task 的延迟
@@ -151,7 +154,8 @@ void ObPxSubCoord::notify_dispatched_task_exit(int64_t dispatched_worker_count)
       }
       // 如果 10s 还没有退出，则打印一条日志。按照设计，不会出现这种情况
       if (tick++ % 10000 == 0) {
-        LOG_INFO("waiting for task exit", K(idx), K(dispatched_worker_count), K(tick));
+        is_interrupted = IS_INTERRUPTED();
+        LOG_INFO("waiting for task exit", K(idx), K(dispatched_worker_count), K(tick), K(is_interrupted));
       }
       ob_usleep(1000);
     }
@@ -413,16 +417,15 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
       for (int64_t i = 0; OB_SUCC(ret) && !find && i < sqc.get_temp_table_ctx().count(); ++i) {
         ObSqlTempTableCtx &temp_table_ctx = sqc.get_temp_table_ctx().at(i);
         if (access_op.temp_table_id_ == temp_table_ctx.temp_table_id_) {
-          if (sqc.get_sqc_id() < 0 || sqc.get_sqc_id() >= temp_table_ctx.interm_result_infos_.count()) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("can not find temp table info in sqc meta info", K(ret));
-          } else {
-            ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(sqc.get_sqc_id());
-            std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
-            if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
-              LOG_WARN("failed to assign result ids", K(ret));
-            } else {
-              find = true;
+          for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_ctx.interm_result_infos_.count(); ++j) {
+            if (sqc.get_exec_addr() == temp_table_ctx.interm_result_infos_.at(j).addr_) {
+              ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(j);
+              std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
+              if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
+                LOG_WARN("failed to assign result ids", K(ret));
+              } else {
+                find = true;
+              }
             }
           }
         }
@@ -871,6 +874,7 @@ int ObPxSubCoord::end_ddl(const bool need_commit)
       LOG_WARN("ddl manager finish contex failed", K(ret), K(ddl_ctrl_));
     }
     LOG_INFO("end ddl sstable", K(ret), K(need_commit));
+    DEBUG_SYNC(END_DDL_IN_PX_SUBCOORD);
   }
   if (OB_EAGAIN == ret) {
     ret = OB_STATE_NOT_MATCH; // avoid px hang

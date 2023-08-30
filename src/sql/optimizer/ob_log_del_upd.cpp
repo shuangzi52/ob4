@@ -271,6 +271,24 @@ int IndexDMLInfo::generate_column_old_values_exprs()
   return ret;
 }
 
+int IndexDMLInfo::is_new_row_expr(const ObRawExpr *expr, bool &bret) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    bret = false;
+  } else {
+    bret = ObOptimizerUtil::find_item(column_convert_exprs_, expr)
+        || ObOptimizerUtil::find_item(ck_cst_exprs_, expr)
+        || lookup_part_id_expr_ == expr
+        || new_part_id_expr_ == expr
+        || new_rowid_expr_ == expr;
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !bret && i < assignments_.count(); ++i) {
+    bret = assignments_.at(i).expr_ == expr;
+  }
+  return ret;
+}
+
 ObLogDelUpd::ObLogDelUpd(ObDelUpdLogPlan &plan)
   : ObLogicalOperator(plan),
     my_dml_plan_(plan),
@@ -1405,25 +1423,24 @@ int ObLogDelUpd::print_outline_data(PlanText &plan_text)
   return ret;
 }
 
-int ObLogDelUpd::inner_replace_op_exprs(
-    const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs)
+int ObLogDelUpd::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(replace_dml_info_exprs(to_replace_exprs, get_index_dml_infos()))) {
+  if (OB_FAIL(replace_dml_info_exprs(replacer, get_index_dml_infos()))) {
     LOG_WARN("failed to replace dml info exprs", K(ret));
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, view_check_exprs_))) {
+  } else if (OB_FAIL(replace_exprs_action(replacer, view_check_exprs_))) {
     LOG_WARN("failed to replace view check exprs", K(ret));
-  } else if (OB_FAIL(replace_exprs_action(to_replace_exprs, produced_trans_exprs_))) {
+  } else if (OB_FAIL(replace_exprs_action(replacer, produced_trans_exprs_))) {
     LOG_WARN("failed to replace produced trans exprs", K(ret));
   } else if (NULL != pdml_partition_id_expr_ &&
-    OB_FAIL(replace_expr_action(to_replace_exprs, pdml_partition_id_expr_))) {
+    OB_FAIL(replace_expr_action(replacer, pdml_partition_id_expr_))) {
     LOG_WARN("failed to replace pdml partition id expr", K(ret));
   }
   return ret;
 }
 
 int ObLogDelUpd::replace_dml_info_exprs(
-    const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs,
+    ObRawExprReplacer &replacer,
     const ObIArray<IndexDMLInfo *> &index_dml_infos)
 {
   int ret = OB_SUCCESS;
@@ -1432,31 +1449,29 @@ int ObLogDelUpd::replace_dml_info_exprs(
     if (OB_ISNULL(index_dml_info)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected null", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
+    } else if (OB_FAIL(replace_exprs_action(replacer,
                                             index_dml_info->column_convert_exprs_))) {
       LOG_WARN("failed to replace exprs", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
+    } else if (OB_FAIL(replace_exprs_action(replacer,
                                             index_dml_info->ck_cst_exprs_))) {
       LOG_WARN("failed to replace exprs", K(ret));
     } else if (NULL != index_dml_info->new_part_id_expr_ &&
-            OB_FAIL(replace_expr_action(to_replace_exprs, index_dml_info->new_part_id_expr_))) {
+            OB_FAIL(replace_expr_action(replacer, index_dml_info->new_part_id_expr_))) {
       LOG_WARN("failed to replace new parititon id expr", K(ret));
     } else if (NULL != index_dml_info->old_part_id_expr_ &&
-      OB_FAIL(replace_expr_action(to_replace_exprs, index_dml_info->old_part_id_expr_))) {
+      OB_FAIL(replace_expr_action(replacer, index_dml_info->old_part_id_expr_))) {
       LOG_WARN("failed to replace old parititon id expr", K(ret));
     } else if (NULL != index_dml_info->old_rowid_expr_ &&
-      OB_FAIL(replace_expr_action(to_replace_exprs, index_dml_info->old_rowid_expr_))) {
+      OB_FAIL(replace_expr_action(replacer, index_dml_info->old_rowid_expr_))) {
       LOG_WARN("failed to replace old rowid expr", K(ret));
     } else if (NULL != index_dml_info->new_rowid_expr_ &&
-      OB_FAIL(replace_expr_action(to_replace_exprs, index_dml_info->new_rowid_expr_))) {
+      OB_FAIL(replace_expr_action(replacer, index_dml_info->new_rowid_expr_))) {
       LOG_WARN("failed to replace new rowid expr", K(ret));
-    } else if (OB_FAIL(replace_exprs_action(to_replace_exprs,
-                      index_dml_info->column_old_values_exprs_))) {
+    } else if (OB_FAIL(replace_exprs_action(replacer, index_dml_info->column_old_values_exprs_))) {
       LOG_WARN("failed to replace column old values exprs ", K(ret));
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < index_dml_info->assignments_.count(); ++i) {
-      if (OB_FAIL(replace_expr_action(to_replace_exprs,
-                                      index_dml_info->assignments_.at(i).expr_))) {
+      if (OB_FAIL(replace_expr_action(replacer, index_dml_info->assignments_.at(i).expr_))) {
         LOG_WARN("failed to replace expr", K(ret));
       }
     }
@@ -1478,6 +1493,21 @@ int ObLogDelUpd::print_used_hint(PlanText &plan_text)
       if (match_hint && OB_FAIL(hint->print_hint(plan_text))) {
         LOG_WARN("failed to print use multi part dml hint", K(ret));
       }
+    }
+  }
+  return ret;
+}
+
+int ObLogDelUpd::is_my_fixed_expr(const ObRawExpr *expr, bool &is_fixed)
+{
+  int ret = OB_SUCCESS;
+  const ObIArray<IndexDMLInfo *> &index_dml_infos = get_index_dml_infos();
+  for (int64_t i = 0; OB_SUCC(ret) && !is_fixed && i < index_dml_infos.count(); ++i) {
+    if (OB_ISNULL(index_dml_infos.at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("index dml info is null", K(ret));
+    } else if (OB_FAIL(index_dml_infos.at(i)->is_new_row_expr(expr, is_fixed))) {
+      LOG_WARN("failed to check is new row expr", K(ret));
     }
   }
   return ret;

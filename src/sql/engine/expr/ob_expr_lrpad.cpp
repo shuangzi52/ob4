@@ -198,11 +198,35 @@ int ObExprBaseLRpad::calc_type_length_oracle(const ObExprResType &result_type,
   return ret;
 }
 
+int ObExprBaseLRpad::get_origin_len_obj(ObObj &len_obj) const
+{
+  int ret = OB_SUCCESS;
+  ObRawExpr *expr = NULL;
+  if (OB_ISNULL(expr = get_raw_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("fail to get_raw_expr", K(ret));
+  } else if (expr->get_children_count() >= 2 && OB_NOT_NULL(expr = expr->get_param_expr(1))
+             && expr->get_expr_type() == T_FUN_SYS_CAST && CM_IS_IMPLICIT_CAST(expr->get_extra())) {
+    do {
+      if (expr->get_children_count() >= 1
+          && OB_ISNULL(expr = expr->get_param_expr(0))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("fail to get_param_expr", K(ret));
+      }
+    } while (OB_SUCC(ret) && T_FUN_SYS_CAST == expr->get_expr_type()
+             && CM_IS_IMPLICIT_CAST(expr->get_extra()));
+    if (OB_SUCC(ret)) {
+      len_obj = expr->get_result_type().get_param();
+    }
+  }
+  return ret;
+}
+
 int ObExprBaseLRpad::calc_type(ObExprResType &type,
                                ObExprResType &text,
                                ObExprResType &len,
                                ObExprResType *pad_text,
-                               ObExprTypeCtx &type_ctx)
+                               ObExprTypeCtx &type_ctx) const
 {
   int ret = OB_SUCCESS;
   ObObjType text_type = ObNullType;
@@ -248,9 +272,6 @@ int ObExprBaseLRpad::calc_type(ObExprResType &type,
     len.set_calc_type(len_type);
     if (is_mysql_mode()) {
       pad_obj = pad_text->get_param();
-      type.set_type(text_type);
-      text.set_calc_type(text_type);
-      pad_text->set_calc_type(text_type);
       ObSEArray<ObExprResType, 2> types;
       OZ(types.push_back(text));
       OZ(types.push_back(*pad_text));
@@ -258,6 +279,28 @@ int ObExprBaseLRpad::calc_type(ObExprResType &type,
                                               type_ctx.get_coll_type()));
       OX(text.set_calc_collation_type(type.get_collation_type()));
       OX(pad_text->set_calc_collation_type(type.get_collation_type()));
+      if (OB_SUCC(ret)) {
+        // len expr may add cast, search real len obj
+        if (OB_FAIL(get_origin_len_obj(length_obj))) {
+          LOG_WARN("fail to get ori len obj", K(ret));
+        } else if (!length_obj.is_null()) {
+          if (OB_FAIL(calc_type_length_mysql(type, text_obj, pad_obj, length_obj, type_ctx.get_session(), text_len))) {
+            LOG_WARN("failed to calc result type length mysql mode", K(ret));
+          }
+        } else {
+          text_len = max_len;
+        }
+        if (OB_SUCC(ret)) {
+          text_type = get_result_type_mysql(text_len);
+          type.set_type(text_type);
+          if (!ob_is_text_tc(text.get_type())) {
+            text.set_calc_type(text_type);
+          }
+          if (!ob_is_text_tc(pad_text->get_type())) {
+            pad_text->set_calc_type(text_type);
+          }
+        }
+      }
     } else {
       ObSEArray<ObExprResType*, 2> types;
       OZ(types.push_back(&text));
@@ -287,8 +330,6 @@ int ObExprBaseLRpad::calc_type(ObExprResType &type,
       if (!length_obj.is_null()) {
         if (is_oracle_mode && OB_FAIL(calc_type_length_oracle(type, text_obj, pad_obj, length_obj, text_len))) {
           LOG_WARN("failed to calc result type length oracle mode", K(ret));
-        } else if (!is_oracle_mode && OB_FAIL(calc_type_length_mysql(type, text_obj, pad_obj, length_obj, type_ctx.get_session(), text_len))) {
-          LOG_WARN("failed to calc result type length mysql mode", K(ret));
         }
       } else {
         text_len = max_len;
@@ -640,6 +681,7 @@ int ObExprBaseLRpad::calc_mysql_inner(const LRpadType pad_type,
   const ObCollationType cs_type = expr.datum_meta_.cs_type_;
   const ObObjType type = expr.datum_meta_.type_;
   bool has_lob_header = expr.obj_meta_.has_lob_header();
+  bool has_set_to_lob_locator = false;
   int64_t int_len = len.get_int();
   if (int_len < 0) {
     res.set_null();
@@ -652,28 +694,46 @@ int ObExprBaseLRpad::calc_mysql_inner(const LRpadType pad_type,
     // only substr needed
     result_size = ObCharset::charpos(cs_type, str_text.ptr(), str_text.length(), int_len);
     res.set_string(ObString(result_size, str_text.ptr()));
-  } else if (str_pad.length() == 0) {
-    res.set_null();
-  } else if (OB_FAIL(get_padding_info_mysql(cs_type, str_text, int_len, str_pad,
-              max_result_size, repeat_count, prefix_size, result_size))) {
-    LOG_WARN("Failed to get padding info", K(ret), K(str_text), K(int_len),
-                                            K(str_pad), K(max_result_size));
-  } else if (result_size > max_result_size) {
-    res.set_null();
-    if (pad_type == RPAD_TYPE) {
-      LOG_USER_WARN(OB_ERR_FUNC_RESULT_TOO_LARGE, "rpad", static_cast<int>(max_result_size));
-    } else {
-      LOG_USER_WARN(OB_ERR_FUNC_RESULT_TOO_LARGE, "lpad", static_cast<int>(max_result_size));
-    }
-  } else if (OB_FAIL(padding(pad_type, cs_type, str_text.ptr(), str_text.length(), str_pad.ptr(),
-                              str_pad.length(), prefix_size, repeat_count, false, &res_alloc,
-                              result_ptr, result_size, type, has_lob_header))) {
-    LOG_WARN("Failed to pad", K(ret), K(str_text), K(str_pad), K(prefix_size), K(repeat_count));
   } else {
-    if (NULL == result_ptr || 0 == result_size) {
+    has_set_to_lob_locator = true;
+    if (str_pad.length() == 0) {
+      res.set_string(ObString::make_empty_string());
+    } else if (OB_FAIL(get_padding_info_mysql(cs_type, str_text, int_len, str_pad,
+                max_result_size, repeat_count, prefix_size, result_size))) {
+      LOG_WARN("Failed to get padding info", K(ret), K(str_text), K(int_len),
+                                              K(str_pad), K(max_result_size));
+    } else if (result_size > max_result_size) {
       res.set_null();
+      if (pad_type == RPAD_TYPE) {
+        LOG_USER_WARN(OB_ERR_FUNC_RESULT_TOO_LARGE, "rpad", static_cast<int>(max_result_size));
+      } else {
+        LOG_USER_WARN(OB_ERR_FUNC_RESULT_TOO_LARGE, "lpad", static_cast<int>(max_result_size));
+      }
+    } else if (OB_FAIL(padding(pad_type, cs_type, str_text.ptr(), str_text.length(), str_pad.ptr(),
+                                str_pad.length(), prefix_size, repeat_count, false, &res_alloc,
+                                result_ptr, result_size, type, has_lob_header))) {
+      LOG_WARN("Failed to pad", K(ret), K(str_text), K(str_pad), K(prefix_size), K(repeat_count));
     } else {
-      res.set_string(result_ptr, result_size);
+      if (NULL == result_ptr || 0 == result_size) {
+        res.set_null();
+      } else {
+        res.set_string(result_ptr, result_size);
+      }
+    }
+  }
+  if (OB_SUCC(ret) && ob_is_text_tc(type) && !res.is_null() &&
+      has_lob_header && !has_set_to_lob_locator) {
+    ObString data = res.get_string();
+    ObTextStringResult result_buffer(type, has_lob_header, &res_alloc);
+    int64_t buffer_len = 0;
+    if (OB_FAIL(result_buffer.init(data.length()))) {
+      LOG_WARN("init stringtextbuffer failed", K(ret), K(data));
+    } else if (OB_FAIL(result_buffer.append(data))) {
+      LOG_WARN("temp lob lseek failed", K(ret));
+    } else {
+      ObString output;
+      result_buffer.get_result_buffer(output);
+      res.set_string(output);
     }
   }
   return ret;
@@ -1050,9 +1110,20 @@ int ObExprBaseLRpad::calc_oracle(LRpadType pad_type, const ObExpr &expr,
     int64_t text_width = 0;
     const ObString &str_text = text.get_string();
     const ObString &str_pad = pad_text.get_string();
-    int64_t max_result_size = ob_is_text_tc(expr.datum_meta_.type_) ?
-                                OB_MAX_LONGTEXT_LENGTH: OB_MAX_ORACLE_VARCHAR_LENGTH;
     const ObCollationType cs_type = expr.datum_meta_.cs_type_;
+
+    // max varchar size is 4000 in Oracle SQL, however 32767 in PL/SQL
+    // OB does not support `MAX_STRING_SIZE = EXTENDED` for now
+    const ObExprOracleLRpadInfo *info = nullptr;
+    int64_t max_varchar_size = OB_MAX_ORACLE_VARCHAR_LENGTH;
+    if (OB_NOT_NULL(info = static_cast<ObExprOracleLRpadInfo *>(expr.extra_info_)) &&
+        info->is_called_in_sql_) {
+      const int64_t STANDARD_MAX_ORACLE_VARCHAR_LENGTH = 4000;
+      max_varchar_size = STANDARD_MAX_ORACLE_VARCHAR_LENGTH;
+    }
+    int64_t max_result_size = ob_is_text_tc(expr.datum_meta_.type_)
+        ? OB_MAX_LONGTEXT_LENGTH
+        : max_varchar_size;
 
     number::ObNumber len_num(len.get_number());
     int64_t decimal_parts = -1;
@@ -1241,9 +1312,25 @@ int ObExprOracleLpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_exp
                               ObExpr &rt_expr) const
 {
   int ret = OB_SUCCESS;
-  UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);
-  rt_expr.eval_func_ = calc_oracle_lpad_expr;
+  if (OB_ISNULL(expr_cg_ctx.allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Allocator is NULL", K(ret));
+  } else {
+    ObIAllocator &alloc = *expr_cg_ctx.allocator_;
+    ObIExprExtraInfo *extra_info = nullptr;
+    if (OB_FAIL(ObExprExtraInfoFactory::alloc(alloc, rt_expr.type_, extra_info))) {
+      LOG_WARN("Failed to allocate memory for ObExprOracleLRpadInfo", K(ret));
+    } else if (OB_ISNULL(extra_info)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("extra_info should not be nullptr", K(ret));
+    } else {
+      ObExprOracleLRpadInfo *info = static_cast<ObExprOracleLRpadInfo *>(extra_info);
+      info->is_called_in_sql_ = is_called_in_sql();
+      rt_expr.extra_info_ = extra_info;
+      rt_expr.eval_func_ = calc_oracle_lpad_expr;
+    }
+  }
   return ret;
 }
 
@@ -1298,9 +1385,25 @@ int ObExprOracleRpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_exp
                               ObExpr &rt_expr) const
 {
   int ret = OB_SUCCESS;
-  UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);
-  rt_expr.eval_func_ = calc_oracle_rpad_expr;
+  if (OB_ISNULL(expr_cg_ctx.allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Allocator is NULL", K(ret));
+  } else {
+    ObIAllocator &alloc = *expr_cg_ctx.allocator_;
+    ObIExprExtraInfo *extra_info = nullptr;
+    if (OB_FAIL(ObExprExtraInfoFactory::alloc(alloc, rt_expr.type_, extra_info))) {
+      LOG_WARN("Failed to allocate memory for ObExprOracleLRpadInfo", K(ret));
+    } else if (OB_ISNULL(extra_info)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("extra_info should not be nullptr", K(ret));
+    } else {
+      ObExprOracleLRpadInfo *info = static_cast<ObExprOracleLRpadInfo *>(extra_info);
+      info->is_called_in_sql_ = is_called_in_sql();
+      rt_expr.extra_info_ = extra_info;
+      rt_expr.eval_func_ = calc_oracle_rpad_expr;
+    }
+  }
   return ret;
 }
 
@@ -1310,6 +1413,44 @@ int ObExprOracleRpad::calc_oracle_rpad_expr(const ObExpr &expr, ObEvalCtx &ctx,
   return calc_oracle_pad_expr(expr, ctx, RPAD_TYPE, res);
 }
 /* ObExprRpadOracle END }}} */
+
+OB_DEF_SERIALIZE(ObExprOracleLRpadInfo)
+{
+  int ret = OB_SUCCESS;
+  LST_DO_CODE(OB_UNIS_ENCODE, is_called_in_sql_);
+  return ret;
+}
+
+OB_DEF_DESERIALIZE(ObExprOracleLRpadInfo)
+{
+  int ret = OB_SUCCESS;
+  LST_DO_CODE(OB_UNIS_DECODE, is_called_in_sql_);
+  return ret;
+}
+
+OB_DEF_SERIALIZE_SIZE(ObExprOracleLRpadInfo)
+{
+  int64_t len = 0;
+  LST_DO_CODE(OB_UNIS_ADD_LEN, is_called_in_sql_);
+  return len;
+}
+
+int ObExprOracleLRpadInfo::deep_copy(common::ObIAllocator &allocator,
+                                     const ObExprOperatorType type,
+                                     ObIExprExtraInfo *&copied_info) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObExprExtraInfoFactory::alloc(allocator, type, copied_info))) {
+    LOG_WARN("Failed to allocate memory for ObExprOracleLRpadInfo", K(ret));
+  } else if (OB_ISNULL(copied_info)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("extra_info should not be nullptr", K(ret));
+  } else {
+    ObExprOracleLRpadInfo *other = static_cast<ObExprOracleLRpadInfo *>(copied_info);
+    other->is_called_in_sql_ = is_called_in_sql_;
+  }
+  return ret;
+}
 
 } // namespace sql
 } // namespace oceanbase

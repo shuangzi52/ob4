@@ -28,10 +28,10 @@ OB_SERIALIZE_MEMBER((ObPxTaskChSet, dtl::ObDtlChSet), sqc_id_, task_id_);
 OB_SERIALIZE_MEMBER(ObPxPartChMapItem, first_, second_, third_);
 OB_SERIALIZE_MEMBER(ObPxReceiveDataChannelMsg, child_dfo_id_, ch_sets_, ch_total_info_, has_filled_channel_);
 OB_SERIALIZE_MEMBER(ObPxTransmitDataChannelMsg, ch_sets_, part_affinity_map_, ch_total_info_, has_filled_channel_);
-OB_SERIALIZE_MEMBER(ObPxInitSqcResultMsg, dfo_id_, sqc_id_, rc_, task_count_);
+OB_SERIALIZE_MEMBER(ObPxInitSqcResultMsg, dfo_id_, sqc_id_, rc_, task_count_, err_msg_);
 OB_SERIALIZE_MEMBER(ObPxFinishSqcResultMsg, dfo_id_, sqc_id_, rc_, trans_result_,
                     task_monitor_info_array_, sqc_affected_rows_, dml_row_info_,
-                    temp_table_id_, interm_result_ids_, fb_info_);
+                    temp_table_id_, interm_result_ids_, fb_info_, err_msg_, das_retry_rc_);
 OB_SERIALIZE_MEMBER(ObPxFinishTaskResultMsg, dfo_id_, sqc_id_, task_id_, rc_);
 OB_SERIALIZE_MEMBER((ObPxBloomFilterChInfo, dtl::ObDtlChTotalInfo), filter_id_);
 OB_SERIALIZE_MEMBER((ObPxBloomFilterChSet, dtl::ObDtlChSet), filter_id_, sqc_id_);
@@ -87,37 +87,6 @@ void ObPxTabletRange::reset()
 bool ObPxTabletRange::is_valid() const
 {
   return tablet_id_ >= 0 && range_cut_.count() >= 0;
-}
-
-int ObPxTabletRange::deep_copy_from(const ObPxTabletRange &other, common::ObIAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  reset();
-  tablet_id_ = other.tablet_id_;
-  range_weights_ = other.range_weights_;
-  if (OB_FAIL(range_cut_.reserve(other.range_cut_.count()))) {
-    LOG_WARN("reserve end keys failed", K(ret), K(other.range_cut_.count()));
-  }
-  DatumKey copied_key;
-  RangeWeight range_weight;
-  ObDatum tmp_datum;
-  for (int64_t i = 0; OB_SUCC(ret) && i < other.range_cut_.count(); ++i) {
-    const DatumKey &cur_key = other.range_cut_.at(i);
-    copied_key.reuse();
-    range_weight.reuse();
-    for (int64_t j = 0; OB_SUCC(ret) && j < cur_key.count(); ++j) {
-      if (OB_FAIL(tmp_datum.deep_copy(cur_key.at(j), allocator))) {
-        LOG_WARN("deep copy datum failed", K(ret), K(i), K(j), K(cur_key.at(j)));
-      } else if (OB_FAIL(copied_key.push_back(tmp_datum))) {
-        LOG_WARN("push back datum failed", K(ret), K(i), K(j), K(tmp_datum));
-      }
-    }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(range_cut_.push_back(copied_key))) {
-      LOG_WARN("push back rowkey failed", K(ret), K(copied_key), K(i));
-    }
-  }
-  return ret;
 }
 
 int ObPxTabletRange::assign(const ObPxTabletRange &other)

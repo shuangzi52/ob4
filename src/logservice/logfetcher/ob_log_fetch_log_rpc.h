@@ -180,7 +180,8 @@ public:
   void reset();
 
   int init(
-      const uint64_t tenant_id,
+      const uint64_t source_tenant_id,
+      const uint64_t self_tenant_id,
       IObLogRpc &rpc,
       IObLSWorker &stream_worker,
       IFetchLogARpcResultPool &result_pool);
@@ -285,6 +286,7 @@ private:
       const bool need_stop_rpc,
       const RpcStopReason rpc_stop_reason,
       const bool need_dispatch_stream_task);
+  void process_errsim_code_(FetchLogARpcResult *result);
 
 private:
   ////////////////////////////// RpcCB //////////////////////////////
@@ -409,7 +411,7 @@ private:
 
 public:
   TO_STRING_KV(
-      K_(tenant_id),
+      K_(source_tenant_id),
       "host", reinterpret_cast<void *>(&host_),
       "state", print_state(state_),
       "rpc_result_cnt", res_queue_.count(),
@@ -421,7 +423,8 @@ private:
 
   FetchStream               &host_;
 
-  uint64_t                  tenant_id_;
+  uint64_t                  source_tenant_id_;
+  uint64_t                  self_tenant_id_;
   common::ObAddr            svr_;
   IObLogRpc                 *rpc_;
   IObLSWorker               *stream_worker_;
@@ -500,6 +503,7 @@ class FetchLogARpcResultPool : public IFetchLogARpcResultPool
 {
   typedef common::ObSmallObjPool<FetchLogARpcResult> ResultPool;
   // 16M
+public:
   static const int64_t DEFAULT_RESULT_POOL_BLOCK_SIZE = (1 << 24L) + (1 << 20L);
 
 public:

@@ -41,19 +41,28 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
                                        ObEvalCtx &eval_ctx,
                                        int64_t row_num,
                                        const ColContentIArray &column_infos,
-                                       bool is_ignore,
+                                       const ObDASDMLBaseCtDef &das_ctdef,
+                                       bool is_single_value,
                                        ObTableModifyOp &dml_op)
 {
   int ret = OB_SUCCESS;
+  const bool is_ignore = das_ctdef.is_ignore_;
+  ObSQLSessionInfo *session = NULL;
   CK(row.count() >= column_infos.count());
+  if (OB_ISNULL(session = dml_op.get_exec_ctx().get_my_session())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("session is NULL", K(ret));
+  }
   for (int i = 0; OB_SUCC(ret) && i < column_infos.count(); i++) {
     ObDatum *datum = NULL;
     const bool is_nullable = column_infos.at(i).is_nullable_;
     uint64_t col_idx = column_infos.at(i).projector_index_;
     if (OB_FAIL(row.at(col_idx)->eval(eval_ctx, datum))) {
-      dml_op.log_user_error_inner(ret, row_num, column_infos.at(i));
+      common::ObString column_name = column_infos.at(i).column_name_;
+      ret = ObDMLService::log_user_error_inner(ret, row_num, column_name, dml_op.get_exec_ctx());
     } else if (!is_nullable && datum->is_null()) {
-      if (is_ignore) {
+      if (is_ignore ||
+          (lib::is_mysql_mode() && !is_single_value && !is_strict_mode(session->get_sql_mode()))) {
         ObObj zero_obj;
         ObDatum &row_datum = row.at(col_idx)->locate_datum_for_write(eval_ctx);
         if (is_oracle_mode()) {
@@ -66,8 +75,10 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
         } else if (OB_FAIL(ObObjCaster::get_zero_value(
             row.at(col_idx)->obj_meta_.get_type(),
             row.at(col_idx)->obj_meta_.get_collation_type(),
+            das_ctdef.column_accuracys_.at(col_idx).get_length(),
+            eval_ctx.exec_ctx_.get_allocator(),
             zero_obj))) {
-          LOG_WARN("get column default zero value failed", K(ret), K(column_infos.at(i)));
+          LOG_WARN("get column default zero value failed", K(ret), K(column_infos.at(i)), K(row.at(col_idx)->max_length_));
         } else if (OB_FAIL(ObTextStringResult::ob_convert_obj_temporay_lob(zero_obj, eval_ctx.exec_ctx_.get_allocator()))) {
           LOG_WARN("convert lob types zero obj failed", K(ret), K(zero_obj));
         } else if (OB_FAIL(row_datum.from_obj(zero_obj))) {
@@ -102,12 +113,14 @@ int ObDMLService::check_column_type(const ExprFixedArray &dml_row,
   int ret = OB_SUCCESS;
   CK(dml_row.count() >= column_infos.count());
   ObArenaAllocator tmp_allocator(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+  dml_op.get_exec_ctx().set_cur_rownum(row_num);
   for (int64_t i = 0; OB_SUCC(ret) && i < column_infos.count(); ++i) {
     const ColumnContent &column_info = column_infos.at(i);
     ObExpr *expr = dml_row.at(column_info.projector_index_);
     ObDatum *datum = nullptr;
     if (OB_FAIL(expr->eval(dml_op.get_eval_ctx(), datum))) {
-      dml_op.log_user_error_inner(ret, row_num, column_info);
+      common::ObString column_name = column_infos.at(i).column_name_;
+      ret = ObDMLService::log_user_error_inner(ret, row_num, column_name, dml_op.get_exec_ctx());
     } else if (!datum->is_null() && expr->obj_meta_.is_geometry()) {
       // geo column type
       const uint32_t column_srid = column_info.srs_info_.srid_;
@@ -180,6 +193,7 @@ int ObDMLService::check_rowkey_whether_distinct(const ObExprPtrIArray &row,
           } else if (OB_FAIL(expr->eval(eval_ctx, col_datum))) {
             LOG_WARN("failed to evaluate expr in rowkey", K(ret), K(i));
           } else if (OB_ISNULL(col_datum)) {
+            ret = OB_ERR_UNEXPECTED;
             LOG_WARN("evaluated column datum in rowkey is nullptr", K(ret), K(i));
           } else if (OB_FAIL(col_datum->to_obj(tmp_obj_ptr[i], expr->obj_meta_, expr->obj_datum_map_))) {
             LOG_WARN("convert datum to obj failed", K(ret), K(i));
@@ -587,7 +601,8 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
                                       dml_op.get_eval_ctx(),
                                       ins_rtdef.cur_row_num_,
                                       ins_ctdef.column_infos_,
-                                      ins_ctdef.das_ctdef_.is_ignore_,
+                                      ins_ctdef.das_ctdef_,
+                                      ins_ctdef.is_single_value_,
                                       dml_op))) {
       LOG_WARN("check row null failed", K(ret));
     } else if (OB_FAIL(filter_row_for_view_check(ins_ctdef.view_check_exprs_,
@@ -802,7 +817,8 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
                                         dml_op.get_eval_ctx(),
                                         upd_rtdef.cur_row_num_,
                                         upd_ctdef.assign_columns_,
-                                        upd_ctdef.dupd_ctdef_.is_ignore_,
+                                        upd_ctdef.dupd_ctdef_,
+                                        false,
                                         dml_op))) {
         LOG_WARN("check row null failed", K(ret), K(upd_ctdef), K(upd_rtdef));
       } else if (OB_FAIL(check_row_whether_changed(upd_ctdef, upd_rtdef, dml_op.get_eval_ctx()))) {
@@ -1014,7 +1030,11 @@ int ObDMLService::update_row(const ObUpdCtDef &upd_ctdef,
     }
   } else if (OB_UNLIKELY(old_tablet_loc != new_tablet_loc)) {
     //the updated row may be moved across partitions
-    if (OB_LIKELY(!upd_ctdef.multi_ctdef_->is_enable_row_movement_)) {
+    if (upd_ctdef.dupd_ctdef_.is_ignore_) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Cross-partition update ignore");
+      LOG_WARN("update ignore is not supported in across partition update, it will induce lost data error", K(ret));
+    } else if (OB_LIKELY(!upd_ctdef.multi_ctdef_->is_enable_row_movement_)) {
       ret = OB_ERR_UPD_CAUSE_PART_CHANGE;
       LOG_WARN("the updated row is moved across partitions", K(ret),
                KPC(old_tablet_loc), KPC(new_tablet_loc));
@@ -1129,6 +1149,10 @@ int ObDMLService::init_dml_param(const ObDASDMLBaseCtDef &base_ctdef,
   }
   if (base_ctdef.is_insert_up_) {
     dml_param.write_flag_.set_is_insert_up();
+  }
+  if (dml_param.table_param_->get_data_table().is_storage_index_table()
+      && !dml_param.table_param_->get_data_table().can_read_index()) {
+    dml_param.write_flag_.set_is_write_only_index();
   }
   return ret;
 }
@@ -1620,7 +1644,10 @@ int ObDMLService::add_related_index_info(const ObDASTabletLoc &tablet_loc,
   for (int64_t i = 0; OB_SUCC(ret) && i < related_ctdefs.count(); ++i) {
     ObDASTabletLoc *index_tablet_loc = ObDASUtils::get_related_tablet_loc(
         const_cast<ObDASTabletLoc&>(tablet_loc), related_ctdefs.at(i)->index_tid_);
-    if (OB_FAIL(das_op.get_related_ctdefs().push_back(related_ctdefs.at(i)))) {
+    if (OB_ISNULL(index_tablet_loc)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("index tablet loc is null", K(ret), K(i));
+    } else if (OB_FAIL(das_op.get_related_ctdefs().push_back(related_ctdefs.at(i)))) {
       LOG_WARN("store related ctdef failed", K(ret), K(related_ctdefs), K(i));
     } else if (OB_FAIL(das_op.get_related_rtdefs().push_back(related_rtdefs.at(i)))) {
       LOG_WARN("store related rtdef failed", K(ret));
@@ -1640,7 +1667,7 @@ int ObDMLService::convert_exprs_to_stored_row(ObIAllocator &allocator,
 }
 
 int ObDMLService::catch_violate_error(int err_ret,
-                                      int64_t savepoint_no,
+                                      transaction::ObTxSEQ savepoint_no,
                                       ObDMLRtCtx &dml_rtctx,
                                       ObErrLogRtDef &err_log_rt_def,
                                       ObErrLogCtDef &error_logging_ctdef,
@@ -1831,7 +1858,7 @@ int ObDMLService::check_nested_sql_legality(ObExecContext &ctx, common::ObTableI
   return ret;
 }
 
-int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, int64_t &savepoint)
+int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, transaction::ObTxSEQ &savepoint)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObSqlTransControl::create_anonymous_savepoint(tx_desc, savepoint))) {
@@ -1840,7 +1867,7 @@ int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, int64_t &savepoi
   return ret;
 }
 
-int ObDMLService::rollback_local_savepoint(ObTxDesc &tx_desc, int64_t savepoint, int64_t expire_ts)
+int ObDMLService::rollback_local_savepoint(ObTxDesc &tx_desc, const transaction::ObTxSEQ savepoint, int64_t expire_ts)
 {
   int ret = OB_SUCCESS;
   ObTransService *tx = MTL(transaction::ObTransService*);
@@ -2173,5 +2200,82 @@ int ObDMLService::handle_after_row_processing(bool execute_single_row, ObDMLModi
   }
   return ret;
 }
+
+int ObDMLService::log_user_error_inner(
+    int ret,
+    int64_t row_num,
+    common::ObString &column_name,
+    ObExecContext &ctx)
+{
+  if (OB_DATA_OUT_OF_RANGE == ret) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_DATA_OUT_OF_RANGE, column_name.length(), column_name.ptr(), row_num);
+  } else if (OB_ERR_DATA_TOO_LONG == ret && lib::is_mysql_mode()) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_DATA_TOO_LONG, column_name.length(), column_name.ptr(), row_num);
+  } else if (OB_ERR_VALUE_LARGER_THAN_ALLOWED == ret) {
+    LOG_USER_ERROR(OB_ERR_VALUE_LARGER_THAN_ALLOWED);
+  } else if (OB_INVALID_DATE_VALUE == ret || OB_INVALID_DATE_FORMAT == ret) {
+    ret = OB_INVALID_DATE_VALUE;
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(
+        OB_ERR_INVALID_DATE_MSG_FMT_V2,
+        column_name.length(),
+        column_name.ptr(),
+        row_num);
+  } else if ((OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD == ret || OB_INVALID_NUMERIC == ret)
+      && lib::is_mysql_mode()) {
+    ret = OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD;
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(
+        OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD,
+        column_name.length(),
+        column_name.ptr(),
+        row_num);
+  } else if (OB_ERR_WARN_DATA_OUT_OF_RANGE == ret && lib::is_mysql_mode()) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_WARN_DATA_OUT_OF_RANGE, column_name.length(), column_name.ptr(), row_num);
+  } else if ((OB_ERR_DATA_TRUNCATED == ret || OB_ERR_DOUBLE_TRUNCATED == ret)
+      && lib::is_mysql_mode()) {
+    ret = OB_ERR_DATA_TRUNCATED;
+    ob_reset_tsi_warning_buffer();
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_DATA_TRUNCATED, column_name.length(), column_name.ptr(), row_num);
+  } else {
+    LOG_WARN("fail to operate row", K(ret));
+  }
+  return ret;
+}
+
 }  // namespace sql
 }  // namespace oceanbase

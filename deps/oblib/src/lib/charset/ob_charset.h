@@ -53,11 +53,11 @@ static const int AGGREGATE_2CHARSET[CHARSET_MAX][CHARSET_MAX] = {
 {0,0,0,0,0,0,0,0},//CHARSET_INVALI
 {0,0,0,0,0,0,0,0},//CHARSET_BINARY
 {0,0,0,1,2,1,1,1},//CHARSET_UTF8MB4
-{0,0,2,0,2,2,1,2},//CHARSET_GBK
+{0,0,2,0,2,0,1,0},//CHARSET_GBK
 {0,0,1,1,0,1,1,1},//CHARSET_UTF16
-{0,0,2,1,2,0,1,0},//CHARSET_GB18030
+{0,0,2,0,2,0,1,0},//CHARSET_GB18030
 {0,0,2,2,2,2,0,2},//CHARSET_LATIN1
-{0,0,2,1,2,0,1,0} //CHARSET_GB18030_2022
+{0,0,2,0,2,0,1,0} //CHARSET_GB18030_2022
 };
 
 enum ObCollationType
@@ -536,6 +536,7 @@ public:
                                 ObString &result);
 
   static bool is_cs_nonascii(ObCollationType collation_type);
+  static bool is_cs_unicode(ObCollationType collation_type);
   static bool is_cjk_charset(ObCollationType collation_type);
   static bool is_valid_connection_collation(ObCollationType collation_type);
   static const char* get_oracle_charset_name_by_charset_type(ObCharsetType charset_type);
@@ -608,15 +609,22 @@ private:
 class ObStringScanner
 {
 public:
-  ObStringScanner(const ObString &str, common::ObCollationType collation_type)
-    : str_(str), collation_type_(collation_type)
+  enum {
+    IGNORE_INVALID_CHARACTER = 1<<0,
+  };
+  ObStringScanner(const ObString &str, common::ObCollationType collation_type, uint64_t flags = 0)
+    : origin_str_(str), str_(str), collation_type_(collation_type), flags_(flags)
   {}
-  int next_character(ObString &encoding, int32_t &wchar);
-  bool next_character(ObString &encoding, int32_t &wchar, int &ret);
+  int next_character(ObString &encoding_value, int32_t &unicode_value);
+  bool next_character(ObString &encoding_value, int32_t &unicode_value, int &ret);
+  ObString get_remain_str() { return str_; }
+  void forward_bytes(int64_t n) { str_ += n; }
   TO_STRING_KV(K_(str), K_(collation_type));
 private:
-  const ObString &str_;
+  const ObString &origin_str_;
+  ObString str_;
   common::ObCollationType collation_type_;
+  uint64_t flags_;
 };
 
 class ObCharSetString

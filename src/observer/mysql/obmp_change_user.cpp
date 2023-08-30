@@ -64,7 +64,8 @@ int ObMPChangeUser::deserialize()
       pkt_  = reinterpret_cast<const ObMySQLRawPacket&>(req_->get_packet());
       const char *buf = pkt_.get_cdata();
       const char *pos = pkt_.get_cdata();
-      const int64_t len = pkt_.get_clen();
+      // need skip command byte
+      const int64_t len = pkt_.get_clen() - 1;
       const char *end = buf + len;
 
       if (OB_LIKELY(pos < end)) {
@@ -222,7 +223,7 @@ int ObMPChangeUser::process()
     } else {
       session->clean_status();
       if (OB_FAIL(load_privilege_info(session))) {
-        OB_LOG(WARN,"load privilige info failed", K(ret));
+        OB_LOG(WARN,"load privilige info failed", K(ret),K(session->get_sessid()));
       } else {
         if (is_proxy_mod) {
           if (!sys_vars_.empty()) {
@@ -288,25 +289,36 @@ int ObMPChangeUser::load_privilege_info(ObSQLSessionInfo *session)
       ObString username(sep_pos - username_.ptr(), username_.ptr());
       login_info.user_name_ = username;
       login_info.tenant_name_ = username_.after(sep_pos);
+      if (login_info.tenant_name_ != session->get_tenant_name()) {
+        ret = OB_OP_NOT_ALLOW;
+        OB_LOG(WARN, "failed to change user in different tenant", K(ret),
+            K(login_info.tenant_name_), K(session->get_tenant_name()));
+        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "forbid! change user command in differernt tenant");
+      }
     } else {
       login_info.user_name_ = username_;
     }
-    if (login_info.tenant_name_.empty()) {
-      login_info.tenant_name_ = session->get_tenant_name();
+    if (OB_SUCC(ret)) {
+      if (login_info.tenant_name_.empty()) {
+        login_info.tenant_name_ = session->get_tenant_name();
+      }
+      if (!database_.empty()) {
+        login_info.db_ = database_;
+      }
+      login_info.client_ip_ = session->get_client_ip();
+      OB_LOG(INFO, "com change user", "username", login_info.user_name_,
+            "tenant name", login_info.tenant_name_);
+      const ObSMConnection &conn = *get_conn();
+      login_info.scramble_str_.assign_ptr(conn.scramble_buf_, sizeof(conn.scramble_buf_));
+      login_info.passwd_ = auth_response_;
+
     }
-    if (!database_.empty()) {
-      login_info.db_ = database_;
-    }
-    login_info.client_ip_ = session->get_client_ip();
-    OB_LOG(INFO, "com change user", "username", login_info.user_name_, "tenant name", login_info.tenant_name_);
-    const ObSMConnection &conn = *get_conn();
-    login_info.scramble_str_.assign_ptr(conn.scramble_buf_, sizeof(conn.scramble_buf_));
-    login_info.passwd_ = auth_response_;
     SSL *ssl_st = SQL_REQ_OP.get_sql_ssl_st(req_);
 
     share::schema::ObSessionPrivInfo session_priv;
     // disconnect previous user connection first.
-    if (OB_FAIL(session->on_user_disconnect())) {
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(session->on_user_disconnect())) {
       LOG_WARN("user disconnect failed", K(ret));
     }
     const ObUserInfo *user_info = NULL;
@@ -326,6 +338,8 @@ int ObMPChangeUser::load_privilege_info(ObSQLSessionInfo *session)
         OB_LOG(WARN, "fail to set tenant", "tenant name", login_info.tenant_name_, K(ret));
       } else if (OB_FAIL(session->set_default_database(database_))) {
         OB_LOG(WARN, "failed to set default database", K(ret), K(database_));
+      } else if (OB_FAIL(session->set_real_client_ip(login_info.client_ip_))) {
+          LOG_WARN("failed to set_real_client_ip", K(ret));
       } else if (OB_FAIL(session->load_default_sys_variable(false, true))) {
         LOG_WARN("failed to load system variables", K(ret));
       } else if (OB_FAIL(session->update_database_variables(&schema_guard))) {

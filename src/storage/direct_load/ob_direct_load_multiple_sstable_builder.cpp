@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_multiple_sstable_builder.h"
@@ -142,6 +149,7 @@ int ObDirectLoadMultipleSSTableBuilder::init(const ObDirectLoadMultipleSSTableBu
 }
 
 int ObDirectLoadMultipleSSTableBuilder::append_row(const ObTabletID &tablet_id,
+                                                   const table::ObTableLoadSequenceNo &seq_no,
                                                    const ObDatumRow &datum_row)
 {
   int ret = OB_SUCCESS;
@@ -157,7 +165,7 @@ int ObDirectLoadMultipleSSTableBuilder::append_row(const ObTabletID &tablet_id,
     LOG_WARN("invalid args", KR(ret), K(param_), K(datum_row));
   } else {
     if (OB_FAIL(row_.from_datums(tablet_id, datum_row.storage_datums_, datum_row.count_,
-                                 param_.table_data_desc_.rowkey_column_num_))) {
+                                 param_.table_data_desc_.rowkey_column_num_, seq_no))) {
       LOG_WARN("fail to from datum row", KR(ret));
     } else if (OB_FAIL(append_row(row_))) {
       LOG_WARN("fail to append row", KR(ret), K(row_));

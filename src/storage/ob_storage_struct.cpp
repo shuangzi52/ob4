@@ -24,6 +24,118 @@ using namespace oceanbase::share::schema;
 using namespace oceanbase::share;
 
 
+#ifdef ERRSIM
+static const char *OB_ERRSIM_POINT_TYPES[] = {
+    "POINT_NONE",
+    "START_BACKFILL_BEFORE",
+    "REPLACE_SWAP_BEFORE",
+    "REPLACE_AFTER",
+};
+
+void ObErrsimBackfillPointType::reset()
+{
+  type_ = ObErrsimBackfillPointType::ERRSIM_POINT_NONE;
+}
+
+bool ObErrsimBackfillPointType::is_valid() const
+{
+  return true;
+}
+
+bool ObErrsimBackfillPointType::operator == (const ObErrsimBackfillPointType &other) const
+{
+  bool is_same = true;
+  if (this == &other) {
+    // same
+  } else {
+    is_same = type_ == other.type_;
+  }
+  return is_same;
+}
+
+int64_t ObErrsimBackfillPointType::hash() const
+{
+  int64_t hash_value = 0;
+  hash_value = common::murmurhash(
+      &type_, sizeof(type_), hash_value);
+  return hash_value;
+}
+
+int ObErrsimBackfillPointType::hash(uint64_t &hash_val) const
+{
+  hash_val = hash();
+  return OB_SUCCESS;
+}
+
+OB_SERIALIZE_MEMBER(ObErrsimBackfillPointType, type_);
+
+ObErrsimTransferBackfillPoint::ObErrsimTransferBackfillPoint()
+  : point_type_(ObErrsimBackfillPointType::ERRSIM_MODULE_MAX),
+    point_start_time_(0)
+{
+}
+
+ObErrsimTransferBackfillPoint::~ObErrsimTransferBackfillPoint()
+{
+}
+
+bool ObErrsimTransferBackfillPoint::is_valid() const
+{
+  return point_type_.is_valid() && point_start_time_ > 0;
+}
+
+int ObErrsimTransferBackfillPoint::set_point_type(const ObErrsimBackfillPointType &point_type)
+{
+  int ret = OB_SUCCESS;
+  if (!point_type.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("point type is invalid", K(ret), K(point_type));
+  } else if (is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("The point type is in effect, reset is not allowed", K(ret), K(point_type_), K(point_type));
+  } else {
+    point_type_ = point_type;
+  }
+
+  return ret;
+}
+int ObErrsimTransferBackfillPoint::set_point_start_time(int64_t start_time)
+{
+  int ret = OB_SUCCESS;
+  if (start_time < 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("point type is invalid", K(ret), K(start_time));
+  } else if (is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("The point type is in effect, reset is not allowed", K(ret), K(point_start_time_), K(start_time));
+  } else {
+    point_start_time_ = start_time;
+  }
+
+  return ret;
+}
+
+void ObErrsimTransferBackfillPoint::reset()
+{
+  point_type_.type_ = ObErrsimBackfillPointType::ERRSIM_MODULE_MAX;
+  point_start_time_ = 0;
+}
+
+bool ObErrsimTransferBackfillPoint::is_errsim_point(const ObErrsimBackfillPointType &point_type) const
+{
+  bool is_point = false;
+  if (!is_valid()) {
+    is_point = false;
+  } else if (point_type.type_ == point_type_.type_) {
+    is_point = true;
+  } else {
+    is_point = false;
+  }
+  return is_point;
+}
+
+#endif
+
 OB_SERIALIZE_MEMBER(ObTabletReportStatus,
     merge_snapshot_version_,
     cur_report_version_,
@@ -133,8 +245,6 @@ ObGetMergeTablesResult::ObGetMergeTablesResult()
   : version_range_(),
     handle_(),
     merge_version_(),
-    base_schema_version_(INVALID_INT_VALUE),
-    schema_version_(INVALID_INT_VALUE),
     create_snapshot_version_(INVALID_INT_VALUE),
     suggest_merge_type_(INVALID_MERGE_TYPE),
     update_tablet_directly_(false),
@@ -149,8 +259,6 @@ bool ObGetMergeTablesResult::is_valid() const
   return scn_range_.is_valid()
       && handle_.get_count() >= 1
       && merge_version_ >= 0
-      && base_schema_version_ >= 0
-      && schema_version_ >= 0
       && create_snapshot_version_ >= 0
       && (suggest_merge_type_ > INVALID_MERGE_TYPE && suggest_merge_type_ < MERGE_TYPE_MAX);
 }
@@ -167,8 +275,6 @@ void ObGetMergeTablesResult::reset()
   version_range_.reset();
   handle_.reset();
   merge_version_ = ObVersionRange::MIN_VERSION;
-  base_schema_version_ = INVALID_INT_VALUE;
-  schema_version_ = INVALID_INT_VALUE;
   create_snapshot_version_ = 0;
   suggest_merge_type_ = INVALID_MERGE_TYPE;
   schedule_major_ = false;
@@ -185,8 +291,6 @@ int ObGetMergeTablesResult::copy_basic_info(const ObGetMergeTablesResult &src)
   } else {
     version_range_ = src.version_range_;
     merge_version_ = src.merge_version_;
-    base_schema_version_ = src.base_schema_version_;
-    schema_version_ = src.schema_version_;
     create_snapshot_version_ = src.create_snapshot_version_;
     suggest_merge_type_ = src.suggest_merge_type_;
     schedule_major_ = src.schedule_major_;
@@ -235,7 +339,7 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     const int64_t multi_version_start,
     const ObStorageSchema *storage_schema,
     const int64_t rebuild_seq)
-  : table_handle_(),
+  : sstable_(nullptr),
     snapshot_version_(snapshot_version),
     clog_checkpoint_scn_(),
     multi_version_start_(multi_version_start),
@@ -246,28 +350,30 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(false),
     ddl_info_(),
     allow_duplicate_sstable_(false),
+    need_check_transfer_seq_(false),
+    transfer_seq_(-1),
     tx_data_(),
     binding_info_(),
-    auto_inc_seq_(),
-    medium_info_list_(nullptr),
+    autoinc_seq_(),
     merge_type_(MERGE_TYPE_MAX)
 {
   clog_checkpoint_scn_.set_min();
 }
 
 ObUpdateTableStoreParam::ObUpdateTableStoreParam(
-    const ObTableHandleV2 &table_handle,
+    const blocksstable::ObSSTable *sstable,
     const int64_t snapshot_version,
     const int64_t multi_version_start,
     const ObStorageSchema *storage_schema,
     const int64_t rebuild_seq,
+    const bool need_check_transfer_seq,
+    const int64_t transfer_seq,
     const bool need_report,
     const SCN clog_checkpoint_scn,
     const bool need_check_sstable,
     const bool allow_duplicate_sstable,
-    const compaction::ObMediumCompactionInfoList *medium_info_list,
     const ObMergeType merge_type)
-  : table_handle_(table_handle),
+  : sstable_(sstable),
     snapshot_version_(snapshot_version),
     clog_checkpoint_scn_(),
     multi_version_start_(multi_version_start),
@@ -278,24 +384,26 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(need_check_sstable),
     ddl_info_(),
     allow_duplicate_sstable_(allow_duplicate_sstable),
+    need_check_transfer_seq_(need_check_transfer_seq),
+    transfer_seq_(transfer_seq),
     tx_data_(),
     binding_info_(),
-    auto_inc_seq_(),
-    medium_info_list_(medium_info_list),
+    autoinc_seq_(),
     merge_type_(merge_type)
 {
   clog_checkpoint_scn_ = clog_checkpoint_scn;
 }
 
 ObUpdateTableStoreParam::ObUpdateTableStoreParam(
-    const ObTableHandleV2 &table_handle,
+    const blocksstable::ObSSTable *sstable,
     const int64_t snapshot_version,
     const int64_t multi_version_start,
     const int64_t rebuild_seq,
     const ObStorageSchema *storage_schema,
     const bool update_with_major_flag,
+    const ObMergeType merge_type,
     const bool need_report)
-  : table_handle_(table_handle),
+  : sstable_(sstable),
     snapshot_version_(snapshot_version),
     clog_checkpoint_scn_(),
     multi_version_start_(multi_version_start),
@@ -306,32 +414,44 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(false),
     ddl_info_(),
     allow_duplicate_sstable_(false),
+    need_check_transfer_seq_(false),
+    transfer_seq_(-1),
     tx_data_(),
     binding_info_(),
-    auto_inc_seq_(),
-    medium_info_list_(nullptr),
-    merge_type_(MERGE_TYPE_MAX)
+    autoinc_seq_(),
+    merge_type_(merge_type)
 {
   clog_checkpoint_scn_.set_min();
 }
 
 bool ObUpdateTableStoreParam::is_valid() const
 {
-  return multi_version_start_ >= ObVersionRange::MIN_VERSION
+  bool bret = false;
+  bret = multi_version_start_ >= ObVersionRange::MIN_VERSION
       && snapshot_version_ >= ObVersionRange::MIN_VERSION
       && clog_checkpoint_scn_.is_valid()
       && nullptr != storage_schema_
       && storage_schema_->is_valid()
       && rebuild_seq_ >= 0;
+  if (need_check_transfer_seq_) {
+    bret = bret && transfer_seq_ >= 0;
+  }
+  return bret;
 }
 
 
 ObBatchUpdateTableStoreParam::ObBatchUpdateTableStoreParam()
   : tables_handle_(),
+#ifdef ERRSIM
+    errsim_point_info_(),
+#endif
     rebuild_seq_(OB_INVALID_VERSION),
     update_logical_minor_sstable_(false),
+    is_transfer_replace_(false),
     start_scn_(SCN::min_scn()),
-    tablet_meta_(nullptr)
+    tablet_meta_(nullptr),
+    update_ddl_sstable_(false),
+    restore_status_(ObTabletRestoreStatus::FULL)
 {
 }
 
@@ -340,15 +460,19 @@ void ObBatchUpdateTableStoreParam::reset()
   tables_handle_.reset();
   rebuild_seq_ = OB_INVALID_VERSION;
   update_logical_minor_sstable_ = false;
+  is_transfer_replace_ = false;
   start_scn_.set_min();
   tablet_meta_ = nullptr;
+  update_ddl_sstable_ = false;
+  restore_status_ = ObTabletRestoreStatus::FULL;
 }
 
 bool ObBatchUpdateTableStoreParam::is_valid() const
 {
   return rebuild_seq_ > OB_INVALID_VERSION
       && (!update_logical_minor_sstable_
-          || (update_logical_minor_sstable_ && start_scn_ > SCN::min_scn() && OB_ISNULL(tablet_meta_)));
+          || (update_logical_minor_sstable_ && start_scn_ > SCN::min_scn() && OB_ISNULL(tablet_meta_)))
+      && ObTabletRestoreStatus::is_valid(restore_status_);
 }
 
 int ObBatchUpdateTableStoreParam::assign(
@@ -363,8 +487,14 @@ int ObBatchUpdateTableStoreParam::assign(
   } else {
     rebuild_seq_ = param.rebuild_seq_;
     update_logical_minor_sstable_ = param.update_logical_minor_sstable_;
+    is_transfer_replace_ = param.is_transfer_replace_;
     start_scn_ = param.start_scn_;
     tablet_meta_ = param.tablet_meta_;
+    update_ddl_sstable_ = param.update_ddl_sstable_;
+    restore_status_ = param.restore_status_;
+#ifdef ERRSIM
+    errsim_point_info_ = param.errsim_point_info_;
+#endif
   }
   return ret;
 }
@@ -429,202 +559,6 @@ void ObPartitionReadableInfo::reset()
   generated_ts_ = 0;
   max_readable_ts_ = OB_INVALID_TIMESTAMP;
   force_ = false;
-}
-
-
-int ObMigrateStatusHelper::trans_replica_op(const ObReplicaOpType &op_type, ObMigrateStatus &migrate_status)
-{
-  int ret = OB_SUCCESS;
-  migrate_status = OB_MIGRATE_STATUS_MAX;
-
-  if (!is_replica_op_valid(op_type)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), K(op_type));
-  } else {
-    switch (op_type) {
-    case ADD_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_ADD;
-      break;
-    }
-    case FAST_MIGRATE_REPLICA_OP:
-    case MIGRATE_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_MIGRATE;
-      break;
-    }
-    case REBUILD_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_REBUILD;
-      break;
-    }
-    case CHANGE_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_CHANGE;
-      break;
-    }
-    case RESTORE_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_RESTORE;
-      break;
-    }
-    case COPY_GLOBAL_INDEX_OP: {
-      migrate_status = OB_MIGRATE_STATUS_COPY_GLOBAL_INDEX;
-      break;
-    }
-    case COPY_LOCAL_INDEX_OP: {
-      migrate_status = OB_MIGRATE_STATUS_COPY_LOCAL_INDEX;
-      break;
-    }
-    case RESTORE_FOLLOWER_REPLICA_OP: {
-      migrate_status = OB_MIGRATE_STATUS_RESTORE_FOLLOWER;
-      break;
-    }
-    case RESTORE_STANDBY_OP: {
-      migrate_status = OB_MIGRATE_STATUS_RESTORE_STANDBY;
-      break;
-    }
-    case LINK_SHARE_MAJOR_OP: {
-      migrate_status = OB_MIGRATE_STATUS_LINK_MAJOR;
-      break;
-    }
-
-    default: {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_ERROR("unknown op type", K(ret), K(op_type));
-    }
-    }
-  }
-
-  return ret;
-}
-
-int ObMigrateStatusHelper::trans_fail_status(const ObMigrateStatus &cur_status, ObMigrateStatus &fail_status)
-{
-  int ret = OB_SUCCESS;
-  fail_status = OB_MIGRATE_STATUS_MAX;
-
-  if (cur_status < OB_MIGRATE_STATUS_NONE || cur_status >= OB_MIGRATE_STATUS_MAX) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), K(cur_status));
-  } else {
-    switch (cur_status) {
-    case OB_MIGRATE_STATUS_ADD: {
-      fail_status = OB_MIGRATE_STATUS_ADD_FAIL;
-      break;
-    }
-    case OB_MIGRATE_STATUS_MIGRATE: {
-      fail_status = OB_MIGRATE_STATUS_MIGRATE_FAIL;
-      break;
-    }
-    case OB_MIGRATE_STATUS_REBUILD: {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_CHANGE: {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_RESTORE: {
-      //allow observer self reentry
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_COPY_GLOBAL_INDEX: {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_COPY_LOCAL_INDEX: {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_HOLD: {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_RESTORE_FOLLOWER : {
-      //allow observer self reentry
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_RESTORE_STANDBY : {
-      //allow observer self reentry
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_LINK_MAJOR : {
-      fail_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    default: {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_ERROR("invalid cur status for fail", K(ret), K(cur_status));
-    }
-    }
-  }
-  return ret;
-}
-
-int ObMigrateStatusHelper::trans_reboot_status(const ObMigrateStatus &cur_status, ObMigrateStatus &reboot_status)
-{
-  int ret = OB_SUCCESS;
-  reboot_status = OB_MIGRATE_STATUS_MAX;
-
-  if (cur_status < OB_MIGRATE_STATUS_NONE || cur_status >= OB_MIGRATE_STATUS_MAX) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), K(cur_status));
-  } else {
-    switch (cur_status) {
-    case OB_MIGRATE_STATUS_NONE: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_ADD:
-    case OB_MIGRATE_STATUS_ADD_FAIL: {
-      reboot_status = OB_MIGRATE_STATUS_ADD_FAIL;
-      break;
-    }
-    case OB_MIGRATE_STATUS_MIGRATE:
-    case OB_MIGRATE_STATUS_MIGRATE_FAIL: {
-      reboot_status = OB_MIGRATE_STATUS_MIGRATE_FAIL;
-      break;
-    }
-    case OB_MIGRATE_STATUS_REBUILD: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_CHANGE: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_RESTORE:
-    case OB_MIGRATE_STATUS_RESTORE_FOLLOWER:
-    case OB_MIGRATE_STATUS_RESTORE_STANDBY: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_RESTORE_FAIL: {
-      reboot_status = OB_MIGRATE_STATUS_RESTORE_FAIL;
-      break;
-    }
-    case OB_MIGRATE_STATUS_COPY_GLOBAL_INDEX: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_COPY_LOCAL_INDEX: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_HOLD: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    case OB_MIGRATE_STATUS_LINK_MAJOR: {
-      reboot_status = OB_MIGRATE_STATUS_NONE;
-      break;
-    }
-    default: {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_ERROR("invalid cur status for fail", K(ret), K(cur_status));
-    }
-    }
-  }
-  return ret;
 }
 
 int ObCreateSSTableParamExtraInfo::assign(const ObCreateSSTableParamExtraInfo &other)

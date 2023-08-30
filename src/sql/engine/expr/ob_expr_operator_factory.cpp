@@ -401,6 +401,7 @@
 #include "sql/engine/expr/ob_expr_xml_serialize.h"
 #include "sql/engine/expr/ob_expr_xmlcast.h"
 #include "sql/engine/expr/ob_expr_update_xml.h"
+#include "sql/engine/expr/ob_expr_temp_table_ssid.h"
 
 using namespace oceanbase::common;
 namespace oceanbase
@@ -1305,6 +1306,7 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprXmlSerialize);
   REG_OP_ORCL(ObExprXmlcast);
   REG_OP_ORCL(ObExprUpdateXml);
+  REG_OP_ORCL(ObExprTempTableSSID);
 }
 
 bool ObExprOperatorFactory::is_expr_op_type_valid(ObExprOperatorType type)
@@ -1432,6 +1434,9 @@ void ObExprOperatorFactory::get_function_alias_name(const ObString &origin_name,
     } else if (0 == origin_name.case_compare("character_length")) {
       // character_length is synonym for char_length
       alias_name = ObString::make_string(N_CHAR_LENGTH);
+    } else if (0 == origin_name.case_compare("area")) {
+      // area is synonym for st_area
+      alias_name = ObString::make_string(N_ST_AREA);
     } else {
       //do nothing
     }
@@ -1441,5 +1446,5 @@ void ObExprOperatorFactory::get_function_alias_name(const ObString &origin_name,
 }
 
 } //end sql
-} //end oceanbase 
+} //end oceanbase
 

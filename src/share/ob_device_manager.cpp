@@ -48,6 +48,8 @@ int ObDeviceManager::init_devices_env()
       OB_LOG(WARN, "Fail to init allocator ", K(ret));
     } else if (OB_FAIL(init_oss_env())) {
       OB_LOG(WARN, "fail to init oss storage", K(ret));
+    } else if (OB_FAIL(init_cos_env())) {
+      OB_LOG(WARN, "fail to init cos storage", K(ret));
     }
   }
 
@@ -62,20 +64,26 @@ int ObDeviceManager::init_devices_env()
 
 void ObDeviceManager::destroy()
 {
-
   int ret_dev = OB_SUCCESS;
   int ret_handle = OB_SUCCESS;
   /*destroy fun wil release all the node*/
   if (is_init_) {
     ret_dev = device_map_.destroy();
     ret_handle = handle_map_.destroy();
-    allocator_.~ObFIFOAllocator();
     if (OB_SUCCESS != ret_dev || OB_SUCCESS != ret_handle) {
       OB_LOG_RET(WARN, ret_dev, "fail to destroy device map", K(ret_dev), K(ret_handle));
     }
-    //free the arena
+    for (int i = 0; i < MAX_DEVICE_INSTANCE; i++ ) {
+      ObIODevice* del_device = device_ins_[i].device_;
+      if (OB_NOT_NULL(del_device)) {
+        del_device->destroy();
+        allocator_.free(del_device);
+      }
+      device_ins_[i].device_ = NULL;
+    }
     allocator_.reset();
     fin_oss_env();
+    fin_cos_env();
     is_init_ = false;
     device_count_ = 0;
     OB_LOG_RET(WARN, ret_dev, "release the init resource", K(ret_dev), K(ret_handle));

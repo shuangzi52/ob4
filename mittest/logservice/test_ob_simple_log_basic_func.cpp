@@ -142,105 +142,6 @@ TEST_F(TestObSimpleLogClusterBasicFunc, test_max_padding_size)
   PALF_LOG(INFO, "end test submit_log", K(id), K(guard));
 }
 
-TEST_F(TestObSimpleLogClusterBasicFunc, restart_and_clear_tmp_files)
-{
-  SET_CASE_LOG_FILE(TEST_NAME, "restart_and_clear_tmp_files");
-  ObTimeGuard guard("restart_and_clear_tmp_files", 0);
-  const int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  int64_t leader_idx = 0;
-  std::string logserver_dir;
-  {
-    PalfHandleImplGuard leader;
-    EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-    guard.click("create");
-    logserver_dir = leader.palf_env_impl_->log_dir_;
-    EXPECT_EQ(OB_SUCCESS, submit_log(leader, 100, leader_idx, 1 * 1024 * 1024));
-    guard.click("submit_log");
-    while (leader.palf_handle_impl_->get_end_lsn()
-           < LSN(100 * 1024 * 1024ul)) {
-      usleep(100 * 1000);
-    }
-  }
-  const std::string base_dir = logserver_dir;
-  const std::string tmp_1_dir = base_dir + "/10000.tmp/log/";
-  const std::string mkdir_tmp_1 = "mkdir -p " + tmp_1_dir;
-  const std::string dir_2 = base_dir + "/10000000";
-  const std::string dir_normal_file = base_dir + "/10000000/log/1";
-  const std::string dir_normal_file1 = base_dir + "/10000000/meta/";
-  const std::string mkdir_2 = "mkdir -p " + dir_normal_file;
-  const std::string mkdir_3 = "mkdir -p " + dir_normal_file1;
-  system(mkdir_tmp_1.c_str());
-  system(mkdir_2.c_str());
-  system(mkdir_3.c_str());
-  int ret = OB_SUCCESS;
-  guard.click("mkdir");
-  EXPECT_EQ(OB_ERR_UNEXPECTED, restart_paxos_groups());
-  CLOG_LOG(INFO, "after restart_paxos_groups after exist tmp dir");
-  guard.click("restart");
-  const std::string rm_dir_2 = "rm -rf " + dir_2;
-  system(rm_dir_2.c_str());
-  guard.click("rm_dir");
-  if (OB_FAIL(restart_paxos_groups())) {
-    PALF_LOG(ERROR, "restart_paxos_groups failed", K(ret));
-  } else {
-    {
-      CLOG_LOG(INFO, "after restart_paxos_groups after remove tmp dir");
-      guard.click("restart");
-      bool result = false;
-      EXPECT_EQ(OB_SUCCESS,
-                common::FileDirectoryUtils::is_exists(tmp_1_dir.c_str(), result));
-      EXPECT_EQ(result, false);
-      PalfHandleImplGuard leader1;
-      EXPECT_EQ(OB_SUCCESS, get_leader(id, leader1, leader_idx));
-      guard.click("get_leader");
-      LogStorage *log_storage =
-          &leader1.palf_handle_impl_->log_engine_.log_storage_;
-      LSN lsn_origin_log_tail = log_storage->get_log_tail_guarded_by_lock_();
-      EXPECT_EQ(OB_SUCCESS, submit_log(leader1, 10, leader_idx, 1 * 1024 * 1024));
-      while (log_storage->log_tail_ == lsn_origin_log_tail) {
-        usleep(1 * 1000);
-        PALF_LOG(INFO, "log_tail is same", KPC(log_storage), K(lsn_origin_log_tail));
-      }
-      guard.click("submit_log");
-      EXPECT_EQ(OB_ITER_END, read_log(leader1));
-      guard.click("read_log");
-      PALF_LOG(INFO, "finish read_log", KPC(log_storage), K(lsn_origin_log_tail), KPC(leader1.palf_handle_impl_));
-    }
-    // 验证tenant下有临时文件的场景，该临时文件需要归还给log_pool
-    {
-      PalfHandleImplGuard leader1;
-      int64_t leader_idx1 = 0;
-      EXPECT_EQ(OB_SUCCESS, get_leader(id, leader1, leader_idx1));
-      std::string palf_log_dir = leader1.palf_handle_impl_->log_engine_.log_storage_.block_mgr_.log_dir_;
-      ObISimpleLogServer *i_server = get_cluster()[leader_idx1];
-      ObSimpleLogServer *server = dynamic_cast<ObSimpleLogServer*>(i_server);
-      std::string log_pool = server->log_block_pool_.log_pool_path_;
-      const block_id_t min_block_id = server->log_block_pool_.min_block_id_;
-      char src[1024] = {'\0'};
-      char dest[1024] = {'\0'};
-      block_id_to_tmp_string(10000, dest, 1024);
-      block_id_to_string(min_block_id, src, 1024);
-      std::string src_str = log_pool + "/" + src;
-      std::string dest_str = palf_log_dir + "/" + dest;
-      std::string mv_system = "mv " + src_str + " " + dest_str;
-      system(mv_system.c_str());
-      bool result1 = false;
-      EXPECT_EQ(OB_SUCCESS,
-                common::FileDirectoryUtils::is_exists(dest_str.c_str(), result1));
-      EXPECT_EQ(true, result1);
-      leader1.reset();
-      EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-      EXPECT_EQ(OB_SUCCESS,
-                common::FileDirectoryUtils::is_exists(dest_str.c_str(), result1));
-      EXPECT_EQ(false, result1);
-    }
-    EXPECT_EQ(OB_SUCCESS, remove_dir());
-    EXPECT_EQ(OB_SUCCESS, restart_paxos_groups());
-  }
-  EXPECT_EQ(OB_SUCCESS, ret);
-  PALF_LOG(INFO, "end test restart", K(id), K(guard));
-}
-
 bool check_locate_correct(const std::vector<LSN> &lsn_array,
                           const std::vector<SCN> &scn_array,
                           const share::SCN input_scn, const LSN result_lsn,
@@ -480,35 +381,6 @@ TEST_F(TestObSimpleLogClusterBasicFunc, limit_palf_instances)
 	EXPECT_EQ(OB_SUCCESS, delete_paxos_group(id1));
 }
 
-TEST_F(TestObSimpleLogClusterBasicFunc, out_of_disk_space)
-{
-  SET_CASE_LOG_FILE(TEST_NAME, "out_of_disk_space");
-  int64_t id = ATOMIC_AAF(&palf_id_, 1);
-  int server_idx = 0;
-  PalfEnv *palf_env = NULL;
-  int64_t leader_idx = 0;
-  PalfHandleImplGuard leader;
-  share::SCN create_scn = share::SCN::base_scn();
-  EXPECT_EQ(OB_SUCCESS, get_palf_env(server_idx, palf_env));
-  EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, create_scn, leader_idx, leader));
-  update_disk_options(leader_idx, MIN_DISK_SIZE_PER_PALF_INSTANCE/PALF_PHY_BLOCK_SIZE);
-  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 6*31+1, id, MAX_LOG_BODY_SIZE));
-  LogStorage *log_storage = &leader.palf_handle_impl_->log_engine_.log_storage_;
-  while (LSN(6*PALF_BLOCK_SIZE) > log_storage->log_tail_) {
-    usleep(500);
-  }
-  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 20, id, MAX_LOG_BODY_SIZE));
-  while (LSN(6*PALF_BLOCK_SIZE + 20 * MAX_LOG_BODY_SIZE) > log_storage->log_tail_) {
-    usleep(500);
-  }
-  LSN max_lsn = leader.palf_handle_impl_->get_max_lsn();
-  wait_lsn_until_flushed(max_lsn, leader);
-  PALF_LOG(INFO, "out of disk max_lsn", K(max_lsn));
-  usleep(palf::BlockGCTimerTask::BLOCK_GC_TIMER_INTERVAL_MS + 5*10000);
-  EXPECT_EQ(OB_LOG_OUTOF_DISK_SPACE, submit_log(leader, 1, id, MAX_LOG_BODY_SIZE));
-  palf_env->palf_env_impl_.disk_options_wrapper_.disk_opts_for_recycling_blocks_.log_disk_usage_limit_size_ = 5 * MIN_DISK_SIZE_PER_PALF_INSTANCE;
-}
-
 TEST_F(TestObSimpleLogClusterBasicFunc, submit_group_log)
 {
   SET_CASE_LOG_FILE(TEST_NAME, "submit_group_log");
@@ -540,8 +412,10 @@ TEST_F(TestObSimpleLogClusterBasicFunc, io_reducer_basic)
   int64_t leader_idx = 0;
   PalfHandleImplGuard leader;
   EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
-  leader.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.has_batched_size_ = 0;
-  leader.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.handle_count_ = 0;
+  LogIOWorker *iow = leader.palf_handle_impl_->log_engine_.log_io_worker_;
+
+  iow->batch_io_task_mgr_.has_batched_size_ = 0;
+  iow->batch_io_task_mgr_.handle_count_ = 0;
   std::vector<PalfHandleImplGuard*> palf_list;
   EXPECT_EQ(OB_SUCCESS, get_cluster_palf_handle_guard(id, palf_list));
   int64_t lag_follower_idx = (leader_idx + 1) % node_cnt_;
@@ -552,8 +426,8 @@ TEST_F(TestObSimpleLogClusterBasicFunc, io_reducer_basic)
   EXPECT_EQ(OB_SUCCESS, submit_log(leader, 10000, leader_idx, 120));
   const LSN max_lsn = leader.palf_handle_impl_->get_max_lsn();
   wait_lsn_until_flushed(max_lsn, leader);
-  const int64_t has_batched_size = leader.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.has_batched_size_;
-  const int64_t handle_count = leader.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.handle_count_;
+  const int64_t has_batched_size = iow->batch_io_task_mgr_.has_batched_size_;
+  const int64_t handle_count = iow->batch_io_task_mgr_.handle_count_;
   const int64_t log_id = leader.palf_handle_impl_->sw_.get_max_log_id();
   PALF_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "batched_size", K(has_batched_size), K(log_id));
 
@@ -567,8 +441,9 @@ TEST_F(TestObSimpleLogClusterBasicFunc, io_reducer_basic)
     PALF_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "follower is lagged", K(max_lsn), K(lag_follower_max_lsn));
     lag_follower_max_lsn = lag_follower.palf_handle_impl_->sw_.max_flushed_end_lsn_;
   }
-  const int64_t follower_has_batched_size = lag_follower.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.has_batched_size_;
-  const int64_t follower_handle_count = lag_follower.palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_.batch_io_task_mgr_.handle_count_;
+  LogIOWorker *iow_follower = lag_follower.palf_handle_impl_->log_engine_.log_io_worker_;
+  const int64_t follower_has_batched_size = iow_follower->batch_io_task_mgr_.has_batched_size_;
+  const int64_t follower_handle_count = iow_follower->batch_io_task_mgr_.handle_count_;
   EXPECT_EQ(OB_SUCCESS, revert_cluster_palf_handle_guard(palf_list));
 
   int64_t cost_ts = ObTimeUtility::current_time() - start_ts;

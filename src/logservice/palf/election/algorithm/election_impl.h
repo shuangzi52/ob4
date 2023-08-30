@@ -129,8 +129,10 @@ public:
   int add_inner_priority_seed_bit(const PRIORITY_SEED_BIT new_bit);
   int clear_inner_priority_seed_bit(const PRIORITY_SEED_BIT old_bit);
   int set_inner_priority_seed(const uint64_t seed);
-  TO_STRING_KV(K_(is_inited), K_(is_running), K_(proposer), K_(acceptor), KPC_(priority));
+  TO_STRING_KV(K_(is_inited), K_(is_running), K_(proposer), K_(acceptor),
+               K_(ls_biggest_min_cluster_version_ever_seen), KPC_(priority));
 private:// 定向暴露给友元类
+  void handle_message_base_(const ElectionMsgBase &message_base);
   void refresh_priority_();
   /**
    * @description: 比较两个消息的优先级哪个更高
@@ -145,12 +147,12 @@ private:// 定向暴露给友元类
   bool is_rhs_message_higher_(const MSG &lhs,
                               const MSG &rhs,
                               ObStringHolder &reason,
-                              const bool compare_with_ip_port,
+                              const bool decentralized_voting,
                               const LogPhase phase) const
   {
     ELECT_TIME_GUARD(500_ms);
     #define PRINT_WRAPPER KR(ret), K(rhs_is_higher), K(compare_result), K(reason), K(lhs), K(rhs),\
-                          K(compare_with_ip_port), KPC(self_priority), KPC(lhs_priority),\
+                          K(decentralized_voting), KPC(self_priority), KPC(lhs_priority),\
                           KPC(rhs_priority), K(*this)
     int ret = OB_SUCCESS;
     bool rhs_is_higher = false;
@@ -190,7 +192,7 @@ private:// 定向暴露给友元类
         if (rhs.is_buffer_valid()) {// 如果rhs消息的优先级非空，rhs消息高于lhs消息
           rhs_is_higher = true;
           (void) reason.assign("priority is valid");
-        } else if (compare_with_ip_port && rhs.get_sender() < lhs.get_sender()) {// 如果lhs的消息和rhs消息的优先级都是空的，那么比较IP
+        } else if (decentralized_voting && rhs.get_sender() < lhs.get_sender()) {// 如果lhs的消息和rhs消息的优先级都是空的，那么比较IP
           rhs_is_higher = true;
           (void) reason.assign("IP-PORT(priority invalid)");
         } else {
@@ -200,8 +202,17 @@ private:// 定向暴露给友元类
         if (!rhs.is_buffer_valid()) {// rhs优先级是空的，判定rhs优先级更低
           (void) reason.assign("old message priority is valid and new message priority is invalid");
         } else {// rhs优先级非空，具备可比较的基础
+          bool can_only_compare_ip_port = false;
+          uint64_t compare_version = get_ls_biggest_min_cluster_version_ever_seen_();
           if (OB_ISNULL(self_priority)) {// 本机的优先级还没有设置，无法感知子类类型，此时没办法进行比较，只能比较IP大小
-            if (compare_with_ip_port && rhs.get_sender() < lhs.get_sender()) {
+            can_only_compare_ip_port = true;
+            LOG_PHASE(WARN, phase, "self priority not setted, can only compare IP-PORT");
+          } else if (compare_version == 0) {
+            can_only_compare_ip_port = true;
+            LOG_PHASE(WARN, phase, "self ever seen min_cluster_version is 0, can only compare IP-PORT");
+          }
+          if (can_only_compare_ip_port) {
+            if (decentralized_voting && rhs.get_sender() < lhs.get_sender()) {
               rhs_is_higher = true;
               (void) reason.assign("IP-PORT(priority invalid)");
             } else {
@@ -226,13 +237,17 @@ private:// 定向暴露给友元类
                                                             pos2))) {
               LOG_PHASE(WARN, phase, "deserialize new message priority failed");
               (void) reason.assign("DESERIALIZE FAIL");
-            } else if (CLICK_FAIL(lhs_priority->compare_with(*rhs_priority, compare_result, reason))) {
+            } else if (CLICK_FAIL(lhs_priority->compare_with(*rhs_priority,
+                                                             compare_version,
+                                                             decentralized_voting,
+                                                             compare_result,
+                                                             reason))) {
               LOG_PHASE(WARN, phase, "compare priority failed");
               (void) reason.assign("COMPARE FAIL");
             } else {
               if (compare_result < 0) {
                 rhs_is_higher = true;
-              } else if (compare_result == 0 && compare_with_ip_port) {
+              } else if (compare_result == 0 && decentralized_voting) {
                 if (rhs.get_sender() < lhs.get_sender()) {
                   rhs_is_higher = true;
                   (void) reason.assign("IP-PORT(priority equal)");
@@ -261,22 +276,25 @@ private:// 定向暴露给友元类
   int send_(const ElectionPrepareResponseMsg &msg) const;
   int send_(const ElectionAcceptResponseMsg &msg) const;
   int send_(const ElectionChangeLeaderMsg &msg) const;
+  uint64_t get_ls_biggest_min_cluster_version_ever_seen_() const;
+  const char *print_version_pretty_(const uint64_t version) const;
 private:
-  mutable common::ObSpinLock lock_;
-  int64_t id_;
-  ElectionProposer proposer_;
-  ElectionAcceptor acceptor_;
-  ElectionPriority *priority_;
-  ElectionMsgSender *msg_handler_;
-  common::ObAddr self_addr_;
-  ObFunction<int(const int64_t, const ObAddr &)> prepare_change_leader_cb_;
-  ObFunction<void(ElectionImpl *,common::ObRole,common::ObRole,RoleChangeReason)> role_change_cb_;
   bool is_inited_;
   bool is_running_;
-  uint64_t inner_priority_seed_;
-  common::ObOccamTimer *timer_;
-  EventRecorder event_recorder_;
-  mutable ElectionMsgCounter msg_counter_;
+  mutable common::ObSpinLock lock_;
+  int64_t id_;
+  ElectionProposer proposer_;// 对应PAXOS算法中的proposer
+  ElectionAcceptor acceptor_;// 对应PAXOS算法中的acceptor
+  ElectionPriority *priority_;// 由外部实现的选举优先级模块
+  ElectionMsgSender *msg_handler_;// 由外部实现的消息收发模块
+  common::ObAddr self_addr_;
+  ObFunction<int(const int64_t, const ObAddr &)> prepare_change_leader_cb_;// 切主回调
+  ObFunction<void(ElectionImpl *,common::ObRole,common::ObRole,RoleChangeReason)> role_change_cb_;// 角色状态变更回调
+  uint64_t inner_priority_seed_;// 协议内选举优先级
+  common::ObOccamTimer *timer_;// 选举定时任务的定时器
+  LsBiggestMinClusterVersionEverSeen ls_biggest_min_cluster_version_ever_seen_;// 为仲裁副本维护的日志流级别的min_cluster_version值，用于处理选举兼容性升级相关问题
+  EventRecorder event_recorder_;// 事件汇报模块
+  mutable ElectionMsgCounter msg_counter_;// 监控模块
 };
 
 }// namespace election

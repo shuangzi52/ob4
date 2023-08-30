@@ -130,12 +130,17 @@ int ObPLCodeGenerateVisitor::visit(const ObPLStmtBlock &s)
           }
         }
       } else if (NULL != exit.get_v()) { //如果没有eh，调到BLOCK自己的exit分支
-        if (OB_FAIL(generator_.get_helper().create_br(exit))) {
+        if (NULL == generator_.get_current().get_v()) {
+          // do nothing...
+        } else if (OB_FAIL(generator_.get_helper().create_br(exit))) {
           LOG_WARN("failed to create br", K(ret));
+        }
+        if (OB_FAIL(ret)) {
         } else if (OB_FAIL(generator_.set_current(exit))) {
           LOG_WARN("failed to set current", K(ret));
         } else { /*do nothing*/ }
       } else { /*do nothing*/ }
+
       if (OB_SUCC(ret) && NULL != exit.get_v()) {
         if (OB_FAIL(generator_.reset_label())) {
           LOG_WARN("failed to reset label", K(ret));
@@ -1588,6 +1593,8 @@ int ObPLCodeGenerateVisitor::visit(const ObPLReturnStmt &s)
                                     K(generator_.get_ast().get_cursor_table().get_count()),
                                     K(s.get_stmt_id()),
                                     K(generator_.get_ast().get_name()));
+      OZ (generator_.clean_for_loop_cursor(false));
+
       // close cursor
       for (int64_t i = 0; OB_SUCC(ret) && i < generator_.get_ast().get_cursor_table().get_count(); ++i) {
         const ObPLCursor *cursor = generator_.get_ast().get_cursor_table().get_cursor(i);
@@ -1696,13 +1703,64 @@ int ObPLCodeGenerateVisitor::visit(const ObPLExecuteStmt &s)
         OZ (generator_.get_helper().create_gep(ObString("extract_param_mode"),
                                param_mode_arr_value, i, param_mode_arr_elem));
         OZ (generator_.get_helper().create_store(param_mode_value, param_mode_arr_elem));
-        int64_t udt_id =
-              generator_.get_ast().get_expr(s.get_using_index(i))->get_result_type().get_udt_id();
+
+#define GET_USING_EXPR(idx) (generator_.get_ast().get_expr(s.get_using_index(idx)))
+
+        int64_t udt_id = GET_USING_EXPR(i)->get_result_type().get_udt_id();
         if (s.is_pure_out(i)) {
           OZ (generator_.generate_new_objparam(p_result_obj, udt_id));
-        } else {
+        } else if (!GET_USING_EXPR(i)->is_obj_access_expr()
+                   || !(static_cast<const ObObjAccessRawExpr *>(GET_USING_EXPR(i))->for_write())) {
           OZ (generator_.generate_expr(s.get_using_index(i), s, OB_INVALID_INDEX, p_result_obj));
+        } else {
+          ObLLVMValue address;
+          ObPLDataType final_type;
+          const ObObjAccessRawExpr *obj_access
+            = static_cast<const ObObjAccessRawExpr *>(GET_USING_EXPR(i));
+          CK (OB_NOT_NULL(obj_access));
+          OZ (obj_access->get_final_type(final_type));
+          OZ (generator_.generate_expr(s.get_using_index(i),
+                                       s,
+                                       OB_INVALID_INDEX,
+                                       address));
+          if (OB_FAIL(ret)) {
+          } else if (final_type.is_obj_type()) {
+            ObLLVMType obj_type;
+            ObLLVMType obj_type_ptr;
+            ObLLVMValue p_obj;
+            ObLLVMValue src_obj;
+            ObLLVMValue p_dest_obj;
+            OZ (generator_.generate_new_objparam(p_result_obj));
+            OZ (generator_.extract_extend_from_objparam(address, final_type, p_obj));
+            OZ (generator_.get_adt_service().get_obj(obj_type));
+            OZ (obj_type.get_pointer_to(obj_type_ptr));
+            OZ (generator_.get_helper().create_bit_cast(
+                ObString("cast_addr_to_obj_ptr"), p_obj, obj_type_ptr, p_obj));
+            OZ (generator_.get_helper().create_load(ObString("load obj value"), p_obj, src_obj));
+            OZ (generator_.extract_datum_ptr_from_objparam(p_result_obj, ObNullType, p_dest_obj));
+            OZ (generator_.get_helper().create_store(src_obj, p_dest_obj));
+          } else {
+            ObLLVMValue allocator;
+            ObLLVMValue src_datum;
+            ObLLVMValue dest_datum;
+            int64_t udt_id = GET_USING_EXPR(i)->get_result_type().get_udt_id();
+            OZ (generator_.extract_allocator_from_context(
+              generator_.get_vars().at(generator_.CTX_IDX), allocator));
+            OZ (generator_.generate_new_objparam(p_result_obj, udt_id));
+            OZ (generator_.extract_obobj_ptr_from_objparam(p_result_obj, dest_datum));
+            OZ (generator_.extract_obobj_ptr_from_objparam(address, src_datum));
+            OZ (final_type.generate_copy(generator_,
+                                         *s.get_namespace(),
+                                         allocator,
+                                         src_datum,
+                                         dest_datum,
+                                         s.get_block()->in_notfound(),
+                                         s.get_block()->in_warning(),
+                                         OB_INVALID_ID));
+          }
         }
+
+#undef GET_USING_EXPR
 
         OZ (generator_.get_helper().create_ptr_to_int(
           ObString("cast_arg_to_pointer"), p_result_obj, int_type, p_arg));
@@ -1846,6 +1904,10 @@ int ObPLCodeGenerateVisitor::visit(const ObPLTrimStmt &s)
   int ret = OB_SUCCESS;
   if (NULL == generator_.get_current().get_v()) {
     //控制流已断，后面的语句不再处理
+  } else if (OB_FAIL(generator_.get_helper().set_insert_point(generator_.get_current()))) {
+    LOG_WARN("failed to set insert point", K(ret));
+  } else if (OB_FAIL(generator_.generate_goto_label(s))) {
+    LOG_WARN("failed to generate goto label", K(ret));
   } else {
     COLLECTION_STMT_COMM(s.get_trim_expr());
 
@@ -1878,6 +1940,10 @@ int ObPLCodeGenerateVisitor::visit(const ObPLDeleteStmt &s)
   int ret = OB_SUCCESS;
   if (NULL == generator_.get_current().get_v()) {
     //控制流已断，后面的语句不再处理
+  } else if (OB_FAIL(generator_.get_helper().set_insert_point(generator_.get_current()))) {
+    LOG_WARN("failed to set insert point", K(ret));
+  } else if (OB_FAIL(generator_.generate_goto_label(s))) {
+    LOG_WARN("failed to generate goto label", K(ret));
   } else {
     COLLECTION_STMT_COMM(s.get_delete_expr());
 
@@ -2585,6 +2651,7 @@ int ObPLCodeGenerateVisitor::visit(const ObPLCallStmt &s)
           } else {
             ObLLVMValue address;
             ObPLDataType final_type;
+            bool is_no_copy_param = s.get_nocopy_params().count() > 0 && OB_INVALID_INDEX != s.get_nocopy_params().at(i);
             const ObObjAccessRawExpr *obj_access
               = static_cast<const ObObjAccessRawExpr *>(s.get_param_expr(i));
             CK (OB_NOT_NULL(obj_access));
@@ -2592,8 +2659,9 @@ int ObPLCodeGenerateVisitor::visit(const ObPLCallStmt &s)
             OZ (generator_.generate_expr(s.get_param(i),
                                          s,
                                          OB_INVALID_INDEX,
-                                         final_type.is_obj_type() ? address : p_result_obj));
-            if (OB_SUCC(ret) && final_type.is_obj_type()) {
+                                         (final_type.is_obj_type() || !is_no_copy_param) ? address : p_result_obj));
+            if (OB_FAIL(ret)) {
+            } else if (final_type.is_obj_type()) {
               ObLLVMType obj_type;
               ObLLVMType obj_type_ptr;
               ObLLVMValue p_obj;
@@ -2608,6 +2676,24 @@ int ObPLCodeGenerateVisitor::visit(const ObPLCallStmt &s)
               OZ (generator_.get_helper().create_load(ObString("load obj value"), p_obj, src_obj));
               OZ (generator_.extract_datum_ptr_from_objparam(p_result_obj, ObNullType, p_dest_obj));
               OZ (generator_.get_helper().create_store(src_obj, p_dest_obj));
+            } else if (!is_no_copy_param) {
+              ObLLVMValue allocator;
+              ObLLVMValue src_datum;
+              ObLLVMValue dest_datum;
+              int64_t udt_id = s.get_param_expr(i)->get_result_type().get_udt_id();
+              OZ (generator_.extract_allocator_from_context(
+                generator_.get_vars().at(generator_.CTX_IDX), allocator));
+              OZ (generator_.generate_new_objparam(p_result_obj, udt_id));
+              OZ (generator_.extract_obobj_ptr_from_objparam(p_result_obj, dest_datum));
+              OZ (generator_.extract_obobj_ptr_from_objparam(address, src_datum));
+              OZ (final_type.generate_copy(generator_,
+                                            *s.get_namespace(),
+                                            allocator,
+                                            src_datum,
+                                            dest_datum,
+                                            s.get_block()->in_notfound(),
+                                            s.get_block()->in_warning(),
+                                            OB_INVALID_ID));
             }
           }
         }
@@ -2669,6 +2755,10 @@ int ObPLCodeGenerateVisitor::visit(const ObPLCallStmt &s)
           LOG_WARN("failed to get int64_t array", K(ret));
         } else if (OB_FAIL(args.push_back(nocopy_array_value))) {
           LOG_WARN("failed to push back", K(ret));
+        } else if (OB_FAIL(generator_.get_helper().get_int64(s.get_dblink_id(), int_value))) {
+          LOG_WARN("failed to get int64", K(ret));
+        } else if (OB_FAIL(args.push_back(int_value))) { //PL的dblink id
+          LOG_WARN("push_back error", K(ret));
         } else {
           ObLLVMValue result;
           if (NULL == generator_.get_current_exception()) {
@@ -2957,25 +3047,33 @@ int ObPLCodeGenerateVisitor::visit(const ObPLGotoStmt &s)
           } \
         } while(0)
 
-        hash::HashMapPair<ObPLCodeGenerator::goto_label_flag, ObLLVMBasicBlock> pair;
+        hash::HashMapPair<ObPLCodeGenerator::goto_label_flag, std::pair<ObLLVMBasicBlock, ObLLVMBasicBlock>> pair;
         int tmp_ret = generator_.get_goto_label_map().get_refactored(
                                             s.get_dst_stmt()->get_stmt_id(), pair);
         if (OB_SUCCESS == tmp_ret) {
           RESTORE_LOOP_STACK(s.get_level(), s.get_dst_stmt()->get_level());
-          GEN_BR_WITH_COLSE_CURSOR(pair.second);
+          if (ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_CG == pair.first) {
+            GEN_BR_WITH_COLSE_CURSOR(pair.second.second);
+          } else {
+            GEN_BR_WITH_COLSE_CURSOR(pair.second.first);
+          }
         } else if (OB_HASH_NOT_EXIST == tmp_ret) {
           ObLLVMBasicBlock dst_blk;
+          ObLLVMBasicBlock stack_save_blk;
           if (OB_FAIL(generator_.get_helper().create_block(s.get_dst_label(),
                       generator_.get_func(), dst_blk))) {
             LOG_WARN("faile to create dst block", K(ret));
+          } else if (OB_FAIL(generator_.get_helper().create_block(s.get_dst_label(),
+                      generator_.get_func(), stack_save_blk))) {
+            LOG_WARN("faile to create stack save block", K(ret));
           } else if (OB_FAIL(pair.init(ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_EXIST,
-                                      dst_blk))) {
+                                      std::pair<ObLLVMBasicBlock, ObLLVMBasicBlock>(stack_save_blk, dst_blk)))) {
             LOG_WARN("failed to init pair", K(ret));
           } else if (OB_FAIL(generator_.get_goto_label_map().set_refactored(
                                           s.get_dst_stmt()->get_stmt_id(), pair))) {
             LOG_WARN("fill hash map failed", K(ret));
           } else {
-            GEN_BR_WITH_COLSE_CURSOR(dst_blk);
+            GEN_BR_WITH_COLSE_CURSOR(stack_save_blk);
           }
         } else {
           ret = OB_ERR_UNEXPECTED;
@@ -3189,6 +3287,40 @@ int ObPLCodeGenerator::generate_user_type(const ObUserDefinedType &type)
     OZ (build_record_type(record_type, elem_type_array));
   }
     break;
+#ifdef OB_BUILD_ORACLE_PL
+  case PL_NESTED_TABLE_TYPE: {
+    const ObNestedTableType &table_type = static_cast<const ObNestedTableType&>(type);
+    OZ (build_nested_table_type(table_type, elem_type_array));
+  }
+    break;
+  case PL_ASSOCIATIVE_ARRAY_TYPE: {
+    const ObAssocArrayType &assoc_array_type = static_cast<const ObAssocArrayType&>(type);
+    OZ (build_assoc_array_type(assoc_array_type, elem_type_array));
+  }
+    break;
+  case PL_VARRAY_TYPE: {
+    const ObVArrayType &varray_type = static_cast<const ObVArrayType&>(type);
+    OZ (build_varray_type(varray_type, elem_type_array));
+  }
+    break;
+  case PL_SUBTYPE: {
+    const ObUserDefinedSubType &subtype = static_cast<const ObUserDefinedSubType&>(type);
+    ObLLVMType base_type;
+    CK (OB_NOT_NULL(subtype.get_base_type()));
+    if (OB_FAIL(ret)) {
+    } else if (!subtype.get_base_type()->is_cursor_type()) {
+      OZ (build_subtype(subtype, elem_type_array));
+    } else {
+      is_cursor_type = true;
+    }
+  }
+    break;
+  case PL_OPAQUE_TYPE: {
+    const ObOpaqueType &opaque_type = static_cast<const ObOpaqueType&>(type);
+    OZ (build_opaque_type(opaque_type, elem_type_array));
+  }
+    break;
+#endif
   case PL_CURSOR_TYPE:
   case PL_REF_CURSOR_TYPE: {
     is_cursor_type =  true;
@@ -3219,6 +3351,98 @@ int ObPLCodeGenerator::generate_user_type(const ObUserDefinedType &type)
   return ret;
 }
 
+#ifdef OB_BUILD_ORACLE_PL
+int ObPLCodeGenerator::build_nested_table_type(const ObNestedTableType &table_type,
+                                                  ObIArray<jit::ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(build_collection_type(table_type, elem_type_array))) {
+    LOG_WARN("declare collection super type failed", K(ret));
+  }
+  return ret;
+}
+
+int ObPLCodeGenerator::build_assoc_array_type(const ObAssocArrayType &array_type,
+                                                 ObIArray<jit::ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+  //ObObj*
+  ObLLVMType obj_type;
+  ObLLVMType key_type;
+  //int64*
+  ObLLVMType int_type;
+  ObLLVMType sort_type;
+  if (OB_FAIL(build_collection_type(array_type, elem_type_array))) {
+    LOG_WARN("declare collection super type failed", K(ret));
+  } else if (OB_FAIL(adt_service_.get_obj(obj_type))) {
+    LOG_WARN("failed to get obj type", K(ret));
+  } else if (OB_FAIL(obj_type.get_pointer_to(key_type))) {
+    LOG_WARN("failed to get_pointer_to", K(ret));
+  } else if (OB_FAIL(helper_.get_llvm_type(ObIntType, int_type))) {
+    LOG_WARN("failed to get int type", K(ret));
+  } else if (OB_FAIL(int_type.get_pointer_to(sort_type))) {
+    LOG_WARN("failed to get_pointer_to", K(ret));
+  } else if (OB_FAIL(elem_type_array.push_back(key_type))) {
+    LOG_WARN("push_back error", K(ret));
+  } else if (OB_FAIL(elem_type_array.push_back(sort_type))) {
+    LOG_WARN("push_back error", K(ret));
+  } else { /*do nothing*/ }
+  return ret;
+}
+
+int ObPLCodeGenerator::build_varray_type(const ObVArrayType &array_type,
+                                                 ObIArray<jit::ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+  ObLLVMType int_type;
+  if (OB_FAIL(build_collection_type(array_type, elem_type_array))) {
+    LOG_WARN("declare collection super type failed", K(ret));
+  } else if (OB_FAIL(helper_.get_llvm_type(ObIntType, int_type))) {
+    LOG_WARN("failed to get int type", K(ret));
+  } else if (OB_FAIL(elem_type_array.push_back(int_type))) {
+    LOG_WARN("push_back error", K(ret));
+  } else { /*do nothing*/ }
+  return ret;
+}
+
+int ObPLCodeGenerator::build_collection_type(const ObCollectionType &collection_type,
+                                                ObIArray<ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+
+  //common::ObIAllocator *allocator_;
+  ObLLVMType allocator_type;
+  //common::ObDataType element_type_;
+  ObLLVMType element_type;
+  //int64_t count_;
+  ObLLVMType count_type;
+  //int64_t first_;
+  ObLLVMType first_type;
+  //int64_t last_;
+  ObLLVMType last_type;
+
+  ObLLVMType element_ir_type;
+  ObLLVMType data_array_type;
+  ObLLVMType data_array_pointer_type;
+
+  OZ (build_composite(elem_type_array));
+  OZ (helper_.get_llvm_type(ObIntType, allocator_type));
+  OZ (adt_service_.get_elem_desc(element_type));
+  OZ (helper_.get_llvm_type(ObIntType, count_type));
+  OZ (helper_.get_llvm_type(ObIntType, first_type));
+  OZ (helper_.get_llvm_type(ObIntType, last_type));
+  OZ (elem_type_array.push_back(allocator_type));
+  OZ (elem_type_array.push_back(element_type));
+  OZ (elem_type_array.push_back(count_type));
+  OZ (elem_type_array.push_back(first_type));
+  OZ (elem_type_array.push_back(last_type));
+  OZ (get_datum_type(collection_type.get_element_type(), element_ir_type));
+  OZ (ObLLVMHelper::get_array_type(element_ir_type, 0, data_array_type));
+  OZ (data_array_type.get_pointer_to(data_array_pointer_type));
+  OZ (elem_type_array.push_back(data_array_pointer_type));
+  return ret;
+}
+#endif
 
 int ObPLCodeGenerator::build_record_type(const ObRecordType &record_type,
                                          ObIArray<jit::ObLLVMType> &elem_type_array)
@@ -3275,6 +3499,29 @@ int ObPLCodeGenerator::build_composite(ObIArray<jit::ObLLVMType> &elem_type_arra
   return ret;
 }
 
+#ifdef OB_BUILD_ORACLE_PL
+int ObPLCodeGenerator::build_subtype(const ObUserDefinedSubType &subtype,
+                                     ObIArray<jit::ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+  ObLLVMType base_type;
+  CK (OB_NOT_NULL(subtype.get_base_type()));
+  OZ (get_datum_type(*subtype.get_base_type(), base_type));
+  OZ (elem_type_array.push_back(base_type));
+  return ret;
+}
+
+int ObPLCodeGenerator::build_opaque_type(const ObUserDefinedType &opaque_type,
+                                         ObIArray<jit::ObLLVMType> &elem_type_array)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(opaque_type);
+  ObLLVMType type;
+  OZ (helper_.get_llvm_type(ObInt32Type, type));
+  OZ (elem_type_array.push_back(type));
+  return ret;
+}
+#endif
 
 int ObPLCodeGenerator::init()
 {
@@ -3330,6 +3577,8 @@ int ObPLCodeGenerator::init()
       } else if (OB_FAIL(arg_types.push_back(int64_type))) { //int64_t[] ArgV
         LOG_WARN("push_back error", K(ret));
       } else if (OB_FAIL(arg_types.push_back(int64_pointer_type))) { //int64_t* nocopy params
+        LOG_WARN("push_back error", K(ret));
+      } else if (OB_FAIL(arg_types.push_back(int64_type))) { //int64_t dblink id
         LOG_WARN("push_back error", K(ret));
       } else if (OB_FAIL(ObLLVMFunctionType::get(int32_type, arg_types, ft))) {
         LOG_WARN("failed to get function type", K(ret));
@@ -4292,6 +4541,7 @@ int ObPLCodeGenerator::generate_get_collection_attr(ObLLVMValue &param_array,
                                          const ObObjAccessIdx &current_access,
                                          int64_t access_i,
                                          bool for_write,
+                                         bool is_assoc_array,
                                          ObLLVMValue &current_value,
                                          ObLLVMValue &ret_value_ptr,
                                          ObLLVMBasicBlock& exit)
@@ -4309,7 +4559,7 @@ int ObPLCodeGenerator::generate_get_collection_attr(ObLLVMValue &param_array,
   OZ (helper_.create_icmp(is_inited, not_init_value, ObLLVMHelper::ICMP_EQ, not_init));
   OZ (helper_.create_cond_br(not_init, not_init_block, after_init_block));
   OZ (helper_.set_insert_point(not_init_block));
-  OZ (helper_.get_int32(OB_NOT_INIT, ret_value));
+  OZ (helper_.get_int32(OB_ERR_COLLECION_NULL, ret_value));
   OZ (helper_.create_store(ret_value, ret_value_ptr));
   OZ (helper_.create_br(exit));
   OZ (helper_.set_insert_point(after_init_block));
@@ -4392,7 +4642,7 @@ int ObPLCodeGenerator::generate_get_collection_attr(ObLLVMValue &param_array,
         OZ (helper_.create_icmp(high, element_idx, ObLLVMHelper::ICMP_SGT, is_true));
         OZ (helper_.create_cond_br(is_true, after_block, error_block));
         OZ (helper_.set_insert_point(error_block));
-        OZ (helper_.get_int32(OB_ARRAY_OUT_OF_RANGE, ret_value));
+        OZ (helper_.get_int32(is_assoc_array ? OB_READ_NOTHING : OB_ERR_SUBSCRIPT_OUTSIDE_LIMIT, ret_value));
         OZ (helper_.create_store(ret_value, ret_value_ptr));
         OZ (helper_.create_br(exit));
         OZ (helper_.set_insert_point(after_block));
@@ -4460,7 +4710,7 @@ int ObPLCodeGenerator::generate_get_record_attr(const ObObjAccessIdx &current_ac
   OX (record_type = static_cast<const ObRecordType*>(user_type));
   OX (element_idx += record_type->get_record_member_count()); //null map
   OX (element_idx += record_type->get_record_member_count()); //record meta list
-  CK (current_access.is_const());
+  OV (current_access.is_const(), OB_ERR_UNEXPECTED, K(current_access));
   OX (element_idx += current_access.var_index_); //访问的域对应的下标
   if (OB_SUCC(ret) && user_type->is_object_type() && for_write) {
     ObLLVMBasicBlock null_block, not_null_block;
@@ -4529,6 +4779,7 @@ int ObPLCodeGenerator::generate_get_attr(ObLLVMValue &param_array,
                                          obj_access.at(i),
                                          i,
                                          for_write,
+                                         parent_type.is_associative_array_type(),
                                          value,
                                          ret_value_ptr,
                                          exit));
@@ -4538,7 +4789,7 @@ int ObPLCodeGenerator::generate_get_attr(ObLLVMValue &param_array,
                                      for_write,
                                      value,
                                      ret_value_ptr,
-                                     exit));
+                                     exit), K(obj_access), K(i));
       } else {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected user type" , K(obj_access.at(i - 1).var_type_), K(ret));
@@ -6832,6 +7083,34 @@ int ObPLCodeGenerator::generate_exception(ObLLVMValue &type,
   return ret;
 }
 
+int ObPLCodeGenerator::clean_for_loop_cursor(bool is_from_exception)
+{
+  int ret = OB_SUCCESS;
+  /*
+    * 关闭从当前位置开始到目的exception位置所有For Loop Cursor
+    * 如果 is_from_exception 为true 此时已经在exception过程中，只尝试关闭，不再check_success
+    */
+  int64_t dest_level = is_from_exception && get_current_exception() != NULL ? get_current_exception()->level_ : 0;
+  if (NULL != get_current_loop()
+      && get_current_loop()->level_ >= dest_level) {
+    for (int64_t i = get_loop_count(); OB_SUCC(ret) && i > 0; --i) {
+      if (get_loops()[i - 1].level_ >= dest_level
+          && NULL != get_loops()[i - 1].cursor_) {
+        LOG_INFO("close ForLoop Cursor while raising exception",
+                  K(*get_loops()[i - 1].cursor_->get_cursor()),
+                  K(ret));
+        OZ (generate_close(*get_loops()[i - 1].cursor_,
+                            get_loops()[i - 1].cursor_->get_cursor()->get_package_id(),
+                            get_loops()[i - 1].cursor_->get_cursor()->get_routine_id(),
+                            get_loops()[i - 1].cursor_->get_index(),
+                            false,/*cannot ignoe as must have been opened*/
+                            !is_from_exception/*此时已经在exception里，如果出错不能再抛exception了*/));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObPLCodeGenerator::raise_exception(ObLLVMValue &exception,
                                        ObLLVMValue &error_code,
                                        ObLLVMValue &sql_state,
@@ -6856,31 +7135,14 @@ int ObPLCodeGenerator::raise_exception(ObLLVMValue &exception,
   OZ (helper_.create_block(ObString("raise_exception"), get_func(), raise_exception));
   OZ (set_current(raise_exception));
   if (OB_SUCC(ret)) {
+    ObLLVMValue ret_value;
+    ObLLVMValue exception_result;
+
     /*
      * 关闭从当前位置开始到目的exception位置所有For Loop Cursor
      * 因为此时已经在exception过程中，只尝试关闭，不再check_success
      */
-    int64_t dest_level = get_current_exception() != NULL ? get_current_exception()->level_ : 0;
-    if (NULL != get_current_loop()
-        && get_current_loop()->level_ >= dest_level) {
-      for (int64_t i = get_loop_count(); OB_SUCC(ret) && i > 0; --i) {
-        if (get_loops()[i - 1].level_ >= dest_level
-            && NULL != get_loops()[i - 1].cursor_) {
-          LOG_INFO("close ForLoop Cursor while raising exception",
-                   K(*get_loops()[i - 1].cursor_->get_cursor()),
-                   K(ret));
-          OZ (generate_close(*get_loops()[i - 1].cursor_,
-                             get_loops()[i - 1].cursor_->get_cursor()->get_package_id(),
-                             get_loops()[i - 1].cursor_->get_cursor()->get_routine_id(),
-                             get_loops()[i - 1].cursor_->get_index(),
-                             false,/*cannot ignoe as must have been opened*/
-                             false/*此时已经在exception里，如果出错不能再抛exception了*/));
-        }
-      }
-    }
-
-    ObLLVMValue ret_value;
-    ObLLVMValue exception_result;
+    OZ (clean_for_loop_cursor(true));
     if (OB_ISNULL(get_current_exception())) {
       OZ (helper_.create_call(ObString("raise_exception"),
                               get_eh_service().eh_raise_exception_,
@@ -7202,6 +7464,13 @@ int ObPLCodeGenerator::generate_di_user_type(const ObUserDefinedType &type, uint
       if (OB_FAIL(generate_di_record_type(record_type, line))) {
         LOG_WARN("failed to generate di record type", K(ret));
       }
+#ifdef OB_BUILD_ORACLE_PL
+    } else if (type.is_nested_table_type()) {
+      const ObNestedTableType &table_type = static_cast<const ObNestedTableType&>(type);
+      if (OB_FAIL(generate_di_table_type(table_type, line))) {
+        LOG_WARN("failed to generate di table type", K(ret));
+      }
+#endif
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("user defined type is invalid", K(type.get_type()));
@@ -7210,6 +7479,27 @@ int ObPLCodeGenerator::generate_di_user_type(const ObUserDefinedType &type, uint
   return ret;
 }
 
+#ifdef OB_BUILD_ORACLE_PL
+int ObPLCodeGenerator::generate_di_table_type(const ObNestedTableType &table_type, uint32_t line)
+{
+  int ret = OB_SUCCESS;
+  if (debug_mode_) {
+    const ObString &type_name = table_type.get_name();
+    const ObPLDataType &data_type = table_type.get_element_type();
+    ObLLVMDIType element_type;
+    ObLLVMDIType di_table_type;
+    uint64_t type_id = table_type.get_user_type_id();
+    if (OB_FAIL(get_di_datum_type(data_type, element_type))) {
+      LOG_WARN("failed to get di datum type", K(ret));
+    } else if (OB_FAIL(di_adt_service_.get_table_type(type_name, line, element_type, di_table_type))) {
+      LOG_WARN("failed to get array type", K(ret));
+    } else if (OB_FAIL(di_user_type_map_.set_refactored(type_id, di_table_type))) {
+      LOG_WARN("failed to set di table type to user type map", K(ret), K(table_type));
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObPLCodeGenerator::generate_di_record_type(const ObRecordType &record_type, uint32_t line)
 {
@@ -7693,43 +7983,70 @@ int ObPLCodeGenerator::generate_goto_label(const ObPLStmt &stmt)
 {
   int ret = OB_SUCCESS;
   if (stmt.get_is_goto_dst()) {
+
     if (NULL == get_current().get_v()) {
         //控制流已断，后面的语句不再处理
     } else {
       // 去看一下对应的goto是否已经cg了，没有的话就记录一下这个label地址。
-      hash::HashMapPair<ObPLCodeGenerator::goto_label_flag, ObLLVMBasicBlock> pair;
+      ObLLVMValue stack;
+      hash::HashMapPair<ObPLCodeGenerator::goto_label_flag, std::pair<ObLLVMBasicBlock, ObLLVMBasicBlock>> pair;
       int tmp_ret = get_goto_label_map().get_refactored(stmt.get_stmt_id(), pair);
       if (OB_HASH_NOT_EXIST == tmp_ret) {
         ObLLVMBasicBlock label_block;
+        ObLLVMBasicBlock stack_save_block;
         const ObString *lab = stmt.get_label();
         if (OB_FAIL(get_helper().create_block(NULL == lab ? ObString("") : *lab, get_func(),
                                                 label_block))) {
           LOG_WARN("create goto label failed", K(ret));
+        } else if (OB_FAIL(get_helper().create_block(NULL == lab ? ObString("") : *lab, get_func(),
+                                                stack_save_block))) {
+          LOG_WARN("create goto label failed", K(ret));
+        } else if (OB_FAIL(get_helper().create_br(stack_save_block))) {
+          LOG_WARN("failed to create_br", K(ret));
+        } else if (OB_FAIL(get_helper().set_insert_point(stack_save_block))) {
+          LOG_WARN("failed to set insert point", K(ret));
+        } else if (OB_FAIL(set_current(stack_save_block))) {
+          LOG_WARN("failed to set current block", K(ret));
+        } else if (OB_FAIL(get_helper().stack_save(stack))) {
+          LOG_WARN("failed to save current stack", K(ret));
         } else if (OB_FAIL(get_helper().create_br(label_block))) {
           LOG_WARN("failed to create_br", K(ret));
         } else if (OB_FAIL(get_helper().set_insert_point(label_block))) {
           LOG_WARN("failed to set insert point", K(ret));
         } else if (OB_FAIL(set_current(label_block))) {
           LOG_WARN("failed to set current block", K(ret));
-        } else if (OB_FAIL(pair.init(ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_NONEXIST,
-                                                    label_block))) {
+        } else if (OB_FAIL(get_helper().stack_restore(stack))) {
+          LOG_WARN("failed to restore stack", K(ret));
+        } else if (OB_FAIL(pair.init(ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_CG,
+                                     std::pair<ObLLVMBasicBlock, ObLLVMBasicBlock>(stack_save_block, label_block)))) {
           LOG_WARN("init label block pair failed.", K(ret));
         } else if (OB_FAIL(get_goto_label_map().set_refactored(stmt.get_stmt_id(), pair))) {
           LOG_WARN("set label block failed", K(ret));
         } else {}
       } else if (OB_SUCCESS == tmp_ret) {
-        // 这个时候，goto已经cg了，拿到对应的block地址，做为新的block
-        if (ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_EXIST == pair.first) {
-          ObLLVMBasicBlock &goto_block = pair.second;
-          if (OB_FAIL(get_helper().create_br(goto_block))) {
-            LOG_WARN("failed to create_br", K(ret));
-          } else if (OB_FAIL(get_helper().set_insert_point(goto_block))) {
-            LOG_WARN("failed to set insert point", K(ret));
-          } else if (OB_FAIL(set_current(goto_block))) {
-            LOG_WARN("failed to set current block", K(ret));
-          } else {}
+        ObLLVMBasicBlock &stack_save_block = pair.second.first;
+        ObLLVMBasicBlock &goto_block = pair.second.second;
+        if (OB_FAIL(get_helper().create_br(stack_save_block))) {
+          LOG_WARN("failed to create_br", K(ret));
+        } else if (OB_FAIL(get_helper().set_insert_point(stack_save_block))) {
+          LOG_WARN("failed to set insert point", K(ret));
+        } else if (OB_FAIL(set_current(stack_save_block))) {
+          LOG_WARN("failed to set current block", K(ret));
+        } else if (OB_FAIL(get_helper().stack_save(stack))) {
+          LOG_WARN("failed to save stack", K(ret));
+        } else if (OB_FAIL(get_helper().create_br(goto_block))) {
+          LOG_WARN("failed to create_br", K(ret));
+        } else if (OB_FAIL(get_helper().set_insert_point(goto_block))) {
+          LOG_WARN("failed to set insert point", K(ret));
+        } else if (OB_FAIL(set_current(goto_block))) {
+          LOG_WARN("failed to set current block", K(ret));
+        } else if (OB_FAIL(get_helper().stack_restore(stack))) {
+          LOG_WARN("failed to restore stack", K(ret));
         } else {
-          // do nothing
+          pair.first = ObPLCodeGenerator::goto_label_flag::GOTO_LABEL_CG;
+          if (OB_FAIL(get_goto_label_map().set_refactored(stmt.get_stmt_id(), pair, true))) {
+            LOG_WARN("set label block failed", K(ret));
+          }
         }
       } else {
         ret = OB_ERR_UNEXPECTED;
@@ -7738,6 +8055,24 @@ int ObPLCodeGenerator::generate_goto_label(const ObPLStmt &stmt)
     }
   } else {
     // do nothing
+  }
+  return ret;
+}
+
+int ObPLCodeGenerator::generate_destruct_obj(const ObPLStmt &s, ObLLVMValue &src_datum)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<jit::ObLLVMValue, 2> args;
+
+  OZ (args.push_back(get_vars()[CTX_IDX]));
+  OZ (args.push_back(src_datum));
+  if (OB_SUCC(ret)) {
+    jit::ObLLVMValue ret_err;
+    if (OB_FAIL(get_helper().create_call(ObString("spi_destruct_obj"), get_spi_service().spi_destruct_obj_, args, ret_err))) {
+      LOG_WARN("failed to create call", K(ret));
+    } else if (OB_FAIL(check_success(ret_err, s.get_stmt_id(), s.get_block()->in_notfound(), s.get_block()->in_warning()))) {
+      LOG_WARN("failed to check success", K(ret));
+    } else { /*do nothing*/ }
   }
   return ret;
 }
@@ -7765,44 +8100,43 @@ int ObPLCodeGenerator::generate_out_param(
     ObLLVMValue p_param;
     ObPLDataType pl_type = s.get_variable(param_desc.at(i).out_idx_)->get_type();
     if (pl_type.is_composite_type() || pl_type.is_cursor_type()) {
-      if (param_desc.at(i).is_pure_out()) {
-        // 对于INOUT参数, 复杂类型传递的是指针, 因此什么都不需要做;
+      if (param_desc.at(i).is_out()) {
+        // 对于INOUT参数, execute immediate复杂类型传递的是指针, 什么都不需要做; inner call场景, inout参数会入参会深拷，这里需要重新拷回
         // 对于OUT参数, 复杂类型构造了新的ObjParam, 这里进行COPY;
-        ObLLVMValue into_address;
-        ObLLVMValue allocator;
-        ObLLVMValue src_datum;
-        ObLLVMValue dest_datum;
-        OZ (extract_objparam_from_context(
-          get_vars().at(CTX_IDX), param_desc.at(i).out_idx_, into_address));
-        if (pl_type.is_collection_type()) {
-          ObLLVMValue dest_collection;
-          OZ (extract_extend_from_objparam(into_address, pl_type, dest_collection));
-          OZ (extract_allocator_from_collection(dest_collection, allocator));
+        if (PL_CALL == s.get_type() &&
+            static_cast<const ObPLCallStmt *>(&s)->get_nocopy_params().count() > i &&
+            OB_INVALID_INDEX != static_cast<const ObPLCallStmt *>(&s)->get_nocopy_params().at(i) &&
+            !param_desc.at(i).is_pure_out()) {
+            // inner call nocopy的inout参数传递是指针, 无需重新拷贝
         } else {
-          OZ (generate_null(ObIntType, allocator));
-        }
-        OZ (extract_obobj_ptr_from_objparam(into_address, dest_datum));
-        OZ (extract_obobj_ptr_from_objparam(p_arg, src_datum));
-        OZ (pl_type.generate_copy(*this,
-                                  *(s.get_namespace()),
-                                  allocator,
-                                  src_datum,
-                                  dest_datum,
-                                  s.get_block()->in_notfound(),
-                                  s.get_block()->in_warning(),
-                                  OB_INVALID_ID));
-        if (OB_SUCC(ret) && PL_CALL == s.get_type()) {
-          ObSEArray<jit::ObLLVMValue, 2> args;
-
-          OZ (args.push_back(get_vars()[CTX_IDX]));
-          OZ (args.push_back(src_datum));
-          if (OB_SUCC(ret)) {
-            jit::ObLLVMValue ret_err;
-            if (OB_FAIL(get_helper().create_call(ObString("spi_destruct_obj"), get_spi_service().spi_destruct_obj_, args, ret_err))) {
-              LOG_WARN("failed to create call", K(ret));
-            } else if (OB_FAIL(check_success(ret_err, s.get_stmt_id(), s.get_block()->in_notfound(), s.get_block()->in_warning()))) {
-              LOG_WARN("failed to check success", K(ret));
-            } else { /*do nothing*/ }
+          ObLLVMValue into_address;
+          ObLLVMValue allocator;
+          ObLLVMValue src_datum;
+          ObLLVMValue dest_datum;
+          OZ (extract_objparam_from_context(
+            get_vars().at(CTX_IDX), param_desc.at(i).out_idx_, into_address));
+          if (pl_type.is_collection_type()) {
+            ObLLVMValue dest_collection;
+            OZ (extract_extend_from_objparam(into_address, pl_type, dest_collection));
+            OZ (extract_allocator_from_collection(dest_collection, allocator));
+          } else {
+            OZ (generate_null(ObIntType, allocator));
+          }
+          OZ (extract_obobj_ptr_from_objparam(into_address, dest_datum));
+          OZ (extract_obobj_ptr_from_objparam(p_arg, src_datum));
+          OZ (pl_type.generate_copy(*this,
+                                    *(s.get_namespace()),
+                                    allocator,
+                                    src_datum,
+                                    dest_datum,
+                                    s.get_block()->in_notfound(),
+                                    s.get_block()->in_warning(),
+                                    OB_INVALID_ID));
+          if (OB_FAIL(ret)) {
+          } else if (PL_CALL == s.get_type()) {
+            OZ (generate_destruct_obj(s, src_datum));
+          } else if (PL_EXECUTE == s.get_type() && param_desc.at(i).is_pure_out()) {
+            OZ (generate_destruct_obj(s, src_datum));
           }
         }
       }
@@ -7884,6 +8218,19 @@ int ObPLCodeGenerator::generate_out_param(
                                     s.get_block()->in_notfound(),
                                     s.get_block()->in_warning(),
                                     package_id));
+        if (OB_FAIL(ret)) {
+        } else if (PL_CALL == s.get_type()) {
+          const ObPLCallStmt *call_stmt = static_cast<const ObPLCallStmt *>(&s);
+          if (call_stmt->get_nocopy_params().count() > i &&
+              OB_INVALID_INDEX != call_stmt->get_nocopy_params().at(i) &&
+              !param_desc.at(i).is_pure_out()) {
+            // inner call nocopy的inout参数传递是指针, 无需释放
+          } else {
+            OZ (generate_destruct_obj(s, src_datum));
+          }
+        } else if (PL_EXECUTE == s.get_type() && param_desc.at(i).is_pure_out()) {
+          OZ (generate_destruct_obj(s, src_datum));
+        }
       }
       if (OB_SUCC(ret) && package_id != OB_INVALID_ID && var_idx != OB_INVALID_ID) {
         OZ (generate_update_package_changed_info(s, package_id, var_idx));
@@ -7978,6 +8325,7 @@ int ObPLCodeGenerator::generate_simple(ObPLFunction &pl_func)
   OX (pl_func.set_action((uint64_t)(&ObPL::simple_execute)));
   OX (pl_func.set_can_cached(get_ast().get_can_cached()));
   OX (pl_func.set_is_all_sql_stmt(get_ast().get_is_all_sql_stmt()));
+  OX (pl_func.set_has_parallel_affect_factor(get_ast().has_parallel_affect_factor()));
 
   OX (sql_infos.set_capacity(static_cast<uint32_t>(ast.get_sql_stmts().count())));
   for (int64_t i = 0; OB_SUCC(ret) && i < ast.get_sql_stmts().count(); ++i) {
@@ -7986,6 +8334,9 @@ int ObPLCodeGenerator::generate_simple(ObPLFunction &pl_func)
     CK (OB_NOT_NULL(sql_stmt));
     OZ (sql_info.generate(*sql_stmt, pl_func.get_expressions()));
     OZ (sql_infos.push_back(sql_info));
+  }
+  if (OB_SUCC(ret) && ObTriggerInfo::is_trigger_body_package_id(pl_func.get_package_id())) {
+    OZ (pl_func.set_types(get_ast().get_user_type_table()));
   }
 
   return ret;
@@ -8098,6 +8449,7 @@ int ObPLCodeGenerator::generate_normal(ObPLFunction &pl_func)
       pl_func.set_action(helper_.get_function_address(get_ast().get_name()));
       pl_func.set_can_cached(get_ast().get_can_cached());
       pl_func.set_is_all_sql_stmt(get_ast().get_is_all_sql_stmt());
+      pl_func.set_has_parallel_affect_factor(get_ast().has_parallel_affect_factor());
     }
   }
   if (debug_mode_) {

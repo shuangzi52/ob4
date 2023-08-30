@@ -256,7 +256,7 @@ int ObIndexStatsEstimator::fast_gather_index_stats(ObExecContext &ctx,
   } else if (OB_UNLIKELY(index_param.is_global_index_ && gather_part_ids.count() != 1)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected error", K(index_param.is_global_index_), K(gather_part_ids.count()));
-  } else if (mgr.get_table_stat(data_param.tenant_id_, data_param.table_id_, gather_part_ids, data_table_stats)) {
+  } else if (OB_FAIL(mgr.get_table_stat(data_param.tenant_id_, data_param.table_id_, gather_part_ids, data_table_stats))) {
     LOG_WARN("failed to get table stat", K(ret));
   } else if (index_param.need_estimate_block_ &&
              OB_FAIL(partition_id_block_map.create(10000,
@@ -324,14 +324,28 @@ int ObIndexStatsEstimator::fast_gather_index_stats(ObExecContext &ctx,
       }
     }
     if (OB_SUCC(ret) && is_continued && !index_table_stats.empty()) {
-      if (OB_FAIL(mgr.update_table_stat(index_param.tenant_id_,
-                                        index_table_stats,
-                                        index_param.is_index_stat_))) {
+      ObMySQLTransaction trans;
+      if (OB_FAIL(trans.start(ctx.get_sql_proxy(), index_param.tenant_id_))) {
+          LOG_WARN("fail to start transaction", K(ret));
+      } else if (OB_FAIL(mgr.update_table_stat(index_param.tenant_id_,
+                                               trans,
+                                               index_table_stats,
+                                               index_param.is_index_stat_))) {
         LOG_WARN("failed to update table stats", K(ret));
       } else {
         is_fast_gather = true;
         LOG_TRACE("Succeed to fast gather index stats", K(data_param), K(index_param),
                                                         K(index_table_stats));
+      }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(trans.end(true))) {
+          LOG_WARN("fail to commit transaction", K(ret));
+        }
+      } else {
+        int tmp_ret = OB_SUCCESS;
+        if (OB_SUCCESS != (tmp_ret = trans.end(false))) {
+          LOG_WARN("fail to roll back transaction", K(tmp_ret));
+        }
       }
     }
   }

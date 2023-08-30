@@ -61,18 +61,22 @@ public:
   };
 public:
   int init();
+  void stop();
+  void wait();
   void destroy();
   int get_session_pool(uint64_t tenant_id, ObTableApiSessPoolGuard &guard);
-  int get_sess_info(uint64_t tenant_id, uint64_t user_id, ObTableApiSessGuard &guard);
+  int get_sess_info(ObTableApiCredential &credential, ObTableApiSessGuard &guard);
   int update_sess(ObTableApiCredential &credential);
 private:
   int extend_sess_pool(uint64_t tenant_id, ObTableApiSessPoolGuard &guard);
+  int get_or_create_sess_pool(ObTableApiCredential &credential, ObTableApiSessPoolGuard &guard);
 private:
   static const int64_t ELIMINATE_SESSION_DELAY = 60 * 1000 * 1000; // 60s
   bool is_inited_;
   SessPoolMap sess_pool_map_;
   ObTableApiSessEliminationTask elimination_task_;
   common::ObTimer timer_;
+  ObSpinLock lock_; // for get_or_create_sess_pool
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableApiSessPoolMgr);
 };
@@ -120,17 +124,19 @@ public:
   void set_deleted() { ATOMIC_SET(&is_deleted_, true); }
   bool is_deleted() { return ATOMIC_LOAD(&is_deleted_); }
   bool is_empty() const { return key_node_map_.empty(); }
-  int get_sess_info(uint64_t key, ObTableApiSessGuard &guard);
+  int get_sess_info(ObTableApiCredential &credential, ObTableApiSessGuard &guard);
   int update_sess(ObTableApiCredential &credential);
   // 将过期的node移动到retired_nodes_
-  int move_retired_sess();
+  int move_sess_to_retired_list();
   int evict_retired_sess();
-private:
   int create_node(ObTableApiCredential &credential, ObTableApiSessNode *&node);
+  int move_sess_to_retired_list(ObTableApiSessNode *node);
+private:
+  int replace_sess(ObTableApiCredential &credential);
   int create_and_add_node(ObTableApiCredential &credential);
   int get_sess_node(uint64_t key, ObTableApiSessNode *&node);
   int evict_all_session();
-  int move_retired_sess(uint64_t key);
+  int move_sess_to_retired_list(uint64_t key);
 private:
   common::ObArenaAllocator allocator_;
   bool is_inited_;
@@ -185,7 +191,10 @@ public:
   sql::ObSQLSessionInfo& get_sess_info() { return sess_info_; }
   const sql::ObSQLSessionInfo& get_sess_info() const { return sess_info_; }
   int init_sess_info();
-  void reset_tx_desc() { sess_info_.get_tx_desc() = nullptr; } // 防止异步提交场景在 session 析构的时候 rollback 事务
+  void reset_tx_desc() { // 防止异步提交场景在 session 析构的时候 rollback 事务
+    sql::ObSQLSessionInfo::LockGuard guard(sess_info_.get_thread_data_lock());
+    sess_info_.get_tx_desc() = nullptr;
+  }
   void give_back_to_free_list();
 private:
   common::ObArenaAllocator allocator_;
@@ -244,6 +253,7 @@ private:
   SessList sess_lists_;
   int64_t last_active_ts_;
   ObTableApiCredential credential_;
+  ObSpinLock lock_;; // for lock allocator_
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableApiSessNode);
 };
@@ -309,6 +319,24 @@ protected:
   ObTableApiSessNode *sess_node_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableApiSessNodeAtomicOp);
+};
+
+class ObTableApiSessNodeReplaceOp
+{
+protected:
+  typedef common::hash::HashMapPair<uint64_t, ObTableApiSessNode*> MapKV;
+public:
+  ObTableApiSessNodeReplaceOp(ObTableApiSessPool &pool, ObTableApiCredential &credential)
+      : pool_(pool),
+        credential_(credential)
+  {}
+  virtual ~ObTableApiSessNodeReplaceOp() {}
+  int operator()(MapKV &entry);
+private:
+  ObTableApiSessPool &pool_;
+  ObTableApiCredential &credential_;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObTableApiSessNodeReplaceOp);
 };
 
 class ObTableApiSessForeachOp

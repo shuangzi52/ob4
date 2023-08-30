@@ -144,8 +144,7 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
               ret = OB_FILE_NOT_EXIST;
               LOG_WARN("file not exist", K(ret), K(cstyle_file_name));
             }
-            //security check for mysql mode
-            if (OB_SUCC(ret) && lib::is_mysql_mode()) {
+            if (OB_SUCC(ret)) {
               ObString secure_file_priv;
               if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
                 LOG_WARN("failed to get secure file priv", K(ret));
@@ -514,9 +513,8 @@ int ObLoadDataResolver::resolve_hints(const ParseNode &node)
       }
       case T_PARALLEL: {
         if (1 != hint_node->num_child_) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("stmt parallel degree node should have 1 child",
-                   K(ret), K(hint_node->num_child_));
+          /* ignore parallel(auto) and parallel(manual)*/
+          LOG_WARN("Unused parallel hint");
         } else if (OB_ISNULL(hint_node->children_[0])) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("child of stmt parallel degree node should not be NULL", K(ret));

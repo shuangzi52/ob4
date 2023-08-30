@@ -18,6 +18,7 @@
 #include "ob_storage_ha_struct.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "ob_storage_ha_dag.h"
+#include "logservice/palf/lsn.h"
 
 namespace oceanbase
 {
@@ -85,6 +86,7 @@ public:
   virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   virtual int clear_dag_net_ctx() override;
   virtual int deal_with_cancel() override;
+  bool is_ha_dag_net() const override { return true; }
 
   ObLSCompleteMigrationCtx *get_ctx() { return &ctx_; }
   const share::ObLSID &get_ls_id() const { return ctx_.arg_.ls_id_; }
@@ -92,7 +94,12 @@ public:
 private:
   int start_running_for_migration_();
   int update_migration_status_(ObLS *ls);
+  int report_ls_meta_table_(ObLS *ls);
   int report_result_();
+  int trans_rebuild_fail_status_(
+      ObLS &ls,
+      const ObMigrationStatus &current_migration_status,
+      ObMigrationStatus &new_migration_status);
 
 private:
   bool is_inited_;
@@ -103,10 +110,11 @@ private:
 class ObCompleteMigrationDag : public ObStorageHADag
 {
 public:
-  explicit ObCompleteMigrationDag(const ObStorageHADagType sub_type);
+  explicit ObCompleteMigrationDag(const share::ObDagType::ObDagTypeEnum &dag_type);
   virtual ~ObCompleteMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
   virtual int64_t hash() const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   int prepare_ctx(share::ObIDagNet *dag_net);
 
   INHERIT_TO_STRING_KV("ObIDag", ObStorageHADag, KP(this));
@@ -121,8 +129,6 @@ public:
   virtual ~ObInitialCompleteMigrationDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObCompleteMigrationDag", ObCompleteMigrationDag, KP(this));
 protected:
@@ -155,8 +161,6 @@ public:
   virtual ~ObStartCompleteMigrationDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObCompleteMigrationDag", ObCompleteMigrationDag, KP(this));
 protected:
@@ -173,27 +177,55 @@ public:
   virtual int process() override;
   VIRTUAL_TO_STRING_KV(K("ObStartCompleteMigrationTask"), KP(this), KPC(ctx_));
 private:
+  int get_wait_timeout_(int64_t &timeout);
   int wait_log_sync_();
   int wait_log_replay_sync_();
-  int wait_trans_tablet_explain_data_();
+  int wait_transfer_table_replace_();
+  int change_member_list_with_retry_();
   int change_member_list_();
+  int get_ls_transfer_scn_(
+      ObLS *ls,
+      share::SCN &transfer_scn);
+  int switch_learner_to_acceptor_(ObLS *ls);
+  int replace_member_with_learner_(ObLS *ls);
+  int replace_learners_for_add_(ObLS *ls);
+  int replace_learners_for_migration_(ObLS *ls);
   int check_need_wait_(
       ObLS *ls,
       bool &need_wait);
+  int update_ls_migration_status_wait_();
   int update_ls_migration_status_hold_();
   int check_all_tablet_ready_();
   int check_tablet_ready_(
       const common::ObTabletID &tablet_id,
-      ObLS *ls);
+      ObLS *ls,
+      const int64_t timeout);
+  int check_tablet_transfer_table_ready_(
+      const common::ObTabletID &tablet_id,
+      ObLS *ls,
+      const int64_t timeout);
+  int inner_check_tablet_transfer_table_ready_(
+      const common::ObTabletID &tablet_id,
+      ObLS *ls,
+      bool &need_skip);
+  int check_need_wait_transfer_table_replace_(
+      ObLS *ls,
+      bool &need_wait);
   int wait_log_replay_to_max_minor_end_scn_();
+  int check_ls_and_task_status_(
+      ObLS *ls);
   int record_server_event_();
+  int init_timeout_ctx_(
+      const int64_t timeout,
+      ObTimeoutCtx &timeout_ctx);
 
 private:
   static const int64_t IS_REPLAY_DONE_THRESHOLD_US = 3L * 1000 * 1000L;
+  static const int64_t CHECK_CONDITION_INTERVAL = 200_ms;
   bool is_inited_;
   ObLSHandle ls_handle_;
   ObLSCompleteMigrationCtx *ctx_;
-  share::SCN log_sync_scn_;
+  palf::LSN log_sync_lsn_;
   share::SCN max_minor_end_scn_;
   DISALLOW_COPY_AND_ASSIGN(ObStartCompleteMigrationTask);
 };
@@ -205,8 +237,6 @@ public:
   virtual ~ObFinishCompleteMigrationDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObCompleteMigrationDag", ObCompleteMigrationDag, KP(this));
 protected:
@@ -224,7 +254,6 @@ public:
   VIRTUAL_TO_STRING_KV(K("ObFinishCompleteMigrationTask"), KP(this), KPC(ctx_));
 private:
   int generate_prepare_initial_dag_();
-  int try_enable_vote_();
 
   int record_server_event_();
 private:

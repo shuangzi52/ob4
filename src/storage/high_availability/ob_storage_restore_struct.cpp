@@ -13,7 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_restore_struct.h"
 #include "storage/restore/ob_ls_restore_args.h"
-#include "share/backup/ob_backup_data_store.h"
+#include "storage/backup/ob_backup_data_store.h"
 #include "storage/blocksstable/ob_logic_macro_id.h"
 namespace oceanbase
 {
@@ -23,6 +23,7 @@ namespace storage
 ObRestoreBaseInfo::ObRestoreBaseInfo()
   : restore_scn_(),
     backup_cluster_version_(0),
+    backup_data_version_(0),
     backup_dest_(),
     backup_set_list_()
 {
@@ -32,6 +33,7 @@ void ObRestoreBaseInfo::reset()
 {
   restore_scn_.reset();
   backup_cluster_version_ = 0;
+  backup_data_version_ = 0;
   backup_dest_.reset();
   backup_set_list_.reset();
 }
@@ -40,6 +42,7 @@ bool ObRestoreBaseInfo::is_valid() const
 {
   return restore_scn_.is_valid()
       && backup_cluster_version_ > 0
+      && backup_data_version_ > 0
       && backup_dest_.is_valid()
       && !backup_set_list_.empty();
   //backup piece list can be empty
@@ -55,6 +58,7 @@ int ObRestoreBaseInfo::assign(const ObRestoreBaseInfo &restore_base_info)
   } else {
     restore_scn_ = restore_base_info.restore_scn_;
     backup_cluster_version_ = restore_base_info.backup_cluster_version_;
+    backup_data_version_ = restore_base_info.backup_data_version_;
     if (OB_FAIL(backup_dest_.deep_copy(restore_base_info.backup_dest_))) {
       LOG_WARN("failed to set backup dest", K(ret), K(restore_base_info));
     } else if (OB_FAIL(backup_set_list_.assign(restore_base_info.backup_set_list_))) {
@@ -75,6 +79,7 @@ int ObRestoreBaseInfo::copy_from(const ObTenantRestoreCtx &restore_arg)
     idx = restore_arg.get_backup_set_list().count() - 1;
     restore_scn_ = restore_arg.get_restore_scn();
     backup_cluster_version_ = restore_arg.get_backup_cluster_version();
+    backup_data_version_ = restore_arg.get_backup_data_version();
     backup_dest_.reset();
     backup_set_list_.reset();
     if (OB_FAIL(backup_dest_.set(restore_arg.get_backup_set_list().at(idx).backup_set_path_))) {
@@ -416,7 +421,6 @@ ObRestoreMacroBlockIdMgr::~ObRestoreMacroBlockIdMgr()
 }
 
 int ObRestoreMacroBlockIdMgr::init(
-    const share::ObLSID &ls_id,
     const common::ObTabletID &tablet_id,
     const ObITable::TableKey &table_key,
     const ObRestoreBaseInfo &restore_base_info,
@@ -427,12 +431,12 @@ int ObRestoreMacroBlockIdMgr::init(
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("restore macro block id mgr init tiwce", K(ret));
-  } else if (!ls_id.is_valid() || !tablet_id.is_valid() || !table_key.is_valid() || !restore_base_info.is_valid()) {
+  } else if (!tablet_id.is_valid() || !table_key.is_valid() || !restore_base_info.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("restore macro block id mgr init get invalid argument", K(ret), K(ls_id), K(tablet_id),
+    LOG_WARN("restore macro block id mgr init get invalid argument", K(ret), K(tablet_id),
         K(table_key), K(restore_base_info));
-  } else if (OB_FAIL(inner_init_(ls_id, tablet_id, table_key, restore_base_info, second_meta_index_store))) {
-    LOG_WARN("failed to inner init restore macro block id mar", K(ret), K(ls_id), K(tablet_id), K(table_key));
+  } else if (OB_FAIL(inner_init_(tablet_id, table_key, restore_base_info, second_meta_index_store))) {
+    LOG_WARN("failed to inner init restore macro block id mar", K(ret), K(tablet_id), K(table_key));
   } else {
     table_key_ = table_key;
     is_inited_ = true;
@@ -441,7 +445,6 @@ int ObRestoreMacroBlockIdMgr::init(
 }
 
 int ObRestoreMacroBlockIdMgr::inner_init_(
-    const share::ObLSID &ls_id,
     const common::ObTabletID &tablet_id,
     const ObITable::TableKey &table_key,
     const ObRestoreBaseInfo &restore_base_info,
@@ -459,15 +462,15 @@ int ObRestoreMacroBlockIdMgr::inner_init_(
   if (OB_FAIL(ObRestoreUtils::get_backup_data_type(table_key, data_type))) {
     LOG_WARN("failed to get backup data type", K(ret), K(table_key));
   } else if (OB_FAIL(second_meta_index_store.get_backup_meta_index(data_type, tablet_id, meta_type, meta_index))) {
-    LOG_WARN("failed to get backup meta index", K(ret), K(ls_id), K(tablet_id), K(table_key), K(meta_type));
+    LOG_WARN("failed to get backup meta index", K(ret), K(tablet_id), K(table_key), K(meta_type));
   } else {
     SMART_VARS_2((share::ObBackupPath, backup_path), (backup::ObBackupMacroBlockIDMappingsMeta, macro_block_id_map)) {
       if (OB_FAIL(share::ObBackupPathUtil::get_macro_block_backup_path(restore_base_info.backup_dest_,
-          ls_id, data_type, meta_index.turn_id_, meta_index.retry_id_, meta_index.file_id_, backup_path))) {
-        LOG_WARN("failed to get macro block index", K(ret), K(table_key), K(ls_id), K(tablet_id), K(restore_base_info));
+          meta_index.ls_id_, data_type, meta_index.turn_id_, meta_index.retry_id_, meta_index.file_id_, backup_path))) {
+        LOG_WARN("failed to get macro block index", K(ret), K(table_key), K(tablet_id), K(restore_base_info), K(meta_index));
       } else if (OB_FAIL(backup::ObLSBackupRestoreUtil::read_macro_block_id_mapping_metas(backup_path.get_obstr(),
           restore_base_info.backup_dest_.get_storage_info(), meta_index, macro_block_id_map))) {
-        LOG_WARN("failed to read macro block data", K(ret), K(table_key), K(ls_id), K(tablet_id), K(restore_base_info));
+        LOG_WARN("failed to read macro block data", K(ret), K(table_key), K(tablet_id), K(restore_base_info));
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < macro_block_id_map.sstable_count_; ++i) {
           const backup::ObBackupMacroBlockIDMapping &id_mapping = macro_block_id_map.id_map_list_[i];
@@ -480,7 +483,7 @@ int ObRestoreMacroBlockIdMgr::inner_init_(
               if (OB_FAIL(block_id_array_.push_back(block_id))) {
                 LOG_WARN("failed to push block id into array", K(ret), K(block_id));
               } else {
-                LOG_DEBUG("push back block id", K(ls_id), K(tablet_id), K(table_key), K(pair), K(block_id));
+                LOG_DEBUG("push back block id", K(tablet_id), K(table_key), K(pair), K(block_id));
               }
             }
 

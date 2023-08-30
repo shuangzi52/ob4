@@ -62,7 +62,7 @@ int ObPlXaStartExecutor::execute(ObExecContext &ctx, ObXaStartStmt &stmt)
                              stmt.get_format_id()))) {
     LOG_WARN("set xid error", K(ret), K(stmt));
   } else if (my_session->get_in_transaction()) {
-    ObTxDesc *&tx_desc = my_session->get_tx_desc();
+    auto tx_desc = my_session->get_tx_desc();
     ret = OB_TRANS_XA_OUTSIDE;
     LOG_WARN("already start trans", K(ret), K(xid), K(tx_desc->tid()),
         K(tx_desc->get_xid()));
@@ -71,6 +71,8 @@ int ObPlXaStartExecutor::execute(ObExecContext &ctx, ObXaStartStmt &stmt)
     LOG_ERROR("fail to get trans timeout ts", K(ret));
   } else if (FALSE_IT(tenant_id = my_session->get_effective_tenant_id())) {
   } else {
+    ObSQLSessionInfo::LockGuard session_query_guard(my_session->get_query_lock());
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     const int64_t flags = stmt.get_flags();
     transaction::ObTxParam &tx_param = plan_ctx->get_trans_param();
     const bool is_readonly = ObXAFlag::contain_tmreadonly(flags);
@@ -102,6 +104,7 @@ int ObPlXaStartExecutor::execute(ObExecContext &ctx, ObXaStartStmt &stmt)
     } else {
       // associate xa with session
       my_session->associate_xa(xid);
+      my_session->get_raw_audit_record().trans_id_ = my_session->get_tx_id();
     }
   }
   LOG_INFO("xa start execute", K(stmt));
@@ -196,8 +199,11 @@ int ObPlXaEndExecutor::execute(ObExecContext &ctx, ObXaEndStmt &stmt)
     ret = OB_TRANS_XA_NOTA;
     TRANS_LOG(WARN, "xid not match", K(ret), K(xid));
   } else {
+    ObSQLSessionInfo::LockGuard session_query_guard(my_session->get_query_lock());
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     int64_t flags = stmt.get_flags();
-    flags = my_session->has_tx_level_temp_table() ? (flags | ObXAFlag::TEMPTABLE) : flags;
+    flags = my_session->has_tx_level_temp_table() ? (flags | ObXAFlag::OBTEMPTABLE) : flags;
+    my_session->get_raw_audit_record().trans_id_ = my_session->get_tx_id();
     if (OB_FAIL(MTL(transaction::ObXAService*)->xa_end(xid, flags,
           my_session->get_tx_desc()))) {
       LOG_WARN("xa end failed", K(ret), K(xid));
@@ -266,6 +272,7 @@ int ObPlXaPrepareExecutor::execute(ObExecContext &ctx, ObXaPrepareStmt &stmt)
   ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx);
   ObTaskExecutorCtx &task_exec_ctx = ctx.get_task_exec_ctx();
   ObXATransID xid;
+  ObTransID tx_id;
 
   if (OB_ISNULL(my_session)) {
     ret = OB_ERR_UNEXPECTED;
@@ -282,15 +289,16 @@ int ObPlXaPrepareExecutor::execute(ObExecContext &ctx, ObXaPrepareStmt &stmt)
     LOG_WARN("already start trans", K(ret));
   } else {
     int64_t timeout_seconds = my_session->get_xa_end_timeout_seconds();
-    if (OB_FAIL(MTL(transaction::ObXAService*)->xa_prepare(xid, timeout_seconds))) {
+    if (OB_FAIL(MTL(transaction::ObXAService*)->xa_prepare(xid, timeout_seconds, tx_id))) {
       if (OB_TRANS_XA_RDONLY != ret) {
         LOG_WARN("xa prepare failed", K(ret), K(stmt));
       }
       // TODO: 如果是OB_TRANS_XA_RMFAIL错误那么由用户决定是否回滚
     }
+    my_session->get_raw_audit_record().trans_id_ = tx_id;
   }
 
-  LOG_INFO("xa prepare execute", K(stmt));
+  LOG_INFO("xa prepare execute", K(ret), K(stmt), K(xid), K(tx_id));
   return ret;
 }
 
@@ -387,11 +395,13 @@ int ObPlXaEndTransExecutor::execute_(const ObString &gtrid_str,
 
 int ObPlXaCommitExecutor::execute(ObExecContext &ctx, ObXaCommitStmt &stmt)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx);
   ObTxDesc *tx_desc = my_session->get_tx_desc();
   int64_t xa_timeout_seconds = my_session->get_xa_end_timeout_seconds();
   ObXATransID xid;
+  ObTransID tx_id;
   bool has_tx_level_temp_table = false;
   if (!stmt.is_valid_oracle_xid()) {
     ret = OB_TRANS_XA_INVAL;
@@ -408,9 +418,10 @@ int ObPlXaCommitExecutor::execute(ObExecContext &ctx, ObXaCommitStmt &stmt)
     LOG_WARN("already start trans", K(ret), K(tx_desc->tid()));
   } else {
     if (OB_FAIL(MTL(transaction::ObXAService*)->xa_commit(xid, stmt.get_flags(),
-            xa_timeout_seconds, has_tx_level_temp_table))) {
+            xa_timeout_seconds, has_tx_level_temp_table, tx_id))) {
       LOG_WARN("xa commit failed", K(ret), K(xid));
     }
+    my_session->get_raw_audit_record().trans_id_ = tx_id;
   }
   if (has_tx_level_temp_table) {
     int temp_ret = my_session->drop_temp_tables(false, true/*is_xa_trans*/);
@@ -418,7 +429,7 @@ int ObPlXaCommitExecutor::execute(ObExecContext &ctx, ObXaCommitStmt &stmt)
       LOG_WARN("trx level temporary table clean failed", KR(temp_ret));
     }
   }
-  LOG_INFO("xa commit", K(ret), K(stmt), K(xid));
+  LOG_INFO("xa commit", K(ret), K(stmt), K(xid), K(tx_id));
   return ret;
 }
 
@@ -429,6 +440,7 @@ int ObPlXaRollbackExecutor::execute(ObExecContext &ctx, ObXaRollBackStmt &stmt)
   ObTxDesc *tx_desc = my_session->get_tx_desc();
   int64_t xa_timeout_seconds = my_session->get_xa_end_timeout_seconds();
   ObXATransID xid;
+  ObTransID tx_id;
   if (!stmt.is_valid_oracle_xid()) {
     ret = OB_TRANS_XA_INVAL;
     LOG_WARN("invalid xid for oracle mode", K(ret), K(stmt));
@@ -443,11 +455,12 @@ int ObPlXaRollbackExecutor::execute(ObExecContext &ctx, ObXaRollBackStmt &stmt)
     ret = OB_TRANS_XA_RMFAIL;
     LOG_WARN("already start trans", K(ret), K(tx_desc->tid()));
   } else {
-    if (OB_FAIL(MTL(transaction::ObXAService*)->xa_rollback(xid, xa_timeout_seconds))) {
+    if (OB_FAIL(MTL(transaction::ObXAService*)->xa_rollback(xid, xa_timeout_seconds, tx_id))) {
       LOG_WARN("xa rollback failed", K(ret), K(xid));
     }
+    my_session->get_raw_audit_record().trans_id_ = tx_id;
   }
-  LOG_INFO("xa rollback", K(ret), K(stmt), K(xid));
+  LOG_INFO("xa rollback", K(ret), K(stmt), K(xid), K(tx_id));
   return ret;
 }
 

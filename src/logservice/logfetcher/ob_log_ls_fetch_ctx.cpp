@@ -78,6 +78,7 @@ int LSFetchCtxUpdateSourceFunctor::operator()(const ObLSID &id, logservice::ObRe
 
 /////////////////////////////// LSFetchCtx /////////////////////////////////
 LSFetchCtx::LSFetchCtx() :
+    source_(NULL),
     remote_iter_(LSFetchCtxGetSourceFunctor(*this), LSFetchCtxUpdateSourceFunctor(*this))
 {
   reset();
@@ -111,8 +112,6 @@ void LSFetchCtx::reset()
   progress_.reset();
   start_parameters_.reset();
   fetch_info_.reset();
-  //svr_list_need_update_ = true;
-  //TODO tmp test
   svr_list_need_update_ = false;
   start_lsn_locate_req_.reset();
   end_lsn_locate_req_.reset();
@@ -122,6 +121,7 @@ void LSFetchCtx::reset()
   data_dict_iterator_.reset();
   fetched_log_size_ = 0;
   ctx_desc_.reset();
+  err_handler_ = NULL;
 }
 
 int LSFetchCtx::init(
@@ -131,7 +131,8 @@ int LSFetchCtx::init(
     const int64_t progress_id,
     const ClientFetchingMode fetching_mode,
     const ObBackupPathString &archive_dest_str,
-    ObILogFetcherLSCtxAddInfo &ls_ctx_add_info)
+    ObILogFetcherLSCtxAddInfo &ls_ctx_add_info,
+    IObLogErrHandler &err_handler)
 {
   int ret = OB_SUCCESS;
   const int64_t start_tstamp_ns = start_parameters.get_start_tstamp_ns();
@@ -153,6 +154,7 @@ int LSFetchCtx::init(
   progress_.reset(start_lsn, start_tstamp_ns);
   start_parameters_ = start_parameters;
   fetched_log_size_ = 0;
+  err_handler_ = &err_handler;
 
   if (start_lsn.is_valid()) {
     // LSN is valid, init mem_storage; otherwise after need locate start_lsn success, we can init mem_storage
@@ -243,6 +245,7 @@ int LSFetchCtx::init_remote_iter()
   const LSN &start_lsn = progress_.get_next_lsn();
   const int64_t cur_log_progress = progress_.get_progress();
   archive::LargeBufferPool *large_buffer_pool = NULL;
+  logservice::ObLogExternalStorageHandler *log_ext_handler = NULL;
   SCN start_scn;
 
   if (remote_iter_.is_init()) {
@@ -252,8 +255,10 @@ int LSFetchCtx::init_remote_iter()
     LOG_ERROR("convert log progress to start scn failed", KR(ret), K(cur_log_progress));
   } else if (OB_FAIL(get_large_buffer_pool(large_buffer_pool))) {
     LOG_ERROR("get large buffer pool failed", KR(ret));
+  } else if (OB_FAIL(get_log_ext_handler(log_ext_handler))) {
+    LOG_ERROR("get log external handler failed", KR(ret));
   } else if (OB_FAIL(remote_iter_.init(tenant_id, ls_id, start_scn, start_lsn,
-      LSN(LOG_MAX_LSN_VAL), large_buffer_pool))) {
+      LSN(LOG_MAX_LSN_VAL), large_buffer_pool, log_ext_handler))) {
     LOG_ERROR("remote iter init failed", KR(ret), K(tenant_id), K(ls_id), K(start_scn), K(start_lsn));
   }
   return ret;
@@ -271,7 +276,7 @@ int LSFetchCtx::append_log(const char *buf, const int64_t buf_len)
     } else if (OB_FAIL(group_iterator_.reuse(start_lsn))) {
       LOG_ERROR("MemPalfBufferIterator resuse failed", KR(ret), K_(tls_id), K(start_lsn));
     } else {
-      LOG_DEBUG("mem_storage_ init and MemPalfBufferIterator resuse succ", K_(tls_id), K(start_lsn));
+      LOG_TRACE("mem_storage_ init and MemPalfBufferIterator resuse succ", K_(tls_id), K(start_lsn));
     }
   }
 
@@ -281,7 +286,7 @@ int LSFetchCtx::append_log(const char *buf, const int64_t buf_len)
           K_(mem_storage), K_(group_iterator));
     } else {
       ATOMIC_AAF(&fetched_log_size_, buf_len);
-      LOG_DEBUG("append_log succ", K(buf_len), KPC(this));
+      LOG_TRACE("append_log succ", K(buf_len), KPC(this));
     }
   }
 
@@ -377,7 +382,7 @@ int LSFetchCtx::update_progress(
             K(group_entry), K(progress_));
       }
 
-      LOG_DEBUG("read log and update progress success", K_(tls_id), K(group_entry), K_(progress));
+      LOG_TRACE("read log and update progress success", K_(tls_id), K(group_entry), K_(progress));
     }
   }
 
@@ -429,6 +434,24 @@ int LSFetchCtx::get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_po
   return ret;
 }
 
+int LSFetchCtx::get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler)
+{
+  int ret = OB_SUCCESS;
+  IObLogFetcher *fetcher = static_cast<IObLogFetcher *>(ls_fetch_mgr_->get_fetcher_host());
+
+  if (OB_ISNULL(fetcher)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("fetcher is nullptr", KR(ret), K(fetcher));
+  } else if (OB_FAIL(fetcher->get_log_ext_handler(log_ext_handler))) {
+    LOG_ERROR("Fetcher get_log_ext_handler failed", KR(ret));
+  } else if (OB_ISNULL(log_ext_handler)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("get_log_ext_handler is nullptr", KR(ret), K(log_ext_handler));
+  }
+
+  return ret;
+}
+
 int LSFetchCtx::get_fetcher_config(const ObLogFetcherConfig *&cfg)
 {
   int ret = OB_SUCCESS;
@@ -451,27 +474,28 @@ bool LSFetchCtx::need_update_svr_list()
 {
   int ret = OB_SUCCESS;
   bool bool_ret = false;
-  int64_t cur_time = get_timestamp();
+  const int64_t cur_time = get_timestamp();
   int64_t avail_svr_count = 0;
   logservice::ObLogRouteService *log_route_service = nullptr;
 
   if (is_direct_fetching_mode(fetching_mode_)) {
     bool_ret = false;
   } else if(is_integrated_fetching_mode(fetching_mode_)) {
-    if (OB_FAIL(get_log_route_service_(log_route_service))) {
-      LOG_ERROR("get_log_route_service_ failed", KR(ret));
-    } else if (OB_FAIL(log_route_service->get_server_count(tls_id_.get_tenant_id(), tls_id_.get_ls_id(),
-        avail_svr_count))) {
-      if (OB_ENTRY_NOT_EXIST != ret) {
-        LOG_ERROR("ObLogRouteService get_server_count failed", KR(ret), K(tls_id_));
+    if (REACH_TIME_INTERVAL_THREAD_LOCAL(SERVER_LIST_UPDATE_INTERVAL_SEC)) {
+      if (OB_FAIL(get_log_route_service_(log_route_service))) {
+        LOG_ERROR("get_log_route_service_ failed", KR(ret));
+      } else if (OB_FAIL(log_route_service->get_server_count(tls_id_.get_tenant_id(), tls_id_.get_ls_id(),
+              avail_svr_count))) {
+        if (OB_ENTRY_NOT_EXIST != ret) {
+          LOG_ERROR("ObLogRouteService get_server_count failed", KR(ret), K(tls_id_));
+        } else {
+          bool_ret = true;
+        }
       } else {
-        bool_ret = true;
-      }
-    } else {
-      // If no server is available, or if a proactive update is requested, an update is required
-      // if (avail_svr_count <= 0 || svr_list_need_update_) {
-      if (avail_svr_count <= 0) {
-        bool_ret = true;
+        // If no server is available, or if a proactive update is requested, an update is required
+        if (avail_svr_count <= 0 || svr_list_need_update_) {
+          bool_ret = true;
+        }
       }
     }
   } else {
@@ -479,7 +503,7 @@ bool LSFetchCtx::need_update_svr_list()
     LOG_ERROR("ls_fetch_ctx has invalid fetching mode", KR(ret), KPC(this), K(tls_id_), K_(fetching_mode));
   }
 
-  LOG_DEBUG("need_update_svr_list", K(bool_ret), KR(ret), K(tls_id_),
+  LOG_TRACE("need_update_svr_list", KR(ret), K(bool_ret), K(tls_id_),
       K(svr_list_need_update_), K(avail_svr_count));
 
   return bool_ret;
@@ -491,7 +515,7 @@ bool LSFetchCtx::need_locate_start_lsn() const
 
   bool_ret = ! (progress_.get_next_lsn().is_valid());
 
-  LOG_DEBUG("need_locate_start_lsn", K(tls_id_), K(bool_ret), K(progress_));
+  LOG_TRACE("need_locate_start_lsn", K(tls_id_), K(bool_ret), K(progress_));
 
   return bool_ret;
 }
@@ -504,7 +528,7 @@ bool LSFetchCtx::need_locate_end_lsn() const
   bool_ret = (OB_INVALID_TIMESTAMP != start_parameters_.get_end_tstamp_ns())
     && ! start_parameters_.get_end_lsn().is_valid();
 
-  LOG_DEBUG("need_locate_end_lsn", K(tls_id_), K(bool_ret), K(start_parameters_));
+  LOG_TRACE("need_locate_end_lsn", K(tls_id_), K(bool_ret), K(start_parameters_));
 
   return bool_ret;
 }
@@ -524,7 +548,7 @@ int LSFetchCtx::update_svr_list(const bool need_print_info)
       LOG_ERROR("ObLogRouteService async_server_query_req failed", KR(ret), K(tls_id_));
     }
   } else {
-    LOG_DEBUG("async_server_query_req succ", K_(tls_id));
+    LOG_TRACE("async_server_query_req succ", K_(tls_id));
   }
 
   return ret;
@@ -825,7 +849,7 @@ int LSFetchCtx::check_fetch_timeout(const common::ObAddr &svr,
               "last_update_tstamp", TS_TO_STR(last_update_tstamp),
               "svr_start_fetch_tstamp", TS_TO_STR(svr_start_fetch_tstamp));
         } else {
-          LOG_DEBUG("[CHECK_PROGRESS_TIMEOUT]", K_(tls_id), K(svr),
+          LOG_TRACE("[CHECK_PROGRESS_TIMEOUT]", K_(tls_id), K(svr),
               K(is_fetch_timeout), K(is_fetch_timeout_on_lagged_replica),
               K(progress_update_interval),
               K(progress_),
@@ -954,13 +978,24 @@ bool LSFetchCtx::need_switch_server(const common::ObAddr &cur_svr)
 
   if (OB_FAIL(get_log_route_service_(log_route_service))) {
     LOG_ERROR("get_log_route_service_ failed", KR(ret));
-  } else if (OB_FAIL(log_route_service->need_switch_server(tls_id_.get_tenant_id(), tls_id_.get_ls_id(),
-          next_lsn, cur_svr))) {
-    LOG_ERROR("ObLogRouteService need_switch_server failed", KR(ret), K(tls_id_), K(next_lsn),
-        K(cur_svr));
-  } else {}
+  } else {
+    bool_ret = log_route_service->need_switch_server(tls_id_.get_tenant_id(), tls_id_.get_ls_id(),
+          next_lsn, cur_svr);
+  }
 
   return bool_ret;
+}
+
+void LSFetchCtx::handle_error(const share::ObLSID &ls_id,
+      const IObLogErrHandler::ErrType &err_type,
+      share::ObTaskId &trace_id,
+      const palf::LSN &lsn,
+      const int err_no,
+      const char *fmt, ...)
+{
+   if (OB_NOT_NULL(err_handler_)) {
+     err_handler_->handle_error(ls_id, err_type, trace_id, lsn, err_no, fmt);
+   }
 }
 
 /////////////////////////////////// LSProgress ///////////////////////////////////
@@ -1118,6 +1153,7 @@ void LSFetchCtx::FetchInfo::reset()
   cur_mod_.reset();
   out_mod_.reset();
   out_reason_ = "NONE";
+  dispatched_count_from_idle_to_idle_ = 0;
 }
 
 void LSFetchCtx::FetchInfo::dispatch_in_idle_pool()
@@ -1138,6 +1174,10 @@ void LSFetchCtx::FetchInfo::dispatch_in_dead_pool()
 void LSFetchCtx::FetchInfo::dispatch_out(const char *reason)
 {
   out_mod_ = cur_mod_;
+
+  if (is_from_idle_to_idle()) {
+    ++dispatched_count_from_idle_to_idle_;
+  }
   cur_mod_.reset();
   out_reason_ = reason;
 }

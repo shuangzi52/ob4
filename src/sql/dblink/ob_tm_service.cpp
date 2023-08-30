@@ -90,6 +90,7 @@ int ObTMService::tm_rm_start(ObExecContext &exec_ctx,
   // step 2, promote or start trans in current session
   if (OB_SUCCESS != ret) {
   } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     const int64_t timeout_seconds = my_session->get_xa_end_timeout_seconds();
     //if (need_start || need_promote) {
     //  if (OB_FAIL(ObXAService::generate_xid(xid))) {
@@ -128,16 +129,18 @@ int ObTMService::tm_rm_start(ObExecContext &exec_ctx,
   }
 
   // step 3, xa start for dblink connection
+  ObXATransID remote_xid;
   if (OB_SUCCESS != ret) {
   } else if (OB_FAIL(xa_service->xa_start_for_dblink_client(dblink_type,
-          dblink_conn, tx_desc))) {
-    LOG_WARN("fail to execute xa start for dblink client", K(ret), K(xid));
+          dblink_conn, tx_desc, remote_xid))) {
+    LOG_WARN("fail to execute xa start for dblink client", K(ret), K(xid), K(remote_xid));
   } else {
     tx_id = tx_desc->tid();
   }
-  LOG_INFO("tm rm start", K(ret), K(tx_id), K(xid), K(need_start), K(need_promote));
+  my_session->get_raw_audit_record().trans_id_ = my_session->get_tx_id();
+  LOG_INFO("tm rm start", K(ret), K(tx_id), K(remote_xid), K(need_start), K(need_promote));
 
-  // TODO, if fail, the trans needs rollback
+  // if fail, the trans should be rolled back by client
 
   return ret;
 }
@@ -160,11 +163,16 @@ int ObTMService::tm_commit(ObExecContext &exec_ctx,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected param", K(ret), KP(xa_service), KP(my_session), KP(tx_desc));
   } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     tx_id = tx_desc->tid();
-    if (OB_FAIL(xa_service->commit_for_dblink_trans(tx_desc))) {
-      LOG_WARN("fail to commit for dblink trans", K(ret));
-    } else {
-      // do nothing
+    my_session->get_raw_audit_record().trans_id_ = tx_id;
+    {
+      ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
+      if (OB_FAIL(xa_service->commit_for_dblink_trans(tx_desc))) {
+        LOG_WARN("fail to commit for dblink trans", K(ret));
+      } else {
+        // do nothing
+      }
     }
     // TODO, if fail, kill trans forcely and reset session
     // reset
@@ -193,7 +201,9 @@ int ObTMService::tm_rollback(ObExecContext &exec_ctx,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected param", K(ret), KP(xa_service), KP(my_session), KP(tx_desc));
   } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     tx_id = tx_desc->tid();
+    my_session->get_raw_audit_record().trans_id_ = tx_id;
     if (OB_FAIL(xa_service->rollback_for_dblink_trans(tx_desc))) {
       LOG_WARN("fail to rollback for dblink trans", K(ret));
     } else {
@@ -227,6 +237,7 @@ int ObTMService::recover_tx_for_callback(const ObTransID &tx_id,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected session", K(ret), K(tx_id), K(tx_desc->tid()));
   } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     if (OB_FAIL(xa_service->recover_tx_for_dblink_callback(tx_id, tx_desc))) {
       LOG_WARN("fail to recover tx for dblink callback", K(ret), K(tx_id));
     } else if (NULL == tx_desc || tx_desc->get_xid().empty()) {
@@ -254,6 +265,7 @@ int ObTMService::revert_tx_for_callback(ObExecContext &exec_ctx)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected session", K(ret), K(tx_desc->tid()));
   } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     tx_id = tx_desc->tid();
     if (OB_FAIL(xa_service->revert_tx_for_dblink_callback(tx_desc))) {
       LOG_WARN("fail to recover tx for dblink callback", K(ret), K(tx_id));

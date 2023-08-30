@@ -2375,6 +2375,10 @@ int ObOraSysChecker::check_ora_ddl_priv(
         DEFINE_PUB_CHECK_CMD(PRIV_ID_ALTER_SYSTEM);
         break;
       }
+      case stmt::T_KILL: {
+        DEFINE_PUB_CHECK_CMD(PRIV_ID_ALTER_SYSTEM);
+        break;
+      }
       case stmt::T_CREATE_DBLINK: {
         DEFINE_PUB_CHECK_CMD(PRIV_ID_CREATE_DBLINK);
         break;
@@ -2403,6 +2407,10 @@ int ObOraSysChecker::check_ora_ddl_priv(
       case stmt::T_DROP_CONTEXT: {
         DEFINE_PUB_CHECK_CMD(PRIV_ID_DROP_ANY_CONTEXT);
         break;  
+      }
+      case stmt::T_VARIABLE_SET: {
+        DEFINE_PUB_CHECK_CMD(PRIV_ID_ALTER_SYSTEM);
+        break;
       }
       default: {
         ret = OB_ERR_UNEXPECTED;

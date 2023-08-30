@@ -1,6 +1,14 @@
-// Copyright (c) 2018-present Alibaba Inc. All Rights Reserved.
-// Author:
-//   Junquan Chen <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -21,37 +29,24 @@ namespace observer
 {
 class ObTableLoadSchema;
 
-struct ObTableLoadPartitionCalcContext
-{
-  ObTableLoadPartitionCalcContext(const table::ObTableLoadObjRowArray &obj_rows,
-                                  const ObTableLoadParam &param, common::ObIAllocator &allocator)
-    : obj_rows_(obj_rows), param_(param), allocator_(allocator)
-  {
-    partition_ids_.set_block_allocator(common::ModulePageAllocator(allocator_));
-  }
-  const table::ObTableLoadObjRowArray &obj_rows_;
-  const ObTableLoadParam &param_;
-  common::ObIAllocator &allocator_;
-  common::ObArray<table::ObTableLoadPartitionId> partition_ids_;
-};
 
 class ObTableLoadPartitionCalc
 {
 public:
   ObTableLoadPartitionCalc();
-  int init(uint64_t tenant_id, uint64_t table_id, sql::ObSQLSessionInfo *session_info);
-  int calc(ObTableLoadPartitionCalcContext &ctx);
+  int init(const ObTableLoadParam &param, sql::ObSQLSessionInfo *session_info);
+  int get_part_key(const table::ObTableLoadObjRow &row, common::ObNewRow &part_key) const;
+  int cast_part_key(common::ObNewRow &part_key, common::ObIAllocator &allocator) const;
+  int get_partition_by_row(common::ObIArray<common::ObNewRow> &part_rows,
+                           common::ObIArray<table::ObTableLoadPartitionId> &partition_ids);
+  int64_t get_part_key_obj_count() const {return part_key_obj_index_.count();}
 private:
   int init_part_key_index(const share::schema::ObTableSchema *table_schema,
                         common::ObIAllocator &allocator);
-  int get_row(ObTableLoadPartitionCalcContext &ctx, const table::ObTableLoadObjRow &obj_row, int32_t length, common::ObNewRow &part_row,
-              common::ObIAllocator &allocator) const;
-  int get_partition_by_row(common::ObIArray<common::ObNewRow> &part_rows,
-                           common::ObIArray<table::ObTableLoadPartitionId> &partition_ids);
 public:
   struct IndexAndType
   {
-    IndexAndType() : index_(-1) {}
+    IndexAndType() : index_(-1), column_schema_(nullptr) {}
     int64_t index_;
     const share::schema::ObColumnSchemaV2 *column_schema_;
     TO_STRING_KV(K_(index), KP_(column_schema));
@@ -63,9 +58,8 @@ public:
   bool is_partition_with_autoinc_;
   int64_t partition_with_autoinc_idx_;
 private:
+  const ObTableLoadParam *param_;
   // data members
-  uint64_t tenant_id_;
-  uint64_t table_id_;
   bool is_partitioned_;
   // 非分区表
   table::ObTableLoadPartitionId partition_id_;

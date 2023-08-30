@@ -76,7 +76,6 @@ public:
   virtual int open_curr_range(const bool for_rewrite, const bool for_compare = false) { UNUSEDx(for_rewrite, for_compare); return OB_NOT_SUPPORTED; }
   virtual bool is_macro_block_opened() const { return true; }
   virtual bool is_micro_block_opened() const { return true; }
-  virtual bool is_tx_table_valid() const;
   virtual OB_INLINE const blocksstable::ObDatumRow *get_curr_row() const { return curr_row_; }
   virtual int get_curr_range(blocksstable::ObDatumRange &range) const { UNUSED(range); return OB_NOT_SUPPORTED; }
   //TODO return ptr instead
@@ -99,7 +98,7 @@ public:
     return bret;
   }
   int check_merge_range_cross(ObDatumRange &data_range, bool &range_cross);
-  OB_INLINE const ObTableReadInfo &get_read_info() const{ return read_info_; }
+  OB_INLINE const ObITableReadInfo &get_read_info() const{ return read_info_; }
 
   VIRTUAL_TO_STRING_KV(K_(tablet_id), K_(iter_end), K_(schema_rowkey_column_cnt), K_(schema_version), K_(merge_range),
       KPC(curr_row_), K_(store_ctx), KPC(row_iter_), K_(iter_row_count), K_(is_inited),
@@ -117,7 +116,8 @@ protected:
   int64_t schema_version_;
   ObRowStoreType row_store_type_;
   blocksstable::ObDatumRange merge_range_;
-  // only major merge use column_ids
+  // major: column_ids contains all stored column
+  // mini & minor: only mv rowkey column
   const common::ObIArray<share::schema::ObColDesc> *column_ids_;
   storage::ObITable *table_;
   storage::ObStoreCtx store_ctx_;
@@ -134,7 +134,7 @@ protected:
   common::ObArenaAllocator allocator_;
   // not only stmt allocator, also reserve memory for iters internal use
   common::ObArenaAllocator stmt_allocator_;
-  ObTableReadInfo read_info_;
+  ObRowkeyReadInfo read_info_;
   bool is_inited_;
   bool is_rowkey_first_row_reused_;
   bool is_rowkey_shadow_row_reused_;
@@ -229,12 +229,6 @@ public:
   virtual OB_INLINE bool is_multi_version_minor_iter() const { return true; }
   virtual bool is_curr_row_commiting() const;
   virtual int collect_tnode_dml_stat(storage::ObTransNodeDMLStat &tnode_stat) const override;
-  virtual void reset_first_multi_version_row_flag()
-  {
-    if (nullptr != curr_row_) {
-      const_cast<blocksstable::ObDatumRow *>(curr_row_)->mvcc_row_flag_.set_first_multi_version_row(false);
-    }
-  }
   INHERIT_TO_STRING_KV("ObPartitionMinorRowMergeIter", ObPartitionMergeIter, K_(ghost_row_count),
                        K_(check_committing_trans_compacted), K_(row_queue));
 protected:

@@ -230,6 +230,7 @@ protected:
                                  bool add_column = true);
   bool is_oracle_tmp_table() { return is_oracle_tmp_table_; }
   void set_is_oracle_tmp_table(bool is_temp_table) { is_oracle_tmp_table_ = is_temp_table; }
+  void set_oracle_tmp_table_type(int64_t type) { oracle_tmp_table_type_ = type; }
   int add_new_sel_item_for_oracle_temp_table(ObSelectStmt &select_stmt);
   int add_new_column_for_oracle_temp_table(uint64_t ref_table_id, uint64_t table_id = OB_INVALID_ID, ObDMLStmt *stmt = NULL);
   int add_new_value_for_oracle_temp_table(ObIArray<ObRawExpr*> &value_row);
@@ -251,10 +252,12 @@ protected:
   int replace_column_ref_for_check_constraint(ObInsertTableInfo& table_info, ObRawExpr *&expr);
   int add_default_sequence_id_to_stmt(const uint64_t table_id);
   int recursive_search_sequence_expr(const ObRawExpr *default_expr);
+  int check_need_match_all_params(const common::ObIArray<ObColumnRefRawExpr*> &value_desc, bool &need_match);
 private:
   common::hash::ObPlacementHashSet<uint64_t, 4229> insert_column_ids_;
   bool is_column_specify_;
   bool is_oracle_tmp_table_; //是否创建oracle的临时表
+  int64_t oracle_tmp_table_type_;
 };
 
 } /* namespace sql */

@@ -116,6 +116,19 @@ public:
   ObArray<ObRawExpr *> filters_;
 };
 
+class ObSelectStmtPointer {
+public:
+  ObSelectStmtPointer();
+
+  virtual ~ObSelectStmtPointer();
+  int get(ObSelectStmt *&stmt) const;
+  int set(ObSelectStmt *stmt);
+  int add_ref(ObSelectStmt **stmt);
+  int64_t ref_count() const { return stmt_group_.count(); }
+  TO_STRING_KV("", "");
+private:
+  common::ObSEArray<ObSelectStmt **, 1> stmt_group_;
+};
 
 class ObTransformUtils
 {
@@ -156,6 +169,7 @@ class ObTransformUtils
   private:
     DISALLOW_COPY_AND_ASSIGN(UniqueCheckHelper);
   };
+  static const uint64_t MAX_SET_STMT_SIZE_OF_COSTED_BASED_RELUES = 5;
 
 public:
   struct LazyJoinInfo {
@@ -515,11 +529,13 @@ public:
    */
   static int find_expr(const ObIArray<const ObRawExpr *> &source,
                        const ObRawExpr *target,
-                       bool &bret);
+                       bool &bret,
+                       ObExprEqualCheckContext *check_context = NULL);
 
   static int find_expr(ObIArray<ObRawExpr *> &source,
                        ObRawExpr *target,
-                       bool &bret);
+                       bool &bret,
+                       ObExprEqualCheckContext *check_context = NULL);
 
   static int find_expr(const ObIArray<OrderItem> &source,
                        const ObRawExpr *target,
@@ -966,7 +982,9 @@ public:
                                const TableItem *target_table,
                                const ObIArray<int64_t> *output_map,
                                ObIArray<ObRawExpr *> *old_target_col_expr = NULL,
-                               ObIArray<ObRawExpr *> *new_target_col_expr = NULL);
+                               ObIArray<ObRawExpr *> *new_target_col_expr = NULL,
+                               ObIArray<ObRawExpr *> *pushed_pseudo_col_exprs = NULL,
+                               ObIArray<ObRawExpr *> *merged_pseudo_col_exprs = NULL);
 
   static int merge_table_items(ObSelectStmt *source_stmt,
                                ObSelectStmt *target_stmt,
@@ -1307,7 +1325,10 @@ public:
                                        ObTransformerCtx *ctx,
                                        bool ignore_check_unique = false,
                                        common::ObIArray<ObRawExpr *> *unique_keys = NULL);
-
+  static int get_unique_keys_from_unique_stmt(const ObSelectStmt *select_stmt,
+                                              ObRawExprFactory *expr_factory,
+                                              ObIArray<ObRawExpr*> &unique_keys,
+                                              ObIArray<ObRawExpr*> &added_unique_keys);
   static int check_can_set_stmt_unique(ObDMLStmt *stmt,
                                        bool &can_set_unique);
 
@@ -1420,8 +1441,11 @@ public:
 
   static bool check_objparam_abs_equal(const ObObjParam &obj1, const ObObjParam &obj2);
   static int add_neg_or_pos_constraint(ObTransformerCtx *trans_ctx,
-                                     ObRawExpr *expr,
-                                     bool is_negative = false);
+                                       ObRawExpr *expr,
+                                       bool is_negative = false);
+  static int add_equal_expr_value_constraint(ObTransformerCtx *trans_ctx,
+                                             ObRawExpr *left,
+                                             ObRawExpr *right);
   static bool check_objparam_negative(const ObObjParam &obj1);
   static int add_param_bool_constraint(ObTransformerCtx *ctx,
                                        ObRawExpr *bool_expr,
@@ -1432,7 +1456,6 @@ public:
                                         bool need_query_compare,
                                         ObTransformerCtx *tran_ctx,
                                         bool in_add_expr);
-  static int add_constraint_for_groupby_expr(ObTransformerCtx *trans_ctx, ObSelectStmt *select_stmt, ObRawExpr* groupby_expr, ObRawExpr* old_expr);
 
   static int add_param_not_null_constraint(ObIArray<ObExprConstraint> &constraints,
                                            ObIArray<ObRawExpr *> &not_null_exprs);
@@ -1450,11 +1473,15 @@ public:
   static int add_param_null_constraint(ObTransformerCtx &ctx,
                                       ObRawExpr *not_null_expr);
 
+  static int add_param_lossless_cast_constraint(ObTransformerCtx &ctx,
+                                                ObRawExpr *expr,
+                                                const ObRawExpr *dst_expr);
+
   static int calc_expr_value(ObTransformerCtx &ctx, ObRawExpr *expr, bool &is_not_null);
 
   static int get_all_child_stmts(ObDMLStmt *stmt,
                                  ObIArray<ObSelectStmt*> &child_stmts,
-                                 hash::ObHashMap<uint64_t, ObDMLStmt *> *parent_map = NULL);
+                                 hash::ObHashMap<uint64_t, ObParentDMLStmt> *parent_map = NULL);
 
   static int check_select_expr_is_const(ObSelectStmt *stmt, ObRawExpr *expr, bool &is_const);
 
@@ -1590,13 +1617,6 @@ public:
                                        const ObDMLStmt &stmt,
                                        bool &is_target_table);
 
-  static int move_expr_into_view(ObRawExprFactory &expr_factory,
-                                 ObDMLStmt &stmt,
-                                 TableItem &view,
-                                 ObIArray<ObRawExpr *> &exprs,
-                                 ObIArray<ObRawExpr *> &new_exprs,
-                                 ObIArray<ObQueryRefRawExpr *> *moved_query_refs = NULL);
-
   static int get_generated_table_item(ObDMLStmt &parent_stmt,
                                       ObDMLStmt *child_stmt,
                                       TableItem *&table_item);
@@ -1711,8 +1731,7 @@ public:
   static int generate_select_list(ObTransformerCtx *ctx,
                                   ObDMLStmt *stmt,
                                   TableItem *table,
-                                  ObIArray<ObRawExpr *> *basic_select_exprs = NULL,
-                                  bool remove_const_expr = true);
+                                  ObIArray<ObRawExpr *> *basic_select_exprs = NULL);
 
   static int remove_const_exprs(ObIArray<ObRawExpr *> &input_exprs,
                                 ObIArray<ObRawExpr *> &output_exprs);
@@ -1770,6 +1789,42 @@ public:
   static int extract_shared_exprs(ObDMLStmt *parent,
                                   ObIArray<ObRawExpr *> &relation_exprs,
                                   ObIArray<ObRawExpr *> &common_exprs);
+  static int check_is_index_part_key(ObTransformerCtx &ctx, ObDMLStmt &stmt, ObRawExpr *check_expr, bool &is_valid);
+
+  static int expand_temp_table(ObTransformerCtx *ctx, ObDMLStmt::TempTableInfo& table_info);
+
+  static int get_stmt_map_after_copy(ObDMLStmt *origin_stmt,
+                                     ObDMLStmt *new_stmt,
+                                     hash::ObHashMap<uint64_t, ObDMLStmt *> &stmt_map);
+
+  static int check_stmt_contain_oversize_set_stmt(ObDMLStmt *stmt, bool &is_contain);
+
+  static int convert_preds_vector_to_scalar(ObTransformerCtx &ctx,
+                                            ObRawExpr *expr,
+                                            ObIArray<ObRawExpr*> &exprs,
+                                            bool &trans_happened);
+    // used to stable outline
+  static int get_sorted_table_hint(ObSEArray<TableItem *, 4> &tables, ObIArray<ObTableInHint> &table_hints);
+
+  /**
+   * @brief check whether can convert f(A) to f(B) for any B that satisfied A = B
+   * @param expr target expr A
+   * @param parent_exprs the parent exprs of A in f(A)
+   * @param used_in_compare whether f(A) is used in compare, such as order by, group by
+   */
+  static int check_can_replace(ObRawExpr *expr,
+                               ObIArray<ObRawExpr *> &parent_exprs,
+                               bool used_in_compare,
+                               bool &can_replace);
+
+  static int check_pushdown_into_set_valid(ObRawExpr *expr,
+                                           const ObIArray<ObRawExpr *> &set_op_exprs,
+                                           bool &is_valid);
+
+  static int recursive_check_pushdown_into_set_valid(ObRawExpr *expr,
+                                                     const ObIArray<ObRawExpr *> &set_op_exprs,
+                                                     ObIArray<ObRawExpr *> &parent_exprs,
+                                                     bool &is_valid);
 private:
   static int inner_get_lazy_left_join(ObDMLStmt *stmt,
                                       TableItem *table,
@@ -1814,6 +1869,14 @@ private:
                                 ObIArray<ObRawExpr *> &new_column_exprs);
 
   static int is_scalar_expr(ObRawExpr* expr, bool &is_scalar);
+
+  static int check_is_bypass_string_expr(const ObRawExpr *expr,
+                                         const ObRawExpr *src_expr,
+                                         bool &is_bypass);
+
+  static int check_convert_string_safely(const ObRawExpr *expr,
+                                         const ObRawExpr *src_expr,
+                                         bool &is_safe);
 };
 
 

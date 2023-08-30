@@ -182,14 +182,14 @@ TEST_F(TestObSimpleLogClusterRebuild, test_old_leader_rebuild)
   EXPECT_EQ(OB_SUCCESS, get_leader(id, new_leader, new_leader_idx));
   PALF_LOG(INFO, "after get_leader", K(id), K(leader_idx), K(new_leader_idx));
   // submit logs
-  EXPECT_EQ(OB_SUCCESS, submit_log(new_leader, 64 * 6, id, MB));
+  EXPECT_EQ(OB_SUCCESS, submit_log(new_leader, 64 * 8, id, MB));
 
   // update new_leader's disk option, only reserves 4 * 80% log blocks,
   // that means 2 blocks will be recycled
   PALF_LOG(INFO, "begin advance_base_lsn", K(id), K(leader_idx), K(new_leader_idx));
   LSN recycle_lsn(2 * PALF_BLOCK_SIZE);
   EXPECT_EQ(OB_SUCCESS, new_leader.palf_handle_impl_->set_base_lsn(recycle_lsn));
-  update_disk_options(new_leader_idx, 4);
+  update_disk_options(new_leader_idx, 8);
   // recycle 2 block
   sleep(5);
   block_id_t leader_min_block_id;
@@ -210,7 +210,7 @@ TEST_F(TestObSimpleLogClusterRebuild, test_old_leader_rebuild)
 
   // submit a cond task before unblocking net to stop truncating task
   IOTaskCond cond(id, rebuild_server->palf_env_impl_->last_palf_epoch_);
-  LogIOWorker *io_worker = &rebuild_server->palf_env_impl_->log_io_worker_wrapper_.user_log_io_worker_;
+  LogIOWorker *io_worker = rebuild_server->palf_handle_impl_->log_engine_.log_io_worker_;
   io_worker->submit_io_task(&cond);
 
   // after unblocking net, old leader will do rebuild
@@ -254,7 +254,7 @@ TEST_F(TestObSimpleLogClusterRebuild, test_old_leader_rebuild)
   revert_cluster_palf_handle_guard(palf_list);
   EXPECT_EQ(OB_SUCCESS, new_leader.palf_handle_impl_->set_base_lsn(LSN(64*6*MB)));
   sleep(1);
-  EXPECT_EQ(OB_SUCCESS, update_disk_options(new_leader_idx, 40));
+  EXPECT_EQ(OB_SUCCESS, update_disk_options(new_leader_idx, 30));
   PALF_LOG(INFO, "end test old_leader_rebuild", K(id));
 }
 
@@ -283,11 +283,11 @@ TEST_F(TestObSimpleLogClusterRebuild, test_follower_rebuild)
   // the follower is empty
   block_net(leader_idx, follower_idx);
   EXPECT_EQ(OB_SUCCESS, submit_log(leader, 64, leader_idx, MB));
-  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 64 * 5, leader_idx, MB));
+  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 64 * 7, leader_idx, MB));
   // recycle one block
   LSN recycle_lsn(2 * PALF_BLOCK_SIZE);
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->set_base_lsn(recycle_lsn));
-  update_disk_options(leader_idx, 4);
+  update_disk_options(leader_idx, 8);
   sleep(1);
   block_id_t leader_min_block_id, follower_min_block_id;
   share::SCN min_scn;
@@ -323,6 +323,51 @@ TEST_F(TestObSimpleLogClusterRebuild, test_follower_rebuild)
   // EXPECT_EQ(OB_SUCCESS, delete_paxos_group(id));
   revert_cluster_palf_handle_guard(palf_list);
   PALF_LOG(INFO, "end test follower_rebuild", K(id));
+}
+
+TEST_F(TestObSimpleLogClusterRebuild, test_leader_cannot_rebuild)
+{
+  SET_CASE_LOG_FILE(TEST_NAME, "test_leader_cannot_rebuild");
+  const int64_t id = ATOMIC_AAF(&palf_id_, 1);
+  PALF_LOG(INFO, "start test_leader_cannot_rebuild", K(id));
+  int64_t leader_idx = 0;
+  unittest::PalfHandleImplGuard leader;
+  unittest::PalfHandleImplGuard *rebuild_server = NULL;
+  std::vector<PalfHandleImplGuard*> palf_list;
+  int64_t follower_idx1, follower_idx2;
+  palflite::PalfHandleLiteLeaderChanger leader_changer;
+  palf::PalfRoleChangeCbNode rc_cb_node(&leader_changer);
+  EXPECT_EQ(OB_SUCCESS, create_paxos_group(id, leader_idx, leader));
+  EXPECT_EQ(OB_SUCCESS, leader_changer.init(&(leader.palf_handle_impl_->election_)));
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->role_change_cb_wrpper_.add_cb_impl(&rc_cb_node));
+
+  EXPECT_EQ(OB_SUCCESS, submit_log(leader, 100, id));
+
+  LSN base_lsn = LSN(0);
+  PalfBaseInfo base_info;
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->get_base_info(base_lsn, base_info));
+
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->disable_sync());
+  EXPECT_EQ(OB_STATE_NOT_MATCH, leader.palf_handle_impl_->advance_base_info(base_info, true));
+
+  AccessMode curr_access_mode;
+  int64_t mode_version, proposal_id;
+  proposal_id = leader.palf_handle_impl_->state_mgr_.get_proposal_id();
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->get_access_mode(mode_version, curr_access_mode));
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->change_access_mode(proposal_id, mode_version, AccessMode::RAW_WRITE, share::SCN::min_scn()));
+
+  EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->disable_vote(false));
+  while(FOLLOWER != leader.palf_handle_impl_->state_mgr_.role_)
+  {
+    leader_changer.change_leader();
+  }
+  unittest::PalfHandleImplGuard new_leader;
+  int64_t new_leader_idx = 0;
+  EXPECT_EQ(OB_SUCCESS, get_leader(id, new_leader, new_leader_idx));
+  leader.reset();
+  new_leader.reset();
+  EXPECT_EQ(OB_SUCCESS, delete_paxos_group(id));
+  PALF_LOG(INFO, "end test_leader_cannot_rebuild", K(id));
 }
 
 } // end unittest

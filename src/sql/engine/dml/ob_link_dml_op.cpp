@@ -84,6 +84,7 @@ int ObLinkDmlOp::send_reverse_link_info(transaction::ObTransID &tx_id)
       char * seri_buff = NULL;
       ObString hex_str;
       if (OB_ISNULL(seri_buff = static_cast<char*>(MY_SPEC.allocator_.alloc(seri_size)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("failed to alloc memory", K(seri_size), K(ret));
       } else if (OB_FAIL(reverse_link_info.serialize(seri_buff, seri_size, seri_pos))) {
           LOG_WARN("failed to serialize", KP(seri_buff), K(seri_size), K(seri_pos), K(ret));
@@ -109,6 +110,8 @@ int ObLinkDmlOp::inner_execute_link_stmt(const char *link_stmt)
   if (OB_ISNULL(dblink_proxy_) || OB_ISNULL(dblink_conn_) || OB_ISNULL(link_stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dblink_proxy or link_stmt is NULL", K(ret), KP(dblink_proxy_), KP(link_stmt), KP(dblink_conn_));
+  } else if (OB_FAIL(ObTMService::tm_rm_start(ctx_, link_type_, dblink_conn_, tx_id))) {
+    LOG_WARN("failed to tm_rm_start", K(ret), K(dblink_id_), K(dblink_conn_));
   } else if (MY_SPEC.is_reverse_link_ && OB_FAIL(send_reverse_link_info(tx_id))) {
     LOG_WARN("failed to send reverse link info", K(ret), K(link_stmt));
   } else if (OB_FAIL(dblink_proxy_->dblink_write(dblink_conn_, affected_rows_, link_stmt))) {

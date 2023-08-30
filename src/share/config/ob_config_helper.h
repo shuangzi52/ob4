@@ -83,74 +83,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigConsChecker);
 };
 
-class ObConfigBinaryChecker
-  : public ObConfigChecker
-{
-public:
-  explicit ObConfigBinaryChecker(const char *str);
-  virtual ~ObConfigBinaryChecker() {}
-  const char *value() const { return val_; }
-
-protected:
-  char val_[OB_MAX_CONFIG_VALUE_LEN];
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObConfigBinaryChecker);
-};
-inline ObConfigBinaryChecker::ObConfigBinaryChecker(const char *str)
-{
-  int64_t pos = 0;
-  (void) databuff_printf(val_, sizeof(val_), pos, "%s", str);
-}
-
-class ObConfigGreaterThan
-  : public ObConfigBinaryChecker
-{
-public:
-  explicit ObConfigGreaterThan(const char *str) : ObConfigBinaryChecker(str) {}
-  virtual ~ObConfigGreaterThan() {}
-  bool check(const ObConfigItem &t) const;
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObConfigGreaterThan);
-};
-
-class ObConfigGreaterEqual
-  : public ObConfigBinaryChecker
-{
-public:
-  explicit ObConfigGreaterEqual(const char *str) : ObConfigBinaryChecker(str) {}
-  virtual ~ObConfigGreaterEqual() {}
-  bool check(const ObConfigItem &t) const;
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObConfigGreaterEqual);
-};
-
-class ObConfigLessThan
-  : public ObConfigBinaryChecker
-{
-public:
-  explicit ObConfigLessThan(const char *str) : ObConfigBinaryChecker(str) {}
-  virtual ~ObConfigLessThan() {}
-  bool check(const ObConfigItem &t) const;
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObConfigLessThan);
-};
-
-class ObConfigLessEqual
-  : public ObConfigBinaryChecker
-{
-public:
-  explicit ObConfigLessEqual(const char *str) : ObConfigBinaryChecker(str) {}
-  virtual ~ObConfigLessEqual() {}
-  bool check(const ObConfigItem &t) const;
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObConfigLessEqual);
-};
-
 class ObConfigEvenIntChecker
   : public ObConfigChecker
 {
@@ -180,6 +112,28 @@ public:
 private:
   static int64_t get_freeze_trigger_percentage_(const uint64_t tenant_id);
   DISALLOW_COPY_AND_ASSIGN(ObConfigWriteThrottleTriggerIntChecker);
+};
+
+//only used for RS checking
+class ObConfigLogDiskLimitThresholdIntChecker
+{
+public:
+  static bool check(const uint64_t tenant_id,
+                    const obrpc::ObAdminSetConfigItem &t);
+private:
+  static int64_t get_log_disk_throttling_percentage_(const uint64_t tenant_id);
+  DISALLOW_COPY_AND_ASSIGN(ObConfigLogDiskLimitThresholdIntChecker);
+};
+
+//only used for RS checking
+class ObConfigLogDiskThrottlingPercentageIntChecker
+{
+public:
+  static bool check(const uint64_t tenant_id,
+                    const obrpc::ObAdminSetConfigItem &t);
+private:
+  static int64_t get_log_disk_utilization_limit_threshold_(const uint64_t tenant_id);
+  DISALLOW_COPY_AND_ASSIGN(ObConfigLogDiskThrottlingPercentageIntChecker);
 };
 
 class ObConfigTabletSizeChecker
@@ -660,6 +614,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObRpcServerAuthMethodChecker);
 };
 
+class ObConfigSQLTlsVersionChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigSQLTlsVersionChecker() {}
+  virtual ~ObConfigSQLTlsVersionChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigSQLTlsVersionChecker);
+};
 typedef __ObConfigContainer<ObConfigStringKey,
                             ObConfigItem, OB_MAX_CONFIG_NUMBER> ObConfigContainer;
 } // namespace common

@@ -53,10 +53,15 @@
 #include "lib/charset/ob_charset.h"
 #include "pl/ob_pl_user_type.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "observer/omt/ob_tenant_srs_mgr.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_controller.h"
+#endif
+#include "observer/omt/ob_tenant_srs.h"
 #include "sql/executor/ob_maintain_dependency_info_task.h"
 #include "sql/resolver/ddl/ob_create_view_resolver.h"
-
+extern "C" {
+#include "sql/parser/ob_non_reserved_keywords.h"
+}
 using namespace oceanbase;
 using namespace oceanbase::sql;
 using namespace oceanbase::obmysql;
@@ -269,6 +274,25 @@ int ObSQLUtils::get_phy_plan_type(ObIArray<share::ObPartitionLocation> &part_loc
   return ret;
 }
 
+int ObSQLUtils::has_outer_join_symbol(const ParseNode *node, bool &has)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(node)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpect null pointer", K(node), K(ret));
+  } else if (node->type_ == T_OP_ORACLE_OUTER_JOIN_SYMBOL) {
+    has = true;
+  }
+  for (int64_t i = 0 ; OB_SUCC(ret) && !has && i < node->num_child_; i++) {
+    if (NULL == node->children_[i]) {
+      //do nothing
+    } else if (OB_FAIL(SMART_CALL(has_outer_join_symbol(node->children_[i], has)))) {
+      LOG_WARN("check has_outer_join_symbol fail", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObSQLUtils::replace_questionmarks(ParseNode *tree,
                                       const ParamStore &params)
 {
@@ -394,7 +418,7 @@ int ObSQLUtils::calc_const_or_calculable_expr(
     if (OB_SUCC(ret) && !is_valid) {
       if (NULL == constraints) {
         // do nothing
-      } else if (add_calc_failure_constraint(raw_expr, *constraints)) {
+      } else if (OB_FAIL(add_calc_failure_constraint(raw_expr, *constraints))) {
         LOG_WARN("failed to add calc failure constraint", K(ret));
       }
     }
@@ -428,6 +452,7 @@ int ObSQLUtils::calc_simple_expr_without_row(
   } else if (OB_FAIL(calc_const_expr(session, *raw_expr, result, allocator, *params))) {
     SQL_LOG(WARN, "Get const_expr value error", KPC(raw_expr), K(ret));
   }
+
   return ret;
 }
 int ObSQLUtils::calc_raw_expr_without_row(
@@ -1172,8 +1197,7 @@ int ObSQLUtils::check_index_name(const ObCollationType cs_type, ObString &name)
   }
   return ret;
 }
-
-int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name)
+int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name, bool is_from_view)
 {
   /*如果table name的字节数大于128则报错OB_ERR_TOO_LONG_IDENT;
    *如果table name的最后一个字符是空格，则报错OB_WRONG_COLUMN_NAME */
@@ -1210,7 +1234,7 @@ int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name)
   }
 
   if (OB_SUCC(ret)) {
-    if (last_char_is_space) {
+    if (last_char_is_space && !is_from_view) {
       ret = OB_WRONG_COLUMN_NAME;
       LOG_USER_ERROR(OB_WRONG_COLUMN_NAME, name.length(), name.ptr());
       LOG_WARN("incorrect column name", K(name), K(ret));
@@ -1745,7 +1769,7 @@ int ObSQLUtils::check_well_formed_str(const ObString &src_str,
     } else {
       dst_str.assign_ptr(src_str.ptr(), static_cast<int32_t>(well_formed_length));
     }
-    if (OB_SUCC(ret)) {
+    if (OB_SUCC(ret) && lib::is_mysql_mode()) {
       LOG_USER_WARN(OB_ERR_INVALID_CHARACTER_STRING,
           static_cast<int>(charset_name_len), charset_name,
           static_cast<int>(hex_len), hex_buf);
@@ -2007,6 +2031,7 @@ int ObSQLUtils::reconstruct_sql(ObIAllocator &allocator, const ObStmt *stmt, ObS
                                 const ParamStore *param_store)
 {
   int ret = OB_SUCCESS;
+  ObSqlPrinter sql_printer(stmt, schema_guard, print_params, param_store);
   if (OB_ISNULL(stmt)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("stmt is NULL", K(stmt), K(ret));
@@ -2016,78 +2041,84 @@ int ObSQLUtils::reconstruct_sql(ObIAllocator &allocator, const ObStmt *stmt, ObS
   } else if (!stmt->is_dml_stmt()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Unexpected stmt type", K(stmt->get_stmt_type()), K(stmt->get_query_ctx()->get_sql_stmt()), K(ret));
-  } else {
-    //First try 64K buf on the stack, if it fails, then try 128K.
-    //If it still fails, allocate 256K from the heap. If it continues to fail, expand twice each time.
-    SMART_VAR(char[OB_MAX_SQL_LENGTH], buf) {
-      if (OB_FAIL(print_sql(allocator,
-                            buf,
-                            sizeof(buf),
-                            stmt,
-                            sql,
-                            schema_guard,
-                            print_params,
-                            param_store))) {
-          LOG_WARN("failed to print sql", K(sizeof(buf)), K(ret));
-      }
-    }
-    if (OB_SIZE_OVERFLOW == ret) {
-      ret = OB_SUCCESS;
-      SMART_VAR(char[OB_MAX_SQL_LENGTH * 2], buf) {
-        if (OB_FAIL(print_sql(allocator,
-                              buf,
-                              sizeof(buf),
-                              stmt,
-                              sql,
-                              schema_guard,
-                              print_params,
-                              param_store))) {
-          LOG_WARN("failed to print sql", K(sizeof(buf)), K(ret));
-        }
-      }
-    }
-    if (OB_SIZE_OVERFLOW == ret) {
-      bool is_succ = false;
-      ret = OB_SUCCESS;
-      for (int64_t i = 4; OB_SUCC(ret) && !is_succ && i <= 1024; i = i * 2) {
-        ObArenaAllocator alloc;
-        const int64_t length = OB_MAX_SQL_LENGTH * i;
-        char *buf = NULL;
-        if (OB_ISNULL(buf = static_cast<char*>(alloc.alloc(length)))) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to alloc memory for set sql", K(ret), K(length));
-        } else if (OB_FAIL(print_sql(allocator,
-                                     buf,
-                                     length,
-                                     stmt,
-                                     sql,
-                                     schema_guard,
-                                     print_params,
-                                     param_store))) {
-          LOG_WARN("failed to print sql", K(length), K(i), K(ret));
-        }
-        if (OB_SUCC(ret)) {
-          is_succ = true;
-        } else if (OB_SIZE_OVERFLOW == ret) {
-          ret = OB_SUCCESS;
-        }
-      }
-    }
+  } else if (OB_FAIL(sql_printer.do_print(allocator, sql))) {
+    LOG_WARN("failed to print sql", K(ret));
   }
   return ret;
 }
 
-int ObSQLUtils::print_sql(ObIAllocator &allocator,
-                          char *buf,
+int ObISqlPrinter::do_print(ObIAllocator &allocator, ObString &result)
+{
+  int ret = OB_SUCCESS;
+  //First try 64K buf on the stack, if it fails, then try 128K.
+  //If it still fails, allocate 256K from the heap. If it continues to fail, expand twice each time.
+  int64_t res_len = 0;
+  SMART_VAR(char[OB_MAX_SQL_LENGTH], buf) {
+    MEMSET(buf, 0, sizeof(buf));
+    if (OB_FAIL(inner_print(buf, sizeof(buf), res_len))) {
+        LOG_WARN("failed to print", K(sizeof(buf)), K(ret));
+    } else if (OB_FAIL(ob_write_string(allocator, ObString(res_len, buf), result))) {
+      LOG_WARN("fail to deep copy string", K(ret));
+    }
+  }
+  if (OB_SIZE_OVERFLOW == ret) {
+    ret = OB_SUCCESS;
+    SMART_VAR(char[OB_MAX_SQL_LENGTH * 2], buf) {
+      MEMSET(buf, 0, sizeof(buf));
+      if (OB_FAIL(inner_print(buf, sizeof(buf), res_len))) {
+        LOG_WARN("failed to print", K(sizeof(buf)), K(ret));
+      } else if (OB_FAIL(ob_write_string(allocator, ObString(res_len, buf), result))) {
+        LOG_WARN("fail to deep copy string", K(ret));
+      }
+    }
+  }
+  if (OB_SIZE_OVERFLOW == ret) {
+    bool is_succ = false;
+    ret = OB_SUCCESS;
+    for (int64_t i = 4; OB_SUCC(ret) && !is_succ && i <= 1024; i = i * 2) {
+      ObArenaAllocator alloc;
+      const int64_t length = OB_MAX_SQL_LENGTH * i;
+      char *buf = NULL;
+      if (OB_ISNULL(buf = static_cast<char*>(alloc.alloc(length)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to alloc memory for sql", K(ret), K(length));
+      } else if (FALSE_IT(MEMSET(buf, 0, length))) {
+      } else if (OB_FAIL(inner_print(buf, length, res_len))) {
+        LOG_WARN("failed to print", K(sizeof(buf)), K(ret));
+      } else if (OB_FAIL(ob_write_string(allocator, ObString(res_len, buf), result))) {
+        LOG_WARN("fail to deep copy string", K(ret));
+      }
+      if (OB_SUCC(ret)) {
+        is_succ = true;
+      } else if (OB_SIZE_OVERFLOW == ret) {
+        ret = OB_SUCCESS;
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObSqlPrinter::inner_print(char *buf, int64_t buf_len, int64_t &res_len)
+{
+  return ObSQLUtils::print_sql(buf,
+                               buf_len,
+                               res_len,
+                               stmt_,
+                               schema_guard_,
+                               print_params_,
+                               param_store_);
+}
+
+int ObSQLUtils::print_sql(char *buf,
                           int64_t buf_len,
+                          int64_t &res_len,
                           const ObStmt *stmt,
-                          ObString &sql,
                           ObSchemaGetterGuard *schema_guard,
                           ObObjPrintParams print_params,
                           const ParamStore *param_store)
 {
   int ret = OB_SUCCESS;
-  MEMSET(buf, 0, buf_len);
   int64_t pos = 0;
   const ObDMLStmt *reconstruct_stmt = NULL;
   if (OB_ISNULL(stmt)) {
@@ -2122,8 +2153,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.enable_print_temp_table_as_cte();
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("fail to print select stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("fail to deep copy select stmt string", K(ret));
       } else { /*do nothing*/ }
     }
       break;
@@ -2139,8 +2168,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.set_is_first_stmt_for_hint(true);
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("fail to print insert stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("fail to deep copy insert stmt string", K(ret));
       } else { /*do nothing*/ }
     }
       break;
@@ -2157,8 +2184,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.set_is_first_stmt_for_hint(true);
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("fail to print insert stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("fail to deep copy insert stmt string", K(ret));
       } else { /*do nothing*/ }
     }
       break;
@@ -2174,8 +2199,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.set_is_first_stmt_for_hint(true);
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("fail to print delete stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("fail to deep copy delete stmt string", K(ret));
       } else { /*do nothing*/ }
     }
       break;
@@ -2191,8 +2214,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.set_is_first_stmt_for_hint(true);
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("fail to print update stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("fail to deep copy update stmt string", K(ret));
       } else { /*do nothing*/ }
     }
       break;
@@ -2208,8 +2229,6 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       printer.set_is_first_stmt_for_hint(true);
       if (OB_FAIL(printer.do_print())) {
         LOG_WARN("failed to print merge stmt", K(ret));
-      } else if (OB_FAIL(ob_write_string(allocator, ObString(pos, buf), sql))) {
-        LOG_WARN("failed to deep copy merge stmt string", K(ret));
       }
     }
       break;
@@ -2219,6 +2238,7 @@ int ObSQLUtils::print_sql(ObIAllocator &allocator,
       break;
     }
   }
+  res_len = pos;
   return ret;
 }
 
@@ -2979,8 +2999,23 @@ int ObSQLUtils::get_ext_obj_data_type(const ObObjParam &obj, ObDataType &data_ty
       data_type = array_params->element_;
     }
   } else if (obj.is_pl_extend()) {
+#ifndef OB_BUILD_ORACLE_PL
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not support", K(ret));
+#else
+    if (obj.get_meta().get_extend_type() == pl::PL_NESTED_TABLE_TYPE
+      || obj.get_meta().get_extend_type() == pl::PL_ASSOCIATIVE_ARRAY_TYPE
+      || obj.get_meta().get_extend_type() == pl::PL_VARRAY_TYPE) {
+      const pl::ObPLNestedTable *nested_table =
+          reinterpret_cast<const pl::ObPLNestedTable*>(obj.get_ext());
+      if (OB_ISNULL(nested_table)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("nested table is null", K(ret));
+      } else {
+        data_type = nested_table->get_element_type();
+      }
+    }
+#endif
   } else {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("obj is not extend type", K(ret), K(obj));
@@ -3122,60 +3157,6 @@ int ObImplicitCursorInfo::merge_cursor(const ObImplicitCursorInfo &other)
   }
   return ret;
 }
-
-OB_SERIALIZE_MEMBER(ObParamPosIdx, pos_, idx_);
-
-int ObLinkStmtParam::write(char *buf, int64_t buf_len, int64_t &pos, int64_t param_idx)
-{
-  /*
-   * we need 4 bytes for every const param:
-   * 1 byte:  '\0' for meta info flag. '\0' can not appear in any sql stmt fmt.
-   * 1 byte:  meta info type. now we used 0 to indicate const param.
-   * 2 bytes: uint16 for param index.
-   */
-  int ret = OB_SUCCESS;
-  if (buf_len - pos < PARAM_LEN) {
-    ret = OB_SIZE_OVERFLOW;
-    LOG_WARN("buffer is not enough", K(ret), K(buf_len), K(pos));
-  } else if (param_idx < 0 || param_idx > UINT16_MAX) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("param count should be between 0 and UINT16_MAX", K(ret), K(param_idx));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "param count not in the range 0 - UINT16_MAX");
-  } else {
-    buf[pos++] = 0;   // meta flag.
-    buf[pos++] = 0;   // meta type.
-    *(uint16_t*)(buf + pos) = param_idx;
-    pos += sizeof(uint16_t);
-  }
-  return ret;
-}
-
-int ObLinkStmtParam::read_next(const char *buf, int64_t buf_len, int64_t &pos, int64_t &param_idx)
-{
-  int ret = OB_SUCCESS;
-  const char *ch = buf + pos;
-  const char *buf_end = buf + buf_len - PARAM_LEN + 1;
-  param_idx = -1;
-  while (OB_SUCC(ret) && param_idx < 0 && ch < buf_end) {
-    if (0 != ch[0]) {
-      ch++;
-    } else if (0 != ch[1]) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unknown meta type", "meta_type", static_cast<int>(ch[1]));
-    } else {
-      param_idx = static_cast<int64_t>(*(uint16_t*)(ch + 2));
-    }
-  }
-  pos = ch - buf;
-  return ret;
-}
-
-int64_t ObLinkStmtParam::get_param_len()
-{
-  return PARAM_LEN;
-}
-
-const int64_t ObLinkStmtParam::PARAM_LEN = sizeof(char) * 2 + sizeof(uint16_t);
 
 bool ObSQLUtils::is_same_type_for_compare(const ObObjMeta &meta1, const ObObjMeta &meta2)
 {
@@ -3923,20 +3904,28 @@ int ObSQLUtils::convert_sql_text_to_schema_for_storing(ObIAllocator &allocator,
 
 int ObSQLUtils::print_identifier(char *buf, const int64_t buf_len, int64_t &pos,
                                  ObCollationType connection_collation,
-                                 const common::ObString &identifier_name)
+                                 const common::ObString &identifier_name,
+                                 bool is_oracle_mode)
 {
   int ret = OB_SUCCESS;
+  ObArenaAllocator allocator("PrintIdentifier");
+  ObString print_name;
   if (OB_ISNULL(buf)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret));
+  } else if (OB_FAIL(generate_new_name_with_escape_character(allocator,
+                                                      identifier_name,
+                                                      print_name,
+                                                      is_oracle_mode))) {
+    LOG_WARN("failed to generate new name with escape character", K(ret));
   } else if (ObCharset::charset_type_by_coll(connection_collation)
       == CHARSET_UTF8MB4) {
-    if (OB_UNLIKELY(pos + identifier_name.length() > buf_len)) {
+    if (OB_UNLIKELY(pos + print_name.length() > buf_len)) {
       ret = OB_SIZE_OVERFLOW;
-      LOG_WARN("size overflow", K(ret), K(identifier_name));
+      LOG_WARN("size overflow", K(ret), K(print_name));
     } else {
-      MEMCPY(buf + pos, identifier_name.ptr(), identifier_name.length());
-      pos += identifier_name.length();
+      MEMCPY(buf + pos, print_name.ptr(), print_name.length());
+      pos += print_name.length();
     }
   } else if (OB_UNLIKELY(buf_len <= pos)) {
     ret = OB_SIZE_OVERFLOW;
@@ -3944,8 +3933,8 @@ int ObSQLUtils::print_identifier(char *buf, const int64_t buf_len, int64_t &pos,
   } else {
     uint32_t result_len = 0;
     if (OB_FAIL(ObCharset::charset_convert(CS_TYPE_UTF8MB4_BIN,
-                                           identifier_name.ptr(),
-                                           identifier_name.length(),
+                                           print_name.ptr(),
+                                           print_name.length(),
                                            connection_collation,
                                            buf + pos,
                                            buf_len - pos,
@@ -3994,9 +3983,11 @@ int64_t ObSqlFatalErrExtraInfoGuard::to_string(char *buf, const int64_t buf_len)
       if (schema_obj.get_schema_type() == TABLE_SCHEMA) {
         ObSchemaGetterGuard schema_guard;
         ObSchemaPrinter schema_printer(schema_guard);
+        ObCharsetType charset_type = CHARSET_INVALID;
+        OZ (exec_ctx_->get_my_session()->get_character_set_results(charset_type));
         OZ (GCTX.schema_service_->get_tenant_schema_guard(tenant_id_, schema_guard, schema_obj.version_));
         OZ (databuff_printf(buf, buf_len, pos, (i != 0) ? ",\n\"" : "\n\""));
-        OZ (schema_printer.print_table_definition(tenant_id_, schema_obj.get_object_id(), buf, buf_len, pos, NULL, LS_DEFAULT, false));
+        OZ (schema_printer.print_table_definition(tenant_id_, schema_obj.get_object_id(), buf, buf_len, pos, NULL, LS_DEFAULT, false, charset_type));
         OZ (databuff_printf(buf, buf_len, pos, "\""));
       }
     }
@@ -4094,7 +4085,14 @@ bool ObSQLUtils::is_one_part_table_can_skip_part_calc(const ObTableSchema &schem
   if (!schema.is_partitioned_table()) {
     can_skip = true;
   } else if (schema.get_all_part_num() == 1 && schema.is_hash_part()) {
-    can_skip = true;
+    if (PARTITION_LEVEL_ONE == schema.get_part_level()) {
+      can_skip = true;
+    } else if (PARTITION_LEVEL_TWO == schema.get_part_level()
+              && schema.is_hash_subpart()) {
+      can_skip = true;
+    } else {
+      can_skip = false;
+    }
   } else {
     can_skip = false;
   }
@@ -4206,7 +4204,7 @@ int ObSqlGeoUtils::check_srid_by_srs(uint64_t tenant_id, uint64_t srid)
     ret = OB_OPERATE_OVERFLOW;
     LOG_USER_ERROR(OB_OPERATE_OVERFLOW, "srid", "UINT32_MAX");
   } else if (srid != 0 &&
-      OB_FAIL(OTSRS_MGR.get_tenant_srs_guard(tenant_id, srs_guard))) {
+      OB_FAIL(OTSRS_MGR->get_tenant_srs_guard(srs_guard))) {
     LOG_WARN("failed to get srs guard", K(tenant_id), K(srid), K(ret));
   } else if (OB_FAIL(srs_guard.get_srs_item(srid, srs))) {
     LOG_WARN("get srs failed", K(srid), K(ret));
@@ -4410,11 +4408,6 @@ bool ObSQLUtils::is_fk_nested_sql(ObExecContext *cur_ctx)
 bool ObSQLUtils::is_nested_sql(ObExecContext *cur_ctx)
 {
   return is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx);
-}
-
-bool ObSQLUtils::is_batch_execute(ObSqlCtx &sql_ctx)
-{
-  return sql_ctx.multi_stmt_item_.is_batched_multi_stmt();
 }
 
 bool ObSQLUtils::is_select_from_dual(ObExecContext &ctx)
@@ -4820,8 +4813,7 @@ int ObSQLUtils::check_location_access_priv(const ObString &location, ObSQLSessio
     ObArenaAllocator allocator;
     ObString real_location = location;
     real_location += strlen(OB_FILE_PREFIX);
-    if (!real_location.empty() && '.' == real_location[0]) {
-      //Relative path
+    if (!real_location.empty()) {
       ObArrayWrap<char> buffer;
       OZ (buffer.allocate_array(allocator, PATH_MAX));
       if (OB_SUCC(ret)) {
@@ -4842,6 +4834,28 @@ int ObSQLUtils::check_location_access_priv(const ObString &location, ObSQLSessio
   return ret;
 }
 
+#ifdef OB_BUILD_SPM
+int ObSQLUtils::handle_plan_baseline(const ObAuditRecordData &audit_record,
+                                     ObPhysicalPlan *plan,
+                                     const int ret_code,
+                                     ObSqlCtx &sql_ctx)
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(plan) && OB_UNLIKELY(OB_SUCCESS != ret_code && plan->get_evolution())) {
+    plan->update_plan_error_cnt();
+  }
+  if (OB_LIKELY(!sql_ctx.spm_ctx_.check_execute_status_)) {
+    /*do nothing*/
+  } else if (OB_SUCCESS == ret_code) {
+    if (OB_FAIL(ObSpmController::accept_new_plan_as_baseline(sql_ctx.spm_ctx_, audit_record))) {
+      LOG_WARN("failed to accept new plan as baseline", K(ret));
+    }
+  } else if (OB_FAIL(ObSpmController::deny_new_plan_as_baseline(sql_ctx.spm_ctx_))) {
+    LOG_WARN("failed to deny new plan as baseline", K(ret));
+  }
+  return ret;
+}
+#endif
 
 int ObSQLUtils::async_recompile_view(const share::schema::ObTableSchema &old_view_schema,
                                      ObSelectStmt *select_stmt,
@@ -4850,7 +4864,7 @@ int ObSQLUtils::async_recompile_view(const share::schema::ObTableSchema &old_vie
                                      ObSQLSessionInfo &session_info)
 {
   int ret = OB_SUCCESS;
-  ObTableSchema new_view_schema;
+  ObTableSchema new_view_schema(&alloc);
   uint64_t data_version = 0;
   if (OB_FAIL(new_view_schema.assign(old_view_schema))) {
     LOG_WARN("failed to assign table schema", K(ret));
@@ -4960,6 +4974,27 @@ int ObSQLUtils::find_synonym_ref_obj(const ObString &database_name,
   return ret;
 }
 
+bool ObSQLUtils::check_need_disconnect_parser_err(const int ret_code)
+{
+  bool bret = true;
+  if (OB_LIKELY(OB_ERR_PARSE_SQL == ret_code
+                || OB_ERR_PARSER_SYNTAX == ret_code
+                || OB_ERR_EMPTY_QUERY == ret_code
+                || OB_SIZE_OVERFLOW == ret_code
+                || OB_ERR_ILLEGAL_NAME == ret_code
+                || OB_ERR_STR_LITERAL_TOO_LONG == ret_code
+                || OB_ERR_NOT_VALID_ROUTINE_NAME == ret_code
+                || OB_ERR_CONSTRUCT_MUST_RETURN_SELF == ret_code
+                || OB_ERR_ONLY_FUNC_CAN_PIPELINED == ret_code
+                || OB_ERR_NO_ATTR_FOUND == ret_code
+                || OB_ERR_VIEW_SELECT_CONTAIN_QUESTIONMARK == ret_code
+                || OB_ERR_NON_INT_LITERAL == ret_code
+                || OB_ERR_PARSER_INIT == ret_code
+                || OB_NOT_SUPPORTED == ret_code)) {
+    bret = false;
+  }
+  return bret;
+}
 
 int ObSQLUtils::find_synonym_ref_obj(const uint64_t database_id,
                                      const ObString &object_name,
@@ -5049,6 +5084,42 @@ int ObSQLUtils::find_synonym_ref_obj(const uint64_t database_id,
     object_id = package_info->get_package_id();
     obj_type = ObObjectType::PACKAGE;
     schema_version = package_info->get_schema_version();
+  }
+  return ret;
+}
+
+int ObSQLUtils::print_identifier_require_quotes(ObCollationType collation_type,
+                                                const ObString &ident,
+                                                bool &require)
+{
+  int ret = OB_SUCCESS;
+  bool pure_digit = true;
+  const ObCharsetInfo *info = ObCharset::get_charset(collation_type);
+  require = false;
+  if (OB_ISNULL(info)) {
+    ret = OB_INVALID_ARGUMENT;
+    OB_LOG(WARN, "arguemnt is invalid", K(ret));
+  } else if (ident.length() > 0 && ident[0] == '$') {
+    require = true;
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !require && i < ident.length(); i++) {
+    char ch = ident[i];
+    uint length = ob_mbcharlen(info, ch);
+    if (length == 0) {
+      require = true;
+    } else if (length == 1 && !oceanbase::sql::MYSQL_IDENTIFIER_FALGS[static_cast<uint8_t>(ch)]) {
+      require = true;
+    } else if (length == 1 && (ch < '0' || ch > '9')) {
+      pure_digit = false;
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (pure_digit) {
+    require = true;
+  } else if (require) {
+    //do nothing
+  } else if (-1 != mysql_sql_reserved_keyword_lookup(ident.ptr())) {
+    require = true;
   }
   return ret;
 }

@@ -137,7 +137,7 @@ int OMPKHandshakeResponse::decode()
                   uint64_t value_len = 0;
                   ret = ObMySQLUtil::get_length(pos, value_len, value_inc_len);
                   //OB_ASSERT(OB_SUCC(ret) && all_attrs_len > value_inc_len);
-                  if (OB_SUCC(ret) && all_attrs_len > value_inc_len && pos < end) {
+                  if (OB_SUCC(ret) && all_attrs_len >= value_inc_len && pos <= end) {
                     all_attrs_len -= value_inc_len;
                     str_kv.value_.assign_ptr(pos, static_cast<int32_t>(value_len));
                     //OB_ASSERT(all_attrs_len >= value_len);
@@ -368,6 +368,44 @@ bool OMPKHandshakeResponse::is_java_client_mode() const
     }
   }
   return java_client_mod;
+}
+
+bool OMPKHandshakeResponse::is_ob_client_jdbc() const
+{
+  bool is_jdbc = false;
+  ObStringKV mod_kv;
+  mod_kv.key_.assign_ptr(OB_MYSQL_CLIENT_NAME, static_cast<int32_t>(strlen(OB_MYSQL_CLIENT_NAME)));
+  mod_kv.value_.assign_ptr(OB_MYSQL_JDBC_CLIENT_NAME,
+      static_cast<int32_t>(strlen(OB_MYSQL_JDBC_CLIENT_NAME)));
+
+  ObStringKV kv;
+  for (int64_t i = 0; !is_jdbc && i < connect_attrs_.count(); ++i) {
+    kv = connect_attrs_.at(i);
+    if (mod_kv.key_ == kv.key_ && mod_kv.value_ == kv.value_) {
+      is_jdbc = true;
+      //break;
+    }
+  }
+  return is_jdbc;
+}
+
+bool OMPKHandshakeResponse::is_ob_client_oci() const
+{
+  bool is_oci = false;
+  ObStringKV mod_kv;
+  mod_kv.key_.assign_ptr(OB_MYSQL_CLIENT_NAME, static_cast<int32_t>(strlen(OB_MYSQL_CLIENT_NAME)));
+  mod_kv.value_.assign_ptr(OB_MYSQL_OCI_CLIENT_NAME,
+      static_cast<int32_t>(strlen(OB_MYSQL_OCI_CLIENT_NAME)));
+
+  ObStringKV kv;
+  for (int64_t i = 0; !is_oci && i < connect_attrs_.count(); ++i) {
+    kv = connect_attrs_.at(i);
+    if (mod_kv.key_ == kv.key_ && mod_kv.value_ == kv.value_) {
+      is_oci = true;
+      //break;
+    }
+  }
+  return is_oci;
 }
 
 int64_t OMPKHandshakeResponse::get_sql_request_level() const

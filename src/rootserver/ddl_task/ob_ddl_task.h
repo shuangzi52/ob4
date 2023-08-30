@@ -34,15 +34,16 @@ struct ObDDLTaskKey final
 {
 public:
   ObDDLTaskKey();
-  ObDDLTaskKey(const int64_t object_id, const int64_t schema_version);
+  ObDDLTaskKey(const uint64_t tenant_id, const int64_t object_id, const int64_t schema_version);
   ~ObDDLTaskKey() = default;
   uint64_t hash() const;
   int hash(uint64_t &hash_val) const { hash_val = hash(); return OB_SUCCESS; }
   bool operator==(const ObDDLTaskKey &other) const;
-  bool is_valid() const { return OB_INVALID_ID != object_id_ && schema_version_ > 0; }
+  bool is_valid() const { return OB_INVALID_TENANT_ID != tenant_id_ && OB_INVALID_ID != object_id_ && schema_version_ > 0; }
   int assign(const ObDDLTaskKey &other);
-  TO_STRING_KV(K_(object_id), K_(schema_version));
+  TO_STRING_KV(K_(tenant_id), K_(object_id), K_(schema_version));
 public:
+  uint64_t tenant_id_;
   int64_t object_id_;
   int64_t schema_version_;
 };
@@ -142,11 +143,12 @@ public:
                        const int64_t consumer_group_id,
                        ObIAllocator *allocator,
                        const obrpc::ObDDLArg *ddl_arg = nullptr,
-                       const int64_t parent_task_id = 0);
+                       const int64_t parent_task_id = 0,
+                       const int64_t task_id = 0);
   ~ObCreateDDLTaskParam() = default;
   bool is_valid() const { return OB_INVALID_ID != tenant_id_ && type_ > share::DDL_INVALID
                                  && type_ < share::DDL_MAX && nullptr != allocator_; }
-  TO_STRING_KV(K_(tenant_id), K_(object_id), K_(schema_version), K_(parallelism), K_(consumer_group_id), K_(parent_task_id),
+  TO_STRING_KV(K_(tenant_id), K_(object_id), K_(schema_version), K_(parallelism), K_(consumer_group_id), K_(parent_task_id), K_(task_id),
                K_(type), KPC_(src_table_schema), KPC_(dest_table_schema), KPC_(ddl_arg));
 public:
   uint64_t tenant_id_;
@@ -155,6 +157,7 @@ public:
   int64_t parallelism_;
   int64_t consumer_group_id_;
   int64_t parent_task_id_;
+  int64_t task_id_;
   share::ObDDLType type_;
   const ObTableSchema *src_table_schema_;
   const ObTableSchema *dest_table_schema_;
@@ -215,6 +218,7 @@ public:
       int64_t &execution_id);
 
   static int get_ddl_task_record(
+      const uint64_t tenant_id,
       const int64_t task_id,
       common::ObMySQLProxy &proxy,
       common::ObIAllocator &allocator,
@@ -226,12 +230,14 @@ public:
 
   static int check_task_id_exist(
       common::ObMySQLProxy &proxy,
+      const uint64_t tenant_id,
       const int64_t task_id,
       bool &exist);
 
   static int check_is_adding_constraint(
      common::ObMySQLProxy *proxy,
      common::ObIAllocator &allocator,
+     const uint64_t tenant_id,
      const uint64_t table_id,
      bool &is_building);
 
@@ -249,9 +255,22 @@ public:
       const share::ObDDLType ddl_type,
       bool &has_conflict_ddl);
 
+  static int check_has_index_task(
+      common::ObISQLClient &proxy,
+      const uint64_t tenant_id,
+      const uint64_t data_table_id,
+      const uint64_t index_table_id,
+      bool &has_index_task);
+
+  static int get_create_index_task_cnt(
+    common::ObISQLClient &proxy,
+    const uint64_t tenant_id,
+    const uint64_t data_table_id,
+    int64_t &task_cnt);
+
   static int insert_record(
       common::ObISQLClient &proxy,
-      const ObDDLTaskRecord &record);
+      ObDDLTaskRecord &record);
 
   static int to_hex_str(const ObString &src, ObSqlString &dst);
 
@@ -265,6 +284,7 @@ public:
 
 private:
   static int fill_task_record(
+      const uint64_t tenant_id,
       const common::sqlclient::ObMySQLResult *result_row,
       common::ObIAllocator &allocator,
       ObDDLTaskRecord &task_record);
@@ -276,6 +296,7 @@ private:
       const uint64_t session_id);
 
   static int get_task_record(
+      const uint64_t tenant_id,
       const ObSqlString &sql_string,
       common::ObMySQLProxy &proxy,
       common::ObIAllocator &allocator,
@@ -461,7 +482,7 @@ public:
   int64_t get_ret_code() const { return ret_code_; }
   int64_t get_task_id() const { return task_id_; }
   ObDDLTaskID get_ddl_task_id() const { return ObDDLTaskID(tenant_id_, task_id_); }
-  ObDDLTaskKey get_task_key() const { return ObDDLTaskKey(target_object_id_, schema_version_); }
+  ObDDLTaskKey get_task_key() const { return ObDDLTaskKey(tenant_id_, target_object_id_, schema_version_); }
   int64_t get_parent_task_id() const { return parent_task_id_; }
   int64_t get_task_version() const { return task_version_; }
   int64_t get_parallelism() const { return parallelism_; }
@@ -473,7 +494,7 @@ public:
   void set_longops_stat(share::ObDDLLongopsStat *longops_stat) { longops_stat_ = longops_stat; }
   share::ObDDLLongopsStat *get_longops_stat() const { return longops_stat_; }
   int64_t get_data_format_version() const { return data_format_version_; }
-  static int fetch_new_task_id(ObMySQLProxy &sql_proxy, int64_t &new_task_id);
+  static int fetch_new_task_id(ObMySQLProxy &sql_proxy, const uint64_t tenant_id, int64_t &new_task_id);
   virtual int serialize_params_to_message(char *buf, const int64_t buf_size, int64_t &pos) const;
   virtual int deserlize_params_from_message(const uint64_t tenant_id, const char *buf, const int64_t buf_size, int64_t &pos);
   virtual int64_t get_serialize_param_size() const;

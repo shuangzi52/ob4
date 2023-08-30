@@ -19,6 +19,7 @@
 #include "storage/ob_storage_log_type.h"
 #include "share/config/ob_server_config.h"
 #include "ob_trans_define.h"
+#include "ob_tx_ctx_mds.h"
 #include "ob_trans_event.h"
 #include "share/ob_ls_id.h"
 #include "logservice/ob_log_handler.h"
@@ -105,8 +106,9 @@ public:
   ObTxMDSRange &get_mds_range() { return mds_range_; }
 
   void set_first_part_scn(const share::SCN &first_part_scn) { first_part_scn_ = first_part_scn; }
-  share::SCN get_first_part_scn() { return first_part_scn_; }
+  share::SCN get_first_part_scn() const { return first_part_scn_; }
 
+  int copy(const ObTxLogCb &other);
   //bool is_callbacking() const { return is_callbacking_; }
 public:
   INHERIT_TO_STRING_KV("ObTxBaseLogCb",
@@ -123,9 +125,7 @@ public:
                        K(cb_arg_array_),
                        K(first_part_scn_));
 private:
-  // DISALLOW_COPY_AND_ASSIGN(ObTxLogCb);
-private:
-  void check_warn_() const;
+  DISALLOW_COPY_AND_ASSIGN(ObTxLogCb);
 private:
   bool is_inited_;
   share::ObLSID ls_id_;
@@ -141,6 +141,26 @@ private:
   //bool is_callbacking_;
 };
 
+struct ObTxLogCbRecord
+{
+  share::SCN self_scn_;
+  share::SCN first_part_scn_;
+
+  ObTxLogCbRecord(const ObTxLogCb &cb)
+  {
+    self_scn_ = cb.get_log_ts();
+    first_part_scn_ = cb.get_first_part_scn();
+  }
+
+  ObTxLogCbRecord()
+  {
+    self_scn_.invalid_scn();
+    first_part_scn_.invalid_scn();
+  }
+
+  TO_STRING_KV(K(self_scn_), K(first_part_scn_));
+};
+
 struct ObTxLogBigSegmentInfo
 {
   ObTxBigSegmentBuf segment_buf_;
@@ -148,7 +168,7 @@ struct ObTxLogBigSegmentInfo
   logservice::ObReplayBarrierType submit_barrier_type_;
   ObTxLogCb *submit_log_cb_template_;
 
-  common::ObDList<ObTxLogCb> unsynced_segment_part_cbs_;
+ common::ObSEArray<ObTxLogCbRecord, 8>  unsynced_segment_part_cbs_;
 
   void reset()
   {
@@ -160,10 +180,9 @@ struct ObTxLogBigSegmentInfo
     }
     submit_log_cb_template_ = nullptr;
 
-    if (!unsynced_segment_part_cbs_.is_empty()) {
+    if (!unsynced_segment_part_cbs_.empty()) {
       TRANS_LOG_RET(WARN, OB_ERR_UNEXPECTED, "all log cbs need return before reset",
-                K(unsynced_segment_part_cbs_.get_size()), K(unsynced_segment_part_cbs_.get_first()),
-                K(unsynced_segment_part_cbs_.get_last()));
+                K(unsynced_segment_part_cbs_.count()), K(unsynced_segment_part_cbs_));
     }
   }
 
@@ -183,7 +202,7 @@ struct ObTxLogBigSegmentInfo
                K(submit_base_scn_),
                K(submit_barrier_type_),
                KPC(submit_log_cb_template_),
-               K(unsynced_segment_part_cbs_.get_size()));
+               K(unsynced_segment_part_cbs_.count()));
 };
 } // transaction
 } // oceanbase

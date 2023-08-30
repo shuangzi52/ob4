@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #pragma once
 
 #include "lib/container/ob_heap.h"
@@ -71,7 +78,7 @@ template <typename T, typename Compare>
 bool ObDirectLoadExternalMerger<T, Compare>::HeapCompare::operator()(const HeapItem &left_item,
                                                                      const HeapItem &right_item)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_heap_compare_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_heap_compare_time_us);
   int ret = common::OB_SUCCESS;
   bool bret = false;
   if (OB_ISNULL(compare_)) {

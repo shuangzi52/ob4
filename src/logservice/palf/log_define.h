@@ -87,7 +87,6 @@ typedef common::ObFixedArray<LogWriteBuf *, ObIAllocator> LogWriteBufArray;
 
 // ====================== Consensus begin ===========================
 const int64_t LEADER_DEFAULT_GROUP_BUFFER_SIZE = 1 << 25;                           // leader's group buffer size is 32M
-const int64_t MAX_ALLOWED_SKEW_FOR_REF_US = 3600L * 1000 * 1000;          // 1h
 // follower's group buffer size is 8MB larger than leader's.
 const int64_t FOLLOWER_DEFAULT_GROUP_BUFFER_SIZE = LEADER_DEFAULT_GROUP_BUFFER_SIZE + 8 * 1024 * 1024L;
 const int64_t PALF_STAT_PRINT_INTERVAL_US = 1 * 1000 * 1000L;
@@ -96,7 +95,7 @@ const int64_t MATCH_LSN_ADVANCE_DELAY_THRESHOLD_US = 1 * 1000 * 1000L;
 const int64_t PALF_RECONFIRM_FETCH_MAX_LSN_INTERVAL = 1 * 1000 * 1000;
 const int64_t PALF_FETCH_LOG_INTERVAL_US = 2 * 1000 * 1000L;                 // 2s
 // Control the fetch interval trigger by outer(eg. config change pre check) by 500ms.
-const int64_t PALF_FETCH_LOG_OUTER_TRIGGER_INTERVAL = 100 * 1000 * 1000L;
+const int64_t PALF_FETCH_LOG_OUTER_TRIGGER_INTERVAL_US = 500 * 1000;           // 500 ms
 const int64_t PALF_FETCH_LOG_RENEW_LEADER_INTERVAL_US = 5 * 1000 * 1000;     // 5s
 const int64_t PALF_LEADER_RECONFIRM_SYNC_TIMEOUT_US = 10 * 1000 * 1000L;     // 10s
 const int64_t PREPARE_LOG_BUFFER_SIZE = 2048;
@@ -106,7 +105,8 @@ const int32_t DEFAULT_LOG_LOOP_INTERVAL_US = 100 * 1000;                        
 const int32_t LOG_LOOP_INTERVAL_FOR_PERIOD_FREEZE_US = 1 * 1000;                       // 1ms
 const int64_t PALF_SLIDING_WINDOW_SIZE = 1 << 11;                                   // must be 2^n(n>0), default 2^11 = 2048
 const int64_t PALF_MAX_LEADER_SUBMIT_LOG_COUNT = PALF_SLIDING_WINDOW_SIZE / 2;      // max number of concurrent submitting group log in leader
-const int64_t PALF_RESEND_MSLOG_INTERVAL_US = 500 * 1000L;                   // 500 ms
+const int64_t PALF_RESEND_CONFIG_LOG_INTERVAL_US = 500 * 1000L;                   // 500 ms
+const int64_t PALF_RESEND_CONFIG_LOG_FOR_ARB_INTERVAL_US = 10 * 1000L;            // 10 ms
 const int64_t PALF_BROADCAST_LEADER_INFO_INTERVAL_US = 5 * 1000 * 1000L;     // 5s
 const int64_t FIRST_VALID_LOG_ID = 1;  // The first valid log_id is 1.
 const int64_t PALF_PARENT_CHILD_TIMEOUT_US = 4 * 1000 * 1000L;               // 4000ms, 4s
@@ -147,6 +147,8 @@ constexpr int LOG_READ_FLAG = O_RDONLY | O_DIRECT | O_SYNC;
 constexpr int LOG_WRITE_FLAG = O_RDWR | O_DIRECT | O_SYNC;
 constexpr mode_t FILE_OPEN_MODE = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 // =========== Disk io end ====================
+
+const int64_t OB_INVALID_CONFIG_CHANGE_LOCK_OWNER = -1;
 
 enum ObReplicaState {
   INVALID_STATE = 0,
@@ -399,6 +401,25 @@ enum PurgeThrottlingType
   PURGE_BY_NOTIFY_FETCH_LOG = 6,
   MAX_PURGE_TYPE
 };
+
+inline const char *purge_throttling_type_2_str(const PurgeThrottlingType type)
+{
+#define EXTRACT_PURGE_TYPE(type_var) ({ case(type_var): return #type_var; })
+  switch(type)
+  {
+    EXTRACT_PURGE_TYPE(INVALID_PURGE_TYPE);
+    EXTRACT_PURGE_TYPE(PURGE_BY_RECONFIRM);
+    EXTRACT_PURGE_TYPE(PURGE_BY_CHECK_BARRIER_CONDITION);
+    EXTRACT_PURGE_TYPE(PURGE_BY_PRE_CHECK_FOR_CONFIG);
+    EXTRACT_PURGE_TYPE(PURGE_BY_CHECK_SERVERS_LSN_AND_VERSION);
+    EXTRACT_PURGE_TYPE(PURGE_BY_GET_MC_REQ);
+    EXTRACT_PURGE_TYPE(PURGE_BY_NOTIFY_FETCH_LOG);
+
+    default:
+      return "Invalid Type";
+  }
+#undef EXTRACT_PURGE_TYPE
+}
 
 bool need_force_purge(PurgeThrottlingType type);
 

@@ -343,6 +343,9 @@ int ObPxTransmitOp::init_channel(ObPxTransmitOpInput &trans_input)
       LOG_WARN("fail to get ch provider ptr", K(ret));
     } else {
       use_interm_result = sqc_proxy->get_transmit_use_interm_result();
+      if (!need_wait_sync_msg(*sqc_proxy, min_cluster_version)) {
+        receive_channel_ready_ = true;
+      }
     }
     loop_.set_interm_result(use_interm_result);
     int64_t thread_id = GETTID();
@@ -563,7 +566,6 @@ int ObPxTransmitOp::send_rows_one_by_one(ObSliceIdxCalc &slice_calc)
     clear_evaluated_flag();
     const ObPxTransmitSpec &spec = static_cast<const ObPxTransmitSpec &>(get_spec());
     ret = next_row();
-    uint64_t begin_cpu_time = rdtsc(); // must place after next_row()
     if (OB_FAIL(ret)) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("fail to get next row from child op",
@@ -604,7 +606,7 @@ int ObPxTransmitOp::send_rows_one_by_one(ObSliceIdxCalc &slice_calc)
                        get_spec().output_, eval_ctx_, slice_idx_array))) {
       LOG_WARN("fail get slice idx", K(ret));
     } else if (dfc_.all_ch_drained()) {
-      int tmp_ret = drain_exch();
+      int tmp_ret = child_->drain_exch();
       if (OB_SUCCESS != tmp_ret) {
         LOG_WARN("drain exchange data failed", K(tmp_ret));
       }
@@ -643,9 +645,8 @@ int ObPxTransmitOp::send_rows_in_batch(ObSliceIdxCalc &slice_calc)
       LOG_WARN("fetch next rows failed", K(ret));
       break;
     }
-    uint64_t begin_cpu_time = rdtsc();
     if (dfc_.all_ch_drained()) {
-      int tmp_ret = drain_exch();
+      int tmp_ret = child_->drain_exch();
       if (OB_SUCCESS != tmp_ret) {
         LOG_WARN("drain exchange data failed", K(tmp_ret));
       }
@@ -981,7 +982,8 @@ int ObPxTransmitOp::link_ch_sets(ObPxTaskChSet &ch_set,
   } else if (OB_FAIL(dfc->reserve(ch_set.count()))) {
     LOG_WARN("fail reserve dfc channels", K(ret), K(ch_set.count()));
   } else if (ch_set.count() > 0) {
-    void *buf = oceanbase::common::ob_malloc(DTL_CHANNEL_SIZE * ch_set.count(), "SqlDtlTxChan");
+    ObMemAttr attr(ctx_.get_my_session()->get_effective_tenant_id(), "SqlDtlTxChan");
+    void *buf = oceanbase::common::ob_malloc(DTL_CHANNEL_SIZE * ch_set.count(), attr);
     if (nullptr == buf) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("malloc channel buf failed", K(ret));
@@ -1012,6 +1014,7 @@ int ObPxTransmitOp::link_ch_sets(ObPxTaskChSet &ch_set,
         } else if (OB_FAIL(ObDtlChannelGroup::link_channel(ci, ch, dfc))) {
           LOG_WARN("fail link channel", K(ci), K(ret));
         } else if (OB_ISNULL(ch)) {
+          ret = OB_ERR_UNEXPECTED;
           LOG_WARN("fail add qc channel", K(ret));
         } else if (OB_FAIL(channels.push_back(ch))) {
           failed_in_push_back_to_channels = true;
@@ -1163,16 +1166,7 @@ int ObPxTransmitOp::wait_channel_ready_msg()
 int ObPxTransmitOp::try_wait_channel()
 {
   int ret = OB_SUCCESS;
-  ObPxSQCProxy *sqc_proxy = NULL;
-  uint64_t min_cluster_version = 0;
-  CK (OB_NOT_NULL(ctx_.get_physical_plan_ctx()) && OB_NOT_NULL(ctx_.get_physical_plan_ctx()->get_phy_plan()));
-  OX (min_cluster_version = ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version());
-  if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(sqc_proxy = reinterpret_cast<ObPxSQCProxy *>(
-      (reinterpret_cast<ObPxTransmitOpInput *> (input_))->get_ch_provider_ptr()))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("fail to get ch provider ptr", K(ret));
-  } else if (need_wait_sync_msg(*sqc_proxy, min_cluster_version) && OB_FAIL(wait_channel_ready_msg())) {
+  if (OB_UNLIKELY(!receive_channel_ready_) && OB_FAIL(wait_channel_ready_msg())) {
     LOG_WARN("failed to wait channel ready msg", K(ret));
   }
   return ret;

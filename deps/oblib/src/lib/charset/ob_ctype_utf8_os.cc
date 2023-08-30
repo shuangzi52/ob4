@@ -18,6 +18,7 @@
 *      - initial release
 *
 */
+#ifndef OB_BUILD_FULL_CHARSET
 
 #include "lib/charset/ob_ctype.h"
 #include "lib/charset/ob_dtoa.h"
@@ -2024,7 +2025,7 @@ static int ob_wildcmp_unicode_impl_help(const ObCharsetInfo *cs,
        ret = 1;
        *has_returned = 1;
        break;
-     } else if (w_wc == (ob_wc_t) w_many) {
+     } else if (w_wc != (ob_wc_t) escape_char && w_wc == (ob_wc_t) w_many) {
        result = 1; 
        break;
      }
@@ -2579,3 +2580,5 @@ ObCharsetInfo ob_charset_utf8mb4_bin=
   PAD_SPACE
 };
 
+
+#endif

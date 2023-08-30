@@ -76,6 +76,8 @@ public:
 
   virtual int get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_pool) = 0;
 
+  virtual int get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler) = 0;
+
   // Checks if the sys progress of specified tenant exceeds the timestamp
   // For LogMetaDataService:
   // 1. At startup time, it need to build the baseline data for the startup timestamp,
@@ -168,6 +170,8 @@ public:
 
   virtual int get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_pool);
 
+  virtual int get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler);
+
   virtual int check_progress(
       const uint64_t tenant_id,
       const int64_t timestamp,
@@ -221,12 +225,29 @@ private:
         K_(part_count));
   };
 
+  class LogFetcherErrHandler : public logfetcher::IObLogErrHandler
+  {
+    public:
+      LogFetcherErrHandler();
+      virtual ~LogFetcherErrHandler() {}
+    public:
+      virtual void handle_error(const int err_no, const char *fmt, ...) override {}
+      virtual void handle_error(const share::ObLSID &ls_id,
+          const ErrType &err_type,
+          share::ObTaskId &trace_id,
+          const palf::LSN &lsn,
+          const int err_no,
+          const char *fmt, ...) override {}
+  };
+
 private:
   bool                          is_inited_;
   bool                          is_loading_data_dict_baseline_data_;
   ClientFetchingMode            fetching_mode_;
   ObBackupPathString            archive_dest_;
   archive::LargeBufferPool      large_buffer_pool_;
+  int64_t                       log_ext_handler_concurrency_;
+  logservice::ObLogExternalStorageHandler log_ext_handler_;
   TaskPool                      *task_pool_;
   IObLogSysLsTaskHandler        *sys_ls_handler_;
   IObLogErrHandler              *err_handler_;

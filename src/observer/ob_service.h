@@ -142,16 +142,21 @@ public:
   int backup_build_index(const obrpc::ObBackupBuildIdxArg &arg);
   int check_backup_dest_connectivity(const obrpc::ObCheckBackupConnectivityArg &arg);
   int backup_meta(const obrpc::ObBackupMetaArg &arg);
-  int check_not_backup_tablet_create_scn(const obrpc::ObBackupCheckTabletArg &arg);
   int check_backup_task_exist(const obrpc::ObBackupCheckTaskArg &arg, bool &res);
   int check_sys_task_exist(const share::ObTaskId &arg, bool &res);
   int check_migrate_task_exist(const share::ObTaskId &arg, bool &res);
   int delete_backup_ls_task(const obrpc::ObLSBackupCleanArg &arg);
+  int notify_archive(const obrpc::ObNotifyArchiveArg &arg);
+  int report_backup_over(const obrpc::ObBackupTaskRes &res);
+  int report_backup_clean_over(const obrpc::ObBackupTaskRes &res);
+
   int get_ls_sync_scn(const obrpc::ObGetLSSyncScnArg &arg,
                            obrpc::ObGetLSSyncScnRes &result);
   int force_set_ls_as_single_replica(const obrpc::ObForceSetLSAsSingleReplicaArg &arg);
   int refresh_tenant_info(const obrpc::ObRefreshTenantInfoArg &arg,
                           obrpc::ObRefreshTenantInfoRes &result);
+  int get_ls_replayed_scn(const obrpc::ObGetLSReplayedScnArg &arg,
+                          obrpc::ObGetLSReplayedScnRes &result);
   int estimate_partition_rows(const obrpc::ObEstPartArg &arg,
                               obrpc::ObEstPartRes &res) const;
   int estimate_tablet_block_count(const obrpc::ObEstBlockArg &arg,
@@ -204,6 +209,15 @@ public:
       obrpc::ObBatchBroadcastSchemaResult &result);
 
   ////////////////////////////////////////////////////////////////
+#ifdef OB_BUILD_TDE_SECURITY
+  int wait_master_key_in_sync(const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg);
+  int trigger_tenant_config(const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg);
+  int do_wait_master_key_in_sync(
+      const common::ObIArray<std::pair<uint64_t, uint64_t> > &got_version_array);
+  int convert_tenant_max_key_version(
+      const common::ObIArray<std::pair<uint64_t, share::ObLeaseResponse::TLRpKeyVersion> > &,
+      common::ObIArray<std::pair<uint64_t, uint64_t> > &);
+#endif
   // ObReportReplicaP @RS::admin to report replicas
   int report_replica();
   int load_leader_cluster_login_info();
@@ -243,6 +257,9 @@ public:
   int handle_heartbeat(
       const share::ObHBRequest &hb_request,
       share::ObHBResponse &hb_response);
+  int ob_admin_unlock_member_list(
+      const obrpc::ObAdminUnlockMemberListOpArg &arg);
+
 private:
   int get_role_from_palf_(
       logservice::ObLogService &log_service,

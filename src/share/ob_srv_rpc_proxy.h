@@ -16,10 +16,12 @@
 #include "sql/engine/cmd/ob_kill_session_arg.h"
 #include "storage/tablelock/ob_table_lock_rpc_struct.h"
 #include "rpc/obrpc/ob_rpc_proxy.h"
+#include "share/ob_common_id.h"
 #include "share/ob_rpc_struct.h"
 #include "observer/ob_server_struct.h"
 #include "observer/net/ob_net_endpoint_ingress_rpc_struct.h"
 #include "share/ob_heartbeat_struct.h"
+#include "observer/table_load/control/ob_table_load_control_rpc_struct.h"
 
 namespace oceanbase
 {
@@ -65,8 +67,11 @@ public:
   RPC_S(PR5 backup_completing_log, OB_BACKUP_COMPL_LOG, (ObBackupComplLogArg));
   RPC_S(PR5 backup_build_index, OB_BACKUP_BUILD_INDEX, (ObBackupBuildIdxArg));
   RPC_S(PR5 backup_meta, OB_BACKUP_META, (ObBackupMetaArg));
-  RPC_S(PR5 check_not_backup_tablet_create_scn, OB_BACKUP_CHECK_TABLET_CREATE_TS, (ObBackupCheckTabletArg));
   RPC_S(PR5 check_backup_task_exist, OB_CHECK_BACKUP_TASK_EXIST, (ObBackupCheckTaskArg), obrpc::Bool);
+  RPC_S(PR5 report_backup_over, OB_BACKUP_LS_DATA_RES, (ObBackupTaskRes));
+  RPC_S(PR5 report_backup_clean_over, OB_DELETE_BACKUP_LS_TASK_RES, (ObBackupTaskRes));
+  RPC_S(PR5 notify_archive, OB_NOTIFY_ARCHIVE, (ObNotifyArchiveArg));
+
   // ls disaster recovery rpc
   RPC_S(PR5 ls_migrate_replica, OB_LS_MIGRATE_REPLICA, (ObLSMigrateReplicaArg));
   RPC_S(PR5 ls_add_replica, OB_LS_ADD_REPLICA, (ObLSAddReplicaArg));
@@ -75,6 +80,10 @@ public:
   RPC_S(PR5 ls_remove_nonpaxos_replica, OB_LS_REMOVE_NONPAXOS_REPLICA, (ObLSDropNonPaxosReplicaArg));
   RPC_S(PR5 ls_modify_paxos_replica_number, OB_LS_MODIFY_PAXOS_REPLICA_NUMBER, (ObLSModifyPaxosReplicaNumberArg));
   RPC_S(PR5 ls_check_dr_task_exist, OB_LS_CHECK_DR_TASK_EXIST, (ObDRTaskExistArg), obrpc::Bool);
+#ifdef OB_BUILD_ARBITRATION
+  RPC_S(PR5 add_arb, OB_ADD_ARB, (ObAddArbArg), obrpc::ObAddArbResult);
+  RPC_S(PR5 remove_arb, OB_REMOVE_ARB, (ObRemoveArbArg), obrpc::ObRemoveArbResult);
+#endif
   RPC_S(PR5 checkpoint_slog, OB_CHECKPOINT_SLOG, (ObCheckpointSlogArg));
 
   RPC_AP(PR5 minor_freeze, OB_MINOR_FREEZE, (ObMinorFreezeArg), obrpc::Int64);
@@ -94,6 +103,10 @@ public:
   RPC_S(PR5 is_empty_server, OB_IS_EMPTY_SERVER, (ObCheckServerEmptyArg), Bool);
   RPC_S(PR5 check_server_for_adding_server, OB_CHECK_SERVER_FOR_ADDING_SERVER, (ObCheckServerForAddingServerArg), ObCheckServerForAddingServerResult);
   RPC_S(PR5 check_deployment_mode_match, OB_CHECK_DEPLOYMENT_MODE, (ObCheckDeploymentModeArg), Bool);
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_S(PR5 wait_master_key_in_sync, OB_WAIT_MASTER_KEY_IN_SYNC, (ObWaitMasterKeyInSyncArg));
+#endif
+  RPC_S(PR5 notify_create_tenant_user_ls, OB_NOTIFY_CREATE_TENANT_USER_LS, (obrpc::UInt64));
   RPC_S(PR5 report_replica, OB_REPORT_REPLICA);
   RPC_S(PR5 recycle_replica, OB_RECYCLE_REPLICA);
   RPC_S(PR5 clear_location_cache, OB_CLEAR_LOCATION_CACHE);
@@ -156,10 +169,25 @@ public:
   RPC_S(PR5 update_tenant_memory, OB_UPDATE_TENANT_MEMORY, (obrpc::ObTenantMemoryArg));
   RPC_S(PR5 renew_in_zone_hb, OB_RENEW_IN_ZONE_HB, (share::ObInZoneHbRequest), share::ObInZoneHbResponse);
   RPC_S(PR5 pre_process_server_status, OB_PRE_PROCESS_SERVER, (obrpc::ObPreProcessServerArg));
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_S(PR5 get_master_key, OB_GET_MASTER_KEY, (obrpc::Int64), ObGetMasterKeyResultArg);
+  RPC_AP(PR5 restore_key, OB_RESTORE_KEY, (obrpc::ObRestoreKeyArg), obrpc::ObRestoreKeyResult);
+  RPC_AP(PR5 set_root_key, OB_SET_ROOT_KEY, (obrpc::ObRootKeyArg), obrpc::ObRootKeyResult);
+#endif
   RPC_S(PR5 handle_part_trans_ctx, OB_HANDLE_PART_TRANS_CTX, (obrpc::ObTrxToolArg), ObTrxToolRes);
   RPC_S(PR5 flush_local_opt_stat_monitoring_info, obrpc::OB_SERVER_FLUSH_OPT_STAT_MONITORING_INFO, (obrpc::ObFlushOptStatArg));
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_S(PR5 dump_tenant_cache_master_key, OB_DUMP_TENANT_CACHE_MASTER_KEY, (obrpc::UInt64), ObDumpCacheMasterKeyResultArg);
+#endif
   RPC_AP(PR5 set_member_list, OB_SET_MEMBER_LIST, (obrpc::ObSetMemberListArgV2), obrpc::ObSetMemberListResult);
   RPC_AP(PR5 create_ls, OB_CREATE_LS, (obrpc::ObCreateLSArg), obrpc::ObCreateLSResult);
+#ifdef OB_BUILD_ARBITRATION
+  RPC_S(PR5 create_arb, OB_CREATE_ARB, (obrpc::ObCreateArbArg), obrpc::ObCreateArbResult);
+  RPC_S(PR5 delete_arb, OB_DELETE_ARB, (obrpc::ObDeleteArbArg), obrpc::ObDeleteArbResult);
+  RPC_S(PR5 arb_gc_notify, OB_ARB_GC_NOTIFY, (obrpc::ObArbGCNotifyArg), obrpc::ObArbGCNotifyResult);
+  RPC_S(PR5 force_clear_arb_cluster_info, OB_LOG_FORCE_CLEAR_ARB_CLUSTER_INFO, (obrpc::ObForceClearArbClusterInfoArg));
+  RPC_S(PR5 arb_cluster_op, OB_ARB_CLUSTER_OP, (obrpc::ObArbClusterOpArg), obrpc::ObArbClusterOpResult);
+#endif
   RPC_AP(PR5 create_tablet, OB_CREATE_TABLET, (obrpc::ObBatchCreateTabletArg), obrpc::ObCreateTabletBatchRes);
   RPC_AP(PR5 batch_broadcast_schema, OB_BATCH_BROADCAST_SCHEMA, (obrpc::ObBatchBroadcastSchemaArg), obrpc::ObBatchBroadcastSchemaResult);
   RPC_AP(PR5 drop_tablet, OB_DROP_TABLET, (obrpc::ObBatchRemoveTabletArg), obrpc::ObRemoveTabletRes);
@@ -183,10 +211,20 @@ public:
   RPC_S(PR5 check_backup_dest_connectivity, OB_CHECK_BACKUP_DEST_CONNECTIVITY, (ObCheckBackupConnectivityArg));
   RPC_AP(PR1 get_ls_access_mode, OB_GET_LS_ACCESS_MODE, (obrpc::ObGetLSAccessModeInfoArg), obrpc::ObLSAccessModeInfo);
   RPC_AP(PR1 change_ls_access_mode, OB_CHANGE_LS_ACCESS_MODE, (obrpc::ObLSAccessModeInfo), obrpc::ObChangeLSAccessModeRes);
+#ifdef OB_BUILD_ARBITRATION
+  RPC_S(PR5 svr_accept_plan_baseline, obrpc::OB_SERVER_ACCEPT_PLAN_BASELINE, (obrpc::ObModifyPlanBaselineArg));
+  RPC_S(PR5 svr_cancel_evolve_task, obrpc::OB_SERVER_CANCEL_EVOLVE_TASK, (obrpc::ObModifyPlanBaselineArg));
+  RPC_S(PR5 load_baseline, OB_LOAD_BASELINE, (ObLoadPlanBaselineArg));
+  RPC_S(PR5 load_baseline_v2, OB_LOAD_BASELINE_V2, (ObLoadPlanBaselineArg), obrpc::ObLoadBaselineRes);
+#endif
   RPC_S(PR5 estimate_tablet_block_count, OB_ESTIMATE_TABLET_BLOCK_COUNT, (ObEstBlockArg), ObEstBlockRes);
+  RPC_S(PR5 gen_unique_id, OB_GEN_UNIQUE_ID, (obrpc::UInt64), share::ObCommonID);
+  RPC_S(PR5 start_transfer_task, OB_START_TRANSFER_TASK, (ObStartTransferTaskArg));
+  RPC_S(PR5 finish_transfer_task, OB_FINISH_TRANSFER_TASK, (ObFinishTransferTaskArg));
   RPC_AP(PR1 get_ls_sync_scn, OB_GET_LS_SYNC_SCN, (obrpc::ObGetLSSyncScnArg), obrpc::ObGetLSSyncScnRes);
   RPC_AP(PR5 refresh_tenant_info, OB_REFRESH_TENANT_INFO, (obrpc::ObRefreshTenantInfoArg), obrpc::ObRefreshTenantInfoRes);
   RPC_S(PR5 sync_rewrite_rules, OB_SYNC_REWRITE_RULES, (ObSyncRewriteRuleArg));
+  RPC_AP(PR1 get_ls_replayed_scn, OB_GET_LS_REPLAYED_SCN, (ObGetLSReplayedScnArg), obrpc::ObGetLSReplayedScnRes);
   RPC_S(PR5 force_set_ls_as_single_replica, OB_LOG_FORCE_SET_LS_AS_SINGLE_REPLICA, (obrpc::ObForceSetLSAsSingleReplicaArg));
   RPC_AP(PR5 net_endpoint_predict_ingress, OB_PREDICT_INGRESS_BW, (obrpc::ObNetEndpointPredictIngressArg), obrpc::ObNetEndpointPredictIngressRes);
   RPC_AP(PR5 net_endpoint_set_ingress, OB_SET_INGRESS_BW, (obrpc::ObNetEndpointSetIngressArg), obrpc::ObNetEndpointSetIngressRes);
@@ -196,6 +234,8 @@ public:
   RPC_AP(PR5 notify_switch_leader, OB_NOTIFY_SWITCH_LEADER, (obrpc::ObNotifySwitchLeaderArg));
   RPC_AP(PR5 update_tenant_info_cache, OB_UPDATE_TENANT_INFO_CACHE, (obrpc::ObUpdateTenantInfoCacheArg), obrpc::ObUpdateTenantInfoCacheRes);
   RPC_AP(PR5 broadcast_consensus_version, OB_BROADCAST_CONSENSUS_VERSION, (obrpc::ObBroadcastConsensusVersionArg), obrpc::ObBroadcastConsensusVersionRes);
+  RPC_S(PR5 direct_load_control, OB_DIRECT_LOAD_CONTROL, (observer::ObDirectLoadControlRequest), observer::ObDirectLoadControlResult);
+  RPC_S(PR5 admin_unlock_member_list_op, OB_HA_UNLOCK_MEMBER_LIST, (obrpc::ObAdminUnlockMemberListOpArg));
 }; // end of class ObSrvRpcProxy
 
 } // end of namespace rpc

@@ -26,7 +26,6 @@
 #include "mtlenv/mock_tenant_module_env.h"
 #include "storage/init_basic_struct.h"
 #include "storage/test_tablet_helper.h"
-#include "observer/ob_safe_destroy_thread.h"
 
 namespace oceanbase
 {
@@ -43,6 +42,12 @@ public:
   virtual ~TestLSService() = default;
   static void SetUpTestCase();
   static void TearDownTestCase();
+  void SetUp()
+  {
+    ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
+  }
+private:
+  common::ObArenaAllocator allocator_;
 };
 
 using namespace oceanbase;
@@ -57,16 +62,11 @@ using namespace oceanbase::obsys;
 void TestLSService::SetUpTestCase()
 {
   EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
-  SAFE_DESTROY_INSTANCE.init();
-  SAFE_DESTROY_INSTANCE.start();
   ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
 }
 
 void TestLSService::TearDownTestCase()
 {
-  SAFE_DESTROY_INSTANCE.stop();
-  SAFE_DESTROY_INSTANCE.wait();
-  SAFE_DESTROY_INSTANCE.destroy();
   MockTenantModuleEnv::get_instance().destroy();
 }
 
@@ -171,7 +171,6 @@ TEST_F(TestLSService, tablet_test)
   ObLS *ls = NULL;
   ObLSID ls_id(103);
   ObTabletID tablet_id(1001);
-  obrpc::ObCreateTabletBatchRes res;
   obrpc::ObBatchCreateTabletArg create_tablet_arg;
   ObMemberList member_list;
   int64_t paxos_replica_num = 1;
@@ -181,10 +180,8 @@ TEST_F(TestLSService, tablet_test)
   (void) member_list.add_server(MockTenantModuleEnv::get_instance().self_addr_);
   // TEST_F(TestLSService, create_tablet)
 
-  LOG_INFO("TestLSService::tablet_test 1. create_tablet begin");
-  // 1. create a tablet
+  // create ls
   ASSERT_EQ(OB_SUCCESS, gen_create_ls_arg(tenant_id, ls_id, arg));
-  ASSERT_EQ(OB_SUCCESS, gen_create_tablet_arg(tenant_id, ls_id, tablet_id, create_tablet_arg));
   ASSERT_EQ(OB_SUCCESS, ls_svr->create_ls(arg));
   EXPECT_EQ(OB_SUCCESS, ls_svr->get_ls(ls_id, handle, ObLSGetMod::STORAGE_MOD));
   ls = handle.get_ls();
@@ -204,7 +201,11 @@ TEST_F(TestLSService, tablet_test)
     ::sleep(1);
   }
 
-  ASSERT_EQ(OB_SUCCESS, TestTabletHelper::create_tablet(*ls->get_tablet_svr(), create_tablet_arg));
+  // 1. create a tablet
+  share::schema::ObTableSchema table_schema;
+  uint64_t table_id = 12345;
+  ASSERT_EQ(OB_SUCCESS, build_test_schema(table_schema, table_id));
+  ASSERT_EQ(OB_SUCCESS, TestTabletHelper::create_tablet(handle, tablet_id, table_schema, allocator_));
 
   // 2. test tablet
   LOG_INFO("TestLSService::tablet_test 2.");
@@ -218,8 +219,8 @@ TEST_F(TestLSService, tablet_test)
   obrpc::ObBatchRemoveTabletArg remove_tablet_arg;
   remove_tablet_arg.id_ = ls_id;
   remove_tablet_arg.tablet_ids_.push_back(tablet_id);
-  obrpc::ObRemoveTabletRes remove_res;
-  EXPECT_EQ(OB_SUCCESS, ls_svr->remove_tablet(remove_tablet_arg, remove_res));
+  ASSERT_EQ(OB_SUCCESS, TestTabletHelper::remove_tablet(handle, tablet_id));
+
   EXPECT_EQ(OB_SUCCESS, ls_svr->remove_ls(ls_id, true));
 }
 
@@ -262,7 +263,7 @@ TEST_F(TestLSService, ls_safe_destroy)
   // 4. create again and check waiting = true
   LOG_INFO("TestLSService::ls_safe_destroy 1.4");
   LOG_INFO("create_ls", K(arg), K(id_104));
-  ASSERT_EQ(OB_EAGAIN, ls_svr->create_ls(arg));
+  ASSERT_EQ(OB_LS_WAITING_SAFE_DESTROY, ls_svr->create_ls(arg));
   ASSERT_EQ(OB_SUCCESS, ls_svr->check_ls_waiting_safe_destroy(id_104, waiting));
   ASSERT_TRUE(waiting);
 

@@ -20,6 +20,9 @@
 #include "lib/mysqlclient/ob_mysql_connection.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
 #include "lib/mysqlclient/ob_mysql_result.h"
+#ifdef OB_BUILD_DBLINK
+#include "lib/oracleclient/ob_oci_environment.h"
+#endif
 #include "share/rc/ob_tenant_base.h"
 
 namespace oceanbase
@@ -30,9 +33,23 @@ namespace sql
 class ObDblinkService
 {
 public:
+#ifdef OB_BUILD_DBLINK
+  static uint64_t get_current_tenant_id();
+  static common::sqlclient::ObTenantOciEnvs * get_tenant_oci_envs();
+  static int init_oci_envs_func_ptr();
+#endif
   static int check_lob_in_result(common::sqlclient::ObMySQLResult *result, bool &have_lob);
   static int get_length_from_type_text(ObString &type_text, int32_t &length);
-  static int get_set_sql_mode_cstr(sql::ObSQLSessionInfo *session_info, const char *&set_sql_mode_cstr, ObIAllocator &allocator);
+  static int get_local_session_vars(sql::ObSQLSessionInfo *session_info,
+                                    ObIAllocator &allocator,
+                                    common::sqlclient::dblink_param_ctx &param_ctx);
+  static int get_set_sql_mode_cstr(sql::ObSQLSessionInfo *session_info,
+                                   const char *&set_sql_mode_cstr,
+                                   ObIAllocator &allocator);
+  static int get_set_names_cstr(sql::ObSQLSessionInfo *session_info,
+                                const char *&set_client_charset,
+                                const char *&set_connection_charset,
+                                const char *&set_results_charset);
 };
 
 enum DblinkGetConnType {
@@ -55,6 +72,7 @@ public:
   inline void set_self_addr(common::ObAddr addr) { self_addr_ = addr; }
   inline void set_tx_id(int64_t tx_id) { tx_id_ = tx_id; }
   inline void set_tm_sessid(uint32_t tm_sessid) { tm_sessid_ = tm_sessid; }
+  inline void set_session_info(sql::ObSQLSessionInfo *session_info) { session_info_ = session_info; }
   const ObString &get_user() { return user_; }
   const ObString &get_tenant() { return tenant_; }
   const ObString &get_cluster() { return cluster_; }
@@ -66,6 +84,7 @@ public:
 
   int open(int64_t session_sql_req_level);
   int read(const char *sql, ObISQLClient::ReadResult &res);
+  int ping();
   int close();
   TO_STRING_KV(K_(user),
               K_(tenant),
@@ -95,6 +114,7 @@ private:
   common::sqlclient::ObMySQLConnection reverse_conn_; // ailing.lcq to do, ObReverseLink can be used by serval connection, not just one
   char db_user_[OB_MAX_USER_NAME_LENGTH + OB_MAX_TENANT_NAME_LENGTH + OB_MAX_CLUSTER_NAME_LENGTH];
   char db_pass_[OB_MAX_PASSWORD_LENGTH];
+  sql::ObSQLSessionInfo *session_info_; // reverse link belongs to which session
 };
 
 class ObDblinkUtils
@@ -146,6 +166,45 @@ private:
   ObArray<common::sqlclient::ObCommonServerConnectionPool *> dblink_conn_pool_array_;  //for dblink read to free connection when session drop.
   ObArray<int64_t> dblink_conn_holder_array_; //for dblink write to hold connection during trasaction.
   ObString last_reverse_info_values_;
+};
+
+struct ObParamPosIdx
+{
+  OB_UNIS_VERSION_V(1);
+public:
+  ObParamPosIdx()
+    : pos_(0),
+      idx_(0),
+      type_value_(0)
+  {}
+  ObParamPosIdx(int32_t pos, int32_t idx, int8_t type_value)
+    : pos_(pos),
+      idx_(idx),
+      type_value_(type_value)
+  {}
+  virtual ~ObParamPosIdx()
+  {}
+  TO_STRING_KV(N_POS, pos_,
+               N_IDX, idx_,
+               N_TYPE_VALUE, type_value_);
+  int32_t pos_;
+  int32_t idx_;
+  int8_t type_value_;
+  /*
+    if type_value_ = -1, means TimeOutHint, used in 3.x, unused in 4.x.
+    if type_value_ >= int8_t(ObObjType::ObNullType) and type_value_ <= int8_t(ObObjType::ObMaxType), means the value of ObObjType.
+    if type_value_ < -1 || type_value > int8_t(ObObjType::ObMaxType), means a invalid type_value_.
+  */
+};
+
+class ObLinkStmtParam
+{
+public:
+  static int write(char *buf, int64_t buf_len, int64_t &pos, int64_t param_idx, int8_t type_value = 0);
+  static int read_next(const char *buf, int64_t buf_len, int64_t &pos, int64_t &param_idx, int8_t &type_value);
+  static int64_t get_param_len();
+private:
+  static const int64_t PARAM_LEN;
 };
 
 } // end of namespace sql

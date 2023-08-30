@@ -25,6 +25,7 @@
 #include "sql/engine/px/ob_px_admission.h"
 #include "sql/ob_spi.h"
 #include "share/object/ob_obj_cast.h"
+#include "observer/mysql/obmp_stmt_prexecute.h"
 
 namespace oceanbase
 {
@@ -52,7 +53,7 @@ ObSyncPlanDriver::~ObSyncPlanDriver()
 
 int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
 {
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_execution);
   int ret = OB_SUCCESS;
   bool process_ok = false;
   // for select SQL
@@ -72,8 +73,7 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
                                           ctx_,
                                           result,
                                           ret,
-                                          cli_ret,
-                                          is_prexecute_);
+                                          cli_ret);
     if (OB_TRANSACTION_SET_VIOLATION != ret && OB_REPLICA_NOT_READABLE != ret) {
       if (OB_TRY_LOCK_ROW_CONFLICT == ret && retry_ctrl_.need_retry()) {
         //锁冲突重试不打印日志，避免刷屏
@@ -82,7 +82,7 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
                  K(ret), K(cli_ret), K(retry_ctrl_.need_retry()));
       }
     }
-    cret = result.close();
+    cret = result.close(cli_ret);
     if (cret != OB_SUCCESS &&
         cret != OB_TRANSACTION_SET_VIOLATION &&
         OB_TRY_LOCK_ROW_CONFLICT != cret) {
@@ -108,15 +108,14 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
                                               ctx_,
                                               result,
                                               ret,
-                                              cli_ret,
-                                              is_prexecute_);
+                                              cli_ret);
         LOG_WARN("result response failed, check if need retry",
                  K(ret), K(cli_ret), K(retry_ctrl_.need_retry()));
         ret = cli_ret;
       } else {
-        result.refresh_location_cache(true, ret);
+        result.refresh_location_cache_by_errno(true, ret);
       }
-      int cret = result.close();
+      int cret = result.close(ret);
       if (cret != OB_SUCCESS) {
         LOG_WARN("close result set fail", K(cret));
       }
@@ -158,33 +157,40 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
       if (OB_SUCC(ret) && !result.get_is_com_filed_list()) {
         need_send_eof = true;
       }
-      // for obproxy
-      if (OB_SUCC(ret)) {
 
+      if (OB_FAIL(ret)) {
+        // do nothing
+      } else if ((is_prexecute_ && stmt::T_SELECT != result.get_stmt_type())
+        || (!is_prexecute_ && sender_.need_send_extra_ok_packet() && !result.has_more_result())) {
+        // 二合一协议 select 语句的 OK 包全部放在协议层发送
+        // sync plan 此时需要为 二合一协议单独发送 OK 包 ， for obproxy，
         // in multi-stmt, send extra ok packet in the last stmt(has no more result)
-        if (!is_prexecute_ && sender_.need_send_extra_ok_packet() && !result.has_more_result()) {
-          ObOKPParam ok_param;
-          ok_param.affected_rows_ = 0;
-          ok_param.is_partition_hit_ = session_.partition_hit().get_bool();
-          ok_param.has_more_result_ = result.has_more_result();
-          if (need_send_eof) {
-            if (OB_FAIL(sender_.send_ok_packet(session_, ok_param, &eofp))) {
-              LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
-            }
-          } else {
-            if (OB_FAIL(sender_.send_ok_packet(session_, ok_param))) {
-              LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
-            }
+        ObOKPParam ok_param;
+        ok_param.affected_rows_ = result.get_affected_rows();
+        ok_param.is_partition_hit_ = session_.partition_hit().get_bool();
+        ok_param.has_more_result_ = result.has_more_result();
+        ok_param.send_last_row_ = is_prexecute_ ? true : false;
+        if (need_send_eof) {
+          if (OB_FAIL(sender_.send_ok_packet(session_, ok_param, &eofp))) {
+            LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
           }
         } else {
-          if (need_send_eof && OB_FAIL(sender_.response_packet(eofp, &result.get_session()))) {
-            LOG_WARN("response packet fail", K(ret));
+          if (OB_FAIL(sender_.send_ok_packet(session_, ok_param))) {
+            LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
           }
+        }
+      } else {
+        // 二合一协议 select 语句结果集后的 EOF 包都要在这里发送
+        // 非 二合一协议， 不需要额外 OK 包的 EOF 包需要在这里发送
+        if (need_send_eof && OB_FAIL(sender_.response_packet(eofp, &result.get_session()))) {
+          LOG_WARN("response packet fail", K(ret));
         }
       }
     }
   } else {
-    if (OB_FAIL(result.close())) {
+    if (is_prexecute_ && OB_FAIL(response_query_header(result, false, false, true))) {
+      LOG_WARN("prexecute response query head fail. ", K(ret));
+    } else if (OB_FAIL(result.close())) {
       LOG_WARN("close result set fail", K(ret));
     } else {
       if (!result.has_implicit_cursor()) {
@@ -209,10 +215,11 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
       } else {
         //has implicit cursor, send ok packet to client by implicit cursor
         result.reset_implicit_cursor_idx();
-        while (OB_SUCC(ret) && OB_SUCC(result.switch_implicit_cursor())) {
+        int64_t curr_affected_row = 0;
+        while (OB_SUCC(ret) && OB_SUCC(result.switch_implicit_cursor(curr_affected_row))) {
           ObOKPParam ok_param;
           ok_param.message_ = const_cast<char*>(result.get_message());
-          ok_param.affected_rows_ = result.get_affected_rows();
+          ok_param.affected_rows_ = curr_affected_row;
           ok_param.is_partition_hit_ = session_.partition_hit().get_bool();
           ok_param.has_more_result_ = !result.is_cursor_end();
           process_ok = true;
@@ -233,6 +240,7 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
   if (OB_TIMEOUT == ret) {
     LOG_USER_ERROR(OB_TIMEOUT, THIS_WORKER.get_timeout_ts() - session_.get_query_start_time());
   }
+
   if (OB_FAIL(ret) &&
       !process_ok &&
       !retry_ctrl_.need_retry() &&
@@ -250,7 +258,6 @@ int ObSyncPlanDriver::response_result(ObMySQLResultSet &result)
       }
     }
   }
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = false;
   return ret;
 }
 }/* ns observer*/

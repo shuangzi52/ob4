@@ -353,7 +353,7 @@ public:
   inline void set_urowid(const ObURowIDData &urowid_data)
   {
     ptr_ = reinterpret_cast<const char *>(urowid_data.rowid_content_);
-    pack_ = static_cast<uint32_t>(urowid_data.rowid_len_);//TODO(yongle.xh): need check
+    pack_ = static_cast<uint32_t>(urowid_data.rowid_len_);
   }
   inline void set_urowid(const char *ptr, const int64_t size)
   {
@@ -371,6 +371,7 @@ public:
     pack_ = static_cast<uint32_t>(length);//TODO(yuanzhi.zy):need check
   }
   inline void set_datum(const ObDatum &other) { *this = other; }
+  inline int64_t get_deep_copy_size() const { return is_null() ? 0 : len_; }
   inline int deep_copy(const ObDatum &src, char *buf, int64_t max_size, int64_t &pos)
   {
     int ret = OB_SUCCESS;

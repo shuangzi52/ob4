@@ -14,11 +14,11 @@
 #define _OCEABASE_LIB_NET_OB_ADDR_H_
 
 #include "lib/ob_define.h"
-#include "lib/string/ob_string.h"
+#include "util/easy_inet.h"
 #include "lib/utility/ob_unify_serialize.h"
-#include "lib/container/ob_se_array.h"
-#include "lib/container/ob_array_serialization.h"
-#include "lib/ob_name_id_def.h"
+#include "lib/utility/ob_print_utils.h"
+
+struct easy_addr_t;
 
 namespace oceanbase
 {
@@ -29,7 +29,8 @@ class ObBatchP;
 };
 namespace common
 {
-
+class ObString;
+static constexpr char UNIX_SOCKET_CLIENT_IP[] = "unix:";
 class ObAddr
 {
   OB_UNIS_VERSION(1);
@@ -70,6 +71,10 @@ public:
   {
     ip_.v4_  = ip;
   }
+
+  explicit ObAddr(const easy_addr_t& addr);
+
+  explicit ObAddr(const sockaddr &addr);
 
   void reset()
   {
@@ -141,10 +146,6 @@ private:
   } ip_;
   int32_t port_;
 }; // end of class ObAddr
-
-typedef ObSEArray<ObAddr, 3> ObAddrArray;
-typedef ObSArray<ObAddr> ObAddrSArray;
-typedef ObIArray<ObAddr> ObAddrIArray;
 
 inline bool ObAddr::is_valid() const
 {
@@ -286,7 +287,7 @@ public:
 
   const ObAddr &get_addr() const { return server_addr_; }
   const int64_t &get_seq() const { return server_seq_; }
-  TO_STRING_KV(K_(server_addr), K_(server_seq));
+  DECLARE_TO_STRING;
 private:
   ObAddr server_addr_;
   int64_t server_seq_;

@@ -54,7 +54,8 @@ void ObInitSqcP::destroy()
    * after process这个流程，那么就应当由自己来做释放。
    */
   if (OB_NOT_NULL(arg_.sqc_handler_)) {
-    ObPxSqcHandler::release_handler(arg_.sqc_handler_);
+    int report_ret = OB_SUCCESS;
+    ObPxSqcHandler::release_handler(arg_.sqc_handler_, report_ret);
   }
   ObActiveSessionGuard::setup_default_ash();
 }
@@ -111,18 +112,14 @@ int ObInitSqcP::process()
       UNSET_INTERRUPTABLE(arg.sqc_.get_interrupt_id().px_interrupt_id_);
       unregister_interrupt_ = false;
     }
-    ObPxSqcHandler::release_handler(sqc_handler);
+    int report_ret = OB_SUCCESS;
+    ObPxSqcHandler::release_handler(sqc_handler, report_ret);
     arg_.sqc_handler_ = nullptr;
   }
 
   //
-  if (OB_SUCCESS != ret && is_schema_error(ret)) {
-    if (OB_NOT_NULL(sqc_handler)
-        && GSCHEMASERVICE.is_schema_error_need_retry(NULL, sqc_handler->get_tenant_id())) {
-      ret = OB_ERR_REMOTE_SCHEMA_NOT_FULL;
-    } else {
-      ret = OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH;
-    }
+  if (OB_SUCCESS != ret && is_schema_error(ret) && OB_NOT_NULL(sqc_handler)) {
+    ObInterruptUtil::update_schema_error_code(&(sqc_handler->get_exec_ctx()), ret);
   }
   // 非rpc框架的错误内容设置到response消息中
   // rpc框架的错误码在process中返回OB_SUCCESS
@@ -247,10 +244,10 @@ int ObInitSqcP::after_process(int error_code)
     if (OB_NOT_NULL(sqc_handler) && OB_SUCCESS == sqc_handler->get_end_ret()) {
       sqc_handler->set_end_ret(ret);
     }
-    ObPxSqcHandler::release_handler(sqc_handler);
+    int report_ret = OB_SUCCESS;
+    ObPxSqcHandler::release_handler(sqc_handler, report_ret);
     arg_.sqc_handler_ = nullptr;
   }
-
   return ret;
 }
 
@@ -372,7 +369,8 @@ void ObInitFastSqcP::destroy()
    * after process这个流程，那么就应当由自己来做释放。
    */
   if (OB_NOT_NULL(arg_.sqc_handler_)) {
-    ObPxSqcHandler::release_handler(arg_.sqc_handler_);
+    int report_ret = OB_SUCCESS;
+    ObPxSqcHandler::release_handler(arg_.sqc_handler_, report_ret);
   }
   ObActiveSessionGuard::setup_default_ash();
 }
@@ -420,17 +418,11 @@ int ObInitFastSqcP::process()
   }
 
   //
-  if (OB_SUCCESS != ret && is_schema_error(ret)) {
-    if (OB_NOT_NULL(sqc_handler)
-        && GSCHEMASERVICE.is_schema_error_need_retry(NULL, sqc_handler->get_tenant_id())) {
-      ret = OB_ERR_REMOTE_SCHEMA_NOT_FULL;
-    } else {
-      ret = OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH;
-    }
+  if (OB_SUCCESS != ret && is_schema_error(ret) && OB_NOT_NULL(sqc_handler)) {
+    ObInterruptUtil::update_schema_error_code(&(sqc_handler->get_exec_ctx()), ret);
   }
 
   ObActiveSessionGuard::get_stat().in_sql_execution_ = false;
-
   if (OB_NOT_NULL(sqc_handler)) {
     // link channel之前或者link过程可能会失败.
     // 如果sqc和qc没有link, 由response将 ret 通知给px.
@@ -440,7 +432,9 @@ int ObInitFastSqcP::process()
       ret = OB_SUCCESS;
     }
     sqc_handler->reset_reference_count();
-    ObPxSqcHandler::release_handler(sqc_handler);
+    int report_ret = OB_SUCCESS;
+    ObPxSqcHandler::release_handler(sqc_handler, report_ret);
+    ret = OB_SUCCESS == ret ? report_ret : ret;
     arg_.sqc_handler_ = nullptr;
   }
   return ret;
@@ -621,7 +615,7 @@ int ObPxTenantTargetMonitorP::process()
       for (int i = 0; OB_SUCC(ret) && i < arg_.addr_target_array_.count(); i++) {
         ObAddr &server = arg_.addr_target_array_.at(i).addr_;
         int64_t peer_used_inc = arg_.addr_target_array_.at(i).target_;
-        if (OB_FAIL(OB_PX_TARGET_MGR.update_peer_target_used(tenant_id, server, peer_used_inc))) {
+        if (OB_FAIL(OB_PX_TARGET_MGR.update_peer_target_used(tenant_id, server, peer_used_inc, leader_version))) {
           LOG_WARN("set thread count failed", K(ret), K(tenant_id), K(server), K(peer_used_inc));
         }
       }

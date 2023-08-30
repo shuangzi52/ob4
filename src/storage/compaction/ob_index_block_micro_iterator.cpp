@@ -150,7 +150,7 @@ void ObIndexBlockMicroIterator::reset()
 
 int ObIndexBlockMicroIterator::init(
     const blocksstable::ObDatumRange &range,
-    const ObTableReadInfo &table_read_info,
+    const ObITableReadInfo &table_read_info,
     const blocksstable::MacroBlockId &macro_id,
     const common::ObIArray<blocksstable::ObMicroIndexInfo> &micro_block_infos,
     const common::ObIArray<blocksstable::ObDatumRowkey> &endkeys,
@@ -174,6 +174,7 @@ int ObIndexBlockMicroIterator::init(
     read_info.offset_ = sstable->get_macro_offset();
     read_info.size_ = sstable->get_macro_read_size();
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
+    read_info.io_desc_.set_group_id(ObIOModule::INDEX_BLOCK_MICRO_ITER_IO);
     if (OB_FAIL(ObBlockManager::async_read_block(read_info, macro_handle_))) {
       LOG_WARN("async read block failed, ", K(ret), K(read_info), K(macro_id));
     } else if (OB_FAIL(macro_handle_.wait(io_timeout_ms))) {

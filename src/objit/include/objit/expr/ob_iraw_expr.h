@@ -121,6 +121,11 @@ public:
                                                     || T_FUN_SYS_VERSION == type_
                                                     || T_FUN_SYS_OB_VERSION == type_
                                                     || T_FUN_SYS_ICU_VERSION == type_; }
+
+  inline bool is_pl_expr() const { return EXPR_UDF == expr_class_
+                                          || T_FUN_PL_COLLECTION_CONSTRUCT == type_
+                                          || T_FUN_PL_OBJECT_CONSTRUCT == type_
+                                          || T_FUN_SYS_PDB_GET_RUNTIME_INFO == type_; }
   inline void set_expr_type(ObItemType v) { type_ = v; }
   inline ObItemType get_expr_type() const { return type_; }
 
@@ -212,7 +217,8 @@ inline uint32_t ObIRawExpr::get_result_flag() const
   if (ObLongTextType == obj_type && lib::is_oracle_mode()) { // was ObLobType
     is_oracle_lob = true;
   }
-  if (ObCharset::is_bin_sort(result_type_.get_collation_type())) {
+  if (ObCharset::is_valid_collation(static_cast<ObCollationType>(result_type_.get_collation_type()))
+    && ObCharset::is_bin_sort(result_type_.get_collation_type())) {
     if (!is_column_ref_expr() ||
        (!ob_is_numeric_type(result_type_.get_type()) &&
         !ob_is_year_tc(result_type_.get_type()) &&

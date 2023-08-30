@@ -16,6 +16,7 @@
 #include "share/ob_define.h"
 #include "lib/objectpool/ob_tc_factory.h"
 #include "lib/container/ob_array_serialization.h"
+#include "common/object/ob_obj_compare.h"
 #include "common/object/ob_object.h"
 #include "sql/engine/expr/ob_expr_res_type.h"
 #include "lib/hash/ob_placement_hashmap.h"
@@ -41,6 +42,7 @@ enum InType
   T_NOT_IN_KEY_PART
 };
 class ObKeyPart;
+const int64_t MAX_EXTRACT_IN_COLUMN_NUMBER = 6;
 
 class ObKeyPartId
 {
@@ -172,8 +174,59 @@ struct InParamMeta
     TO_STRING_KV(K_(pos), K_(vals));
 };
 
-typedef ObSEArray<int64_t, OB_MAX_ROWKEY_COLUMN_NUMBER, ModulePageAllocator> OffsetsArr;
-typedef ObSEArray<InParamMeta *, OB_MAX_ROWKEY_COLUMN_NUMBER, ModulePageAllocator> InParamsArr;
+struct InParamValsWrapper
+{
+  InParamValsWrapper():
+    param_vals_(),
+    cmp_funcs_()
+    { }
+  int assign(const InParamValsWrapper &other)
+  {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(param_vals_.assign(other.param_vals_))) {
+      SQL_REWRITE_LOG(WARN, "failed to assign param vals", K(ret));
+    } else if (OB_FAIL(cmp_funcs_.assign(other.cmp_funcs_))) {
+      SQL_REWRITE_LOG(WARN, "failed to assign cmp funcs", K(ret));
+    }
+    return ret;
+  }
+  inline bool operator==(const InParamValsWrapper &other) const
+  {
+    int ret = OB_SUCCESS;
+    int64_t param_cnt = param_vals_.count();
+    int64_t other_param_cnt = other.param_vals_.count();
+    int64_t cmp_funcs_cnt = cmp_funcs_.count();
+    int64_t other_cmp_funcs_cnt = other.cmp_funcs_.count();
+    bool bret = param_cnt == other_param_cnt && cmp_funcs_cnt == other_cmp_funcs_cnt &&
+                param_cnt == cmp_funcs_cnt;
+    ObCompareCtx cmp_ctx(ObMaxType, CS_TYPE_INVALID, true, INVALID_TZ_OFF, default_null_pos());
+    for (int64_t i = 0; bret && i < param_cnt; ++i) {
+      obj_cmp_func cmp_op_func = cmp_funcs_.at(i);
+      OB_ASSERT(NULL != cmp_op_func);
+      bret = (ObObjCmpFuncs::CR_TRUE == cmp_op_func(param_vals_.at(i), other.param_vals_.at(i), cmp_ctx));
+    }
+    return bret;
+  }
+  inline bool operator!=(const InParamValsWrapper &other) const
+  {
+    return !(*this == other);
+  }
+  inline int hash(uint64_t &hash_code) const
+  {
+    int ret = OB_SUCCESS;
+    for (int64_t i = 0; OB_SUCC(ret) && i < param_vals_.count(); ++i) {
+      // no need to calculate hash for cmp_funcs_
+      ret = param_vals_.at(i).hash(hash_code, hash_code);
+    }
+    return ret;
+  }
+  ObSEArray<ObObj, MAX_EXTRACT_IN_COLUMN_NUMBER> param_vals_;
+  ObSEArray<obj_cmp_func, MAX_EXTRACT_IN_COLUMN_NUMBER> cmp_funcs_;
+  TO_STRING_KV(K_(param_vals));
+};
+
+typedef ObSEArray<int64_t, MAX_EXTRACT_IN_COLUMN_NUMBER, ModulePageAllocator> OffsetsArr;
+typedef ObSEArray<InParamMeta *, MAX_EXTRACT_IN_COLUMN_NUMBER, ModulePageAllocator> InParamsArr;
 struct ObInKeyPart
 {
   ObInKeyPart()
@@ -206,8 +259,10 @@ struct ObInKeyPart
   bool find_param(const int64_t offset, InParamMeta *&param_meta);
   bool offsets_same_to(const ObInKeyPart *other) const;
   int union_in_key(ObInKeyPart *other);
-  int get_dup_vals(int64_t offset, const ObObj &val, ObIArray<int64_t> &dup_val_idx);
-  InParamMeta* create_param_meta(ObIAllocator &alloc);
+  int get_dup_vals(int64_t offset, const common::ObObj &val, common::ObIArray<int64_t> &dup_val_idx);
+  int remove_in_dup_vals();
+  InParamMeta* create_param_meta(common::ObIAllocator &alloc);
+  int get_obj_cmp_funcs(ObIArray<obj_cmp_func> &cmp_funcs);
 
   uint64_t table_id_;
   InParamsArr in_params_;
@@ -246,6 +301,7 @@ public:
   { }
   virtual ~ObKeyPart() { reset(); }
   virtual void reset();
+  void reset_key();
   typedef common::hash::ObHashMap<int64_t, ObSEArray<int64_t, 16>> SameValIdxMap;
   static int try_cast_value(const ObDataTypeCastParams &dtc_params, ObIAllocator &alloc,
                             const ObKeyPartPos &pos, ObObj &value, int64_t &cmp);
@@ -341,16 +397,18 @@ public:
   // for in keypart, adjust params according to the invalid_offsets
   // and check it can be always true
   int formalize_keypart(bool contain_row);
-  int get_dup_param_and_vals(ObIArray<int64_t> &dup_param_idx,
-                             ObIArray<int64_t> &invalid_val_idx);
-  int remove_in_params(const ObIArray<int64_t> &invalid_param_idx, bool always_true);
-  int remove_in_params_vals(const ObIArray<int64_t> &val_idx);
+  int get_dup_param_and_vals(common::ObIArray<int64_t> &dup_param_idx,
+                             common::ObIArray<int64_t> &invalid_val_idx);
+  int remove_in_params(const common::ObIArray<int64_t> &invalid_param_idx, bool always_true);
+  int remove_in_params_vals(const common::ObIArray<int64_t> &val_idx);
+  int remove_in_dup_vals();
   int convert_to_true_or_false(bool is_always_true);
 
-  int cast_value_type(const common::ObDataTypeCastParams &dtc_params, bool contain_row);
+  int cast_value_type(const common::ObDataTypeCastParams &dtc_params, bool contain_row, bool &is_bound_modified);
 
   // copy all except next_ pointer
   int deep_node_copy(const ObKeyPart &other);
+  int shallow_node_copy(const ObKeyPart &other);
   bool is_phy_rowid_key_part() const { return is_phy_rowid_key_part_; }
   bool is_logical_rowid_key_part() const {
     return !is_phy_rowid_key_part_ && rowid_column_idx_ != OB_INVALID_ID; }

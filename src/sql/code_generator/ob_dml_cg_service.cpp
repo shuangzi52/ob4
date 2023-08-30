@@ -28,6 +28,9 @@
 #include "sql/optimizer/ob_log_plan.h"
 #include "sql/optimizer/ob_log_update.h"
 #include "sql/engine/expr/ob_expr_calc_partition_id.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 
 namespace oceanbase
 {
@@ -806,6 +809,7 @@ int ObDmlCgService::generate_conflict_checker_ctdef(ObLogInsert &op,
     } else if (OB_FAIL(cg_.generate_calc_part_id_expr(*part_id_expr_for_lookup, nullptr, rt_part_id_expr))) {
       LOG_WARN("generate rt part_id_expr failed", K(ret), KPC(part_id_expr_for_lookup));
     } else if (OB_ISNULL(rt_part_id_expr)) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("rt part_id_expr for lookup is null", K(ret));
     } else if (OB_FAIL(constraint_raw_exprs.push_back(part_id_expr_for_lookup))) {
       LOG_WARN("fail to push part_id_expr to constraint_raw_exprs", K(ret));
@@ -853,6 +857,8 @@ int ObDmlCgService::generate_constraint_infos(ObLogInsert &op,
                "name", log_constraint_infos->at(i).constraint_name_);
     } else if (OB_FAIL(rowkey_cst_ctdef->rowkey_expr_.init(constraint_columns.count()))) {
       LOG_WARN("init rowkey failed", K(ret), K(constraint_columns.count()));
+    } else if (OB_FAIL(rowkey_cst_ctdef->rowkey_accuracys_.init(constraint_columns.count()))) {
+      LOG_WARN("init rowkey accuracy failed", K(ret));
     }
 
     for (int64_t j = 0; OB_SUCC(ret) && j < constraint_columns.count(); ++j) {
@@ -886,6 +892,8 @@ int ObDmlCgService::generate_constraint_infos(ObLogInsert &op,
       if (OB_SUCC(ret)) {
         if (OB_FAIL(rowkey_cst_ctdef->rowkey_expr_.push_back(expr))) {
           LOG_WARN("fail to push_back expr", K(ret));
+        } else if (OB_FAIL(rowkey_cst_ctdef->rowkey_accuracys_.push_back(col_expr->get_accuracy()))) {
+          LOG_WARN("fail to store rowkey accuracy", K(ret));
         }
       }
     } // end constraint_columns
@@ -1320,6 +1328,32 @@ int ObDmlCgService::generate_das_dml_ctdef(ObLogDelUpd &op,
     das_dml_ctdef.tz_info_ = *session->get_tz_info_wrap().get_time_zone_info();
     das_dml_ctdef.is_total_quantity_log_ = (ObBinlogRowImage::FULL == binlog_row_image);
   }
+#ifdef OB_BUILD_TDE_SECURITY
+  // generate encrypt_meta for table
+  if (OB_SUCC(ret)) {
+    ObSchemaGetterGuard *schema_guard = NULL;
+    const share::schema::ObTableSchema *table_schema = NULL;
+    if (OB_ISNULL(schema_guard = op.get_plan()
+                  ->get_optimizer_context().get_schema_guard())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("NULL schema guard", K(ret));
+    } else if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), index_tid, table_schema))) {
+      LOG_WARN("get schema fail", KR(ret), K(index_tid));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_WARN("table not exist", KR(ret), K(index_tid));
+    } else {
+      ObArray<transaction::ObEncryptMetaCache> metas;
+      if (OB_FAIL(init_encrypt_metas_(table_schema, schema_guard, metas))) {
+        LOG_WARN("init table encrypt meta fail", KR(ret));
+      } else if (metas.count() == 0)  {
+        das_dml_ctdef.encrypt_meta_.reset();
+      } else if (OB_FAIL(das_dml_ctdef.encrypt_meta_.assign(metas))) {
+        LOG_WARN("assign encrypt meta fail", KR(ret), K(index_tid), K(metas));
+      }
+    }
+  }
+#endif
   return ret;
 }
 
@@ -1868,10 +1902,10 @@ int ObDmlCgService::convert_normal_triggers(ObLogDelUpd &log_op,
       } else if (OB_ISNULL(trigger_info)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("trigger info is null", K(tenant_id), K(trigger_id), K(ret));
-      } else if (trigger_info->is_enable()) {
+      } else {
         // if disable trigger, use the previous plan cache, whether trigger is enable ???
-        need_fire = trigger_info->has_event(dml_event);
-        if (OB_SUCC(ret) && need_fire && !trigger_info->get_ref_trg_name().empty() && lib::is_oracle_mode()) {
+        need_fire = trigger_info->has_event(dml_event) && trigger_info->is_enable();
+        if (OB_SUCC(ret) && !trigger_info->get_ref_trg_name().empty() && lib::is_oracle_mode()) {
           const ObTriggerInfo *ref_trigger_info = NULL;
           uint64_t ref_db_id = OB_INVALID_ID;
           OZ (schema_guard->get_database_id(tenant_id, trigger_info->get_ref_trg_db_name(), ref_db_id));
@@ -2012,12 +2046,31 @@ int ObDmlCgService::convert_normal_triggers(ObLogDelUpd &log_op,
           LOG_DEBUG("debug trigger normal column", K(ret), K(is_instead_of),
               K(dml_ctdef.old_row_.count()), K(dml_ctdef.new_row_.count()));
           if (ObTriggerEvents::is_insert_event(dml_event)) {
-            new_expr = dml_ctdef.new_row_.at(col_idx);
+            if (OB_UNLIKELY(col_idx < 0) ||
+                OB_UNLIKELY(col_idx >= dml_ctdef.new_row_.count())) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected col idx", K(col_idx), K(dml_ctdef.new_row_));
+            } else {
+              new_expr = dml_ctdef.new_row_.at(col_idx);
+            }
           } else if (ObTriggerEvents::is_update_event(dml_event)) {
-            new_expr = dml_ctdef.new_row_.at(col_idx);
-            old_expr = dml_ctdef.old_row_.at(col_idx);
+            if (OB_UNLIKELY(col_idx < 0) ||
+                OB_UNLIKELY(col_idx >= dml_ctdef.new_row_.count()) ||
+                OB_UNLIKELY(col_idx >= dml_ctdef.old_row_.count())) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected col idx", K(col_idx), K(dml_ctdef.new_row_), K(dml_ctdef.old_row_));
+            } else {
+              new_expr = dml_ctdef.new_row_.at(col_idx);
+              old_expr = dml_ctdef.old_row_.at(col_idx);
+            }
           } else if (ObTriggerEvents::is_delete_event(dml_event)) {
-            old_expr = dml_ctdef.old_row_.at(col_idx);
+            if (OB_UNLIKELY(col_idx < 0) ||
+                OB_UNLIKELY(col_idx >= dml_ctdef.old_row_.count())) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected col idx", K(col_idx), K(dml_ctdef.old_row_));
+            } else {
+              old_expr = dml_ctdef.old_row_.at(col_idx);
+            }
           } else {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected status: not supported dml type",
@@ -2778,5 +2831,104 @@ int ObDmlCgService::convert_foreign_keys(ObLogDelUpd &op,
   return ret;
 }
 
+#ifdef OB_BUILD_TDE_SECURITY
+int ObDmlCgService::init_encrypt_metas_(
+    const share::schema::ObTableSchema *table_schema,
+    share::schema::ObSchemaGetterGuard *guard,
+    ObIArray<transaction::ObEncryptMetaCache> &meta_array)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(table_schema) || OB_ISNULL(guard)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table schema is invalid", K(ret));
+  } else if (OB_FAIL(init_encrypt_table_meta_(table_schema, guard, meta_array))) {
+    LOG_WARN("fail to init encrypt_table_meta", KPC(table_schema), K(ret));
+  } else if (!table_schema->is_user_table()) {
+    /*do nothing*/
+  } else {
+    ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
+    const ObTableSchema *index_schema = nullptr;
+    if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos))) {
+      LOG_WARN("get simple_index_infos failed", K(ret));
+    }
+    for (int i = 0; i < simple_index_infos.count() && OB_SUCC(ret); ++i) {
+      if (OB_FAIL(guard->get_table_schema(
+                  table_schema->get_tenant_id(),
+                  simple_index_infos.at(i).table_id_, index_schema))) {
+        LOG_WARN("fail to get table schema", K(ret));
+      } else if (OB_ISNULL(index_schema)) {
+        ret = OB_SCHEMA_ERROR;
+        LOG_WARN("index schema not exist", K(simple_index_infos.at(i).table_id_), K(ret));
+      } else if (!index_schema->is_index_local_storage()) {
+        // do nothing
+      } else if (OB_FAIL(init_encrypt_table_meta_(index_schema, guard, meta_array))) {
+        LOG_WARN("fail to init encrypt_table_meta", KPC(index_schema), K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDmlCgService::init_encrypt_table_meta_(
+    const share::schema::ObTableSchema *table_schema,
+    share::schema::ObSchemaGetterGuard *guard,
+    ObIArray<transaction::ObEncryptMetaCache>&meta_array)
+{
+  int ret = OB_SUCCESS;
+  transaction::ObEncryptMetaCache meta_cache;
+  char master_key[OB_MAX_MASTER_KEY_LENGTH];
+  int64_t master_key_length = 0;
+  if (OB_ISNULL(table_schema) || OB_ISNULL(guard)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table schema is invalid", K(ret));
+  } else if (!(table_schema->need_encrypt() && table_schema->get_master_key_id() > 0 &&
+               table_schema->get_encrypt_key_len() > 0)) {
+    // do nothing
+  } else if (OB_FAIL(table_schema->get_encryption_id(meta_cache.meta_.encrypt_algorithm_))) {
+    LOG_WARN("fail to get encryption id", K(ret));
+  } else {
+    if (table_schema->is_index_local_storage()) {
+      meta_cache.table_id_ = table_schema->get_data_table_id();
+      meta_cache.local_index_id_ = table_schema->get_table_id();
+    } else {
+      meta_cache.table_id_ = table_schema->get_table_id();
+    }
+    meta_cache.meta_.tenant_id_ = table_schema->get_tenant_id();
+    meta_cache.meta_.master_key_version_ = table_schema->get_master_key_id();
+    if (OB_FAIL(meta_cache.meta_.encrypted_table_key_.set_content(
+        table_schema->get_encrypt_key()))) {
+      LOG_WARN("fail to assign encrypt key", K(ret));
+    }
+    #ifdef ERRSIM
+      else if (OB_FAIL(OB_E(EventTable::EN_ENCRYPT_GET_MASTER_KEY_FAILED) OB_SUCCESS)) {
+      LOG_WARN("ERRSIM, fail to get master key", K(ret));
+    }
+    #endif
+      else if (OB_FAIL(share::ObMasterKeyGetter::get_master_key(table_schema->get_tenant_id(),
+                       table_schema->get_master_key_id(), master_key, OB_MAX_MASTER_KEY_LENGTH,
+                       master_key_length))) {
+      LOG_WARN("fail to get master key", K(ret));
+      // 如果在cg阶段获取主密钥失败了, 有可能是因为RS执行内部sql没有租户资源引起的.
+      // 在没有租户资源的情况下获取主密钥, 获取加密租户配置项时会失败
+      // 在这种情况下, 我们认为这里是合理的, 缓存中可以不保存主密钥内容
+      // cg阶段获取主密钥的任何失败我们可以接受
+      // 兜底是执行期再次获取, 再次获取成功了则继续往下走, 失败了则报错出来.
+      // 见bug
+      ret = OB_SUCCESS;
+    } else if (OB_FAIL(meta_cache.meta_.master_key_.set_content(
+                                                        ObString(master_key_length, master_key)))) {
+      LOG_WARN("fail to assign master_key", K(ret));
+    } else if (OB_FAIL(ObEncryptionUtil::decrypt_table_key(meta_cache.meta_))) {
+      LOG_WARN("failed to decrypt_table_key", K(ret));
+    } else {/*do nothing*/}
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(meta_array.push_back(meta_cache))) {
+      LOG_WARN("fail to push back meta array", K(ret));
+    }
+  }
+  return ret;
+}
+#endif
 }  // namespace sql
 }  // namespace oceanbase

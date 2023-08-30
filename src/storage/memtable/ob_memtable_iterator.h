@@ -161,7 +161,7 @@ protected:
   bool is_scan_start_;
   const storage::ObTableIterParam *param_;
   storage::ObTableAccessContext *context_;
-  const storage::ObTableReadInfo *read_info_;
+  const storage::ObITableReadInfo *read_info_;
   ObIMemtable *memtable_;
   blocksstable::ObDatumRange cur_range_;
   ObMvccRowIterator row_iter_;
@@ -169,6 +169,7 @@ protected:
   ObNopBitMap bitmap_;
   uint8_t iter_flag_;
 };
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -304,7 +305,7 @@ protected:
 protected:
   const uint64_t MAGIC_;
   bool is_inited_;
-  const storage::ObTableReadInfo *read_info_;
+  const storage::ObITableReadInfo *read_info_;
   ObMemtableKey *start_key_;
   ObMemtableKey *end_key_;
   storage::ObTableAccessContext *context_;
@@ -327,10 +328,10 @@ class ObReadRow
   DEFINE_ALLOCATOR_WRAPPER
 public:
   static int iterate_row(
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObITableReadInfo &read_info,
       const common::ObStoreRowkey &key,
       common::ObIAllocator &allocator,
-      ObIMvccValueIterator &value_iter,
+      ObMvccValueIterator &value_iter,
       blocksstable::ObDatumRow &row,
       ObNopBitMap &bitmap,
       int64_t &row_scn);
@@ -341,9 +342,9 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObReadRow);
 private:
   static int iterate_row_value_(
-      const storage::ObTableReadInfo &read_info,
+      const storage::ObITableReadInfo &read_info,
       common::ObIAllocator &allocator,
-      ObIMvccValueIterator &value_iter,
+      ObMvccValueIterator &value_iter,
       blocksstable::ObDatumRow &row,
       ObNopBitMap &bitmap,
       int64_t &row_scn);

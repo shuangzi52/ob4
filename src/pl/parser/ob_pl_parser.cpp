@@ -47,7 +47,7 @@ namespace pl
 int ObPLParser::fast_parse(const ObString &query,
                       ParseResult &parse_result)
 {
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_pl_parse);
   int ret = OB_SUCCESS;
   // 删除SQL语句末尾的空格
   int64_t len = query.length();
@@ -112,7 +112,6 @@ int ObPLParser::fast_parse(const ObString &query,
     parse_result.param_nodes_ = parse_ctx.param_nodes_;
     parse_result.tail_param_node_ = parse_ctx.tail_param_node_;
   }
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = false;
   return ret;
 }
 
@@ -121,7 +120,7 @@ int ObPLParser::parse(const ObString &stmt_block,
                       ParseResult &parse_result,
                       bool is_inner_parse)
 {
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_pl_parse);
   int ret = OB_SUCCESS;
   bool is_include_old_new_in_trigger = false;
   ObQuestionMarkCtx question_mark_ctx;
@@ -146,7 +145,6 @@ int ObPLParser::parse(const ObString &stmt_block,
     parse_result.end_col_ = stmt_block.length();
     parse_result.is_include_old_new_in_trigger_ = is_include_old_new_in_trigger;
   }
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = false;
   return ret;
 }
 
@@ -176,6 +174,7 @@ int ObPLParser::parse_procedure(const ObString &stmt_block,
   parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
         (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
   parse_ctx.connection_collation_ = connection_collation_;
+  parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
   ret = parse_stmt_block(parse_ctx, multi_stmt);
   if (OB_ERR_PARSE_SQL == ret) {
@@ -207,7 +206,7 @@ int ObPLParser::parse_procedure(const ObString &stmt_block,
 
 int ObPLParser::parse_routine_body(const ObString &routine_body, ObStmtNodeTree *&routine_stmt, bool is_for_trigger)
 {
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_pl_parse);
   int ret = OB_SUCCESS;
   int32_t prefix_len = 0;
   char *buf = NULL;
@@ -242,12 +241,12 @@ int ObPLParser::parse_routine_body(const ObString &routine_body, ObStmtNodeTree 
     parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
           (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
     parse_ctx.connection_collation_ = connection_collation_;
+    parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
     if (OB_FAIL(parse_stmt_block(parse_ctx, routine_stmt))) {
       LOG_WARN("failed to parse stmt block", K(ret));
     }
   }
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = false;
   return ret;
 }
 
@@ -258,7 +257,7 @@ int ObPLParser::parse_package(const ObString &package,
                               bool is_for_trigger,
                               const ObTriggerInfo *trg_info)
 {
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_pl_parse);
   int ret = OB_SUCCESS;
   ObParseCtx parse_ctx;
   memset(&parse_ctx, 0, sizeof(ObParseCtx));
@@ -275,6 +274,7 @@ int ObPLParser::parse_package(const ObString &package,
   parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
         (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
   parse_ctx.connection_collation_ = connection_collation_;
+  parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
   if (OB_FAIL(parse_stmt_block(parse_ctx, package_stmt))) {
     LOG_WARN("failed to parse stmt block", K(ret));
@@ -283,7 +283,6 @@ int ObPLParser::parse_package(const ObString &package,
   } else if (OB_NOT_NULL(trg_info) && lib::is_oracle_mode()) {
     OZ (reconstruct_trigger_package(package_stmt, trg_info, dtc_params, schema_guard));
   }
-  ObActiveSessionGuard::get_stat().in_pl_parse_ = false;
   return ret;
 }
 
@@ -310,6 +309,7 @@ int ObPLParser::parse_stmt_block(ObParseCtx &parse_ctx, ObStmtNodeTree *&multi_s
       pre_parse_ctx.is_for_trigger_ = parse_ctx.is_for_trigger_;
       pre_parse_ctx.is_for_preprocess_ = true;
       pre_parse_ctx.connection_collation_ = parse_ctx.connection_collation_;
+      pre_parse_ctx.scanner_ctx_.sql_mode_ = parse_ctx.scanner_ctx_.sql_mode_;
       if (0 != obpl_parser_init(&pre_parse_ctx)) {
         ret = OB_ERR_PARSER_INIT;
         LOG_WARN("failed to initialized parser", K(ret));

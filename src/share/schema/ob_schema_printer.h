@@ -55,7 +55,10 @@ class ObConstraint;
 class ObSchemaPrinter
 {
 public:
-  explicit ObSchemaPrinter(ObSchemaGetterGuard &schema_guard, bool strict_compat = false);
+  explicit ObSchemaPrinter(ObSchemaGetterGuard &schema_guard,
+                           bool strict_compat = false,
+                           bool sql_quote_show_create = true,
+                           bool ansi_quotes = false);
   virtual ~ObSchemaPrinter() { }
 private:
   ObSchemaPrinter();
@@ -69,7 +72,8 @@ public:
                              const common::ObTimeZoneInfo *tz_info,
                              const common::ObLengthSemantics default_length_semantics,
                              bool agent_mode,
-                             ObSQLMode sql_mode = SMO_DEFAULT) const;
+                             ObSQLMode sql_mode = SMO_DEFAULT,
+                             ObCharsetType charset_type = ObCharsetType::CHARSET_UTF8MB4) const;
   int print_table_index_stroing(
       const share::schema::ObTableSchema *index_schema,
       const share::schema::ObTableSchema *table_schema,
@@ -136,7 +140,8 @@ public:
                                      const common::ObTimeZoneInfo *tz_info,
                                      const common::ObLengthSemantics default_length_semantics,
                                      bool is_agent_mode = false,
-                                     ObSQLMode sql_mode = SMO_DEFAULT) const;
+                                     ObSQLMode sql_mode = SMO_DEFAULT,
+                                     ObCharsetType charset_type = ObCharsetType::CHARSET_UTF8MB4) const;
   int print_generated_column_definition(const ObColumnSchemaV2 &gen_col,
                                         char *buf,
                                         int64_t buf_len,
@@ -318,13 +323,6 @@ public:
       const int64_t& buf_len,
       int64_t& pos,
       bool agent_mode = false) const;
-  int print_tablegroup_definition_partition_options(
-      const share::schema::ObTablegroupSchema &tablegroup_schema,
-      char* buf,
-      const int64_t& buf_len,
-      int64_t& pos,
-      bool agent_mode,
-      const common::ObTimeZoneInfo *tz_info) const;
   int print_tenant_definition(uint64_t tenant_id,
                               common::ObMySQLProxy *sql_proxy,
                               char* buf,
@@ -452,6 +450,17 @@ public:
                                      char* buf,
                                      const int64_t& buf_len,
                                      int64_t& pos) const;
+  int print_identifier(char* buf,
+                       const int64_t& buf_len,
+                       int64_t& pos,
+                       const ObString &ident,
+                       bool is_oracle_mode) const;
+
+  int print_view_define_str(char* buf,
+                            const int64_t &buf_len,
+                            int64_t& pos,
+                            bool is_oracle_mode,
+                            const ObString &sql) const;
 private:
   static bool is_subpartition_valid_in_mysql(const ObTableSchema &table_schema)
   {
@@ -464,6 +473,8 @@ private:
 
   ObSchemaGetterGuard &schema_guard_;
   bool strict_compat_;
+  bool sql_quote_show_create_;
+  bool ansi_quotes_;
 };
 
 

@@ -167,7 +167,7 @@ int ObServerSchemaService::init(ObMySQLProxy *sql_proxy,
                                 const ObCommonConfig *config)
 {
   int ret = OB_SUCCESS;
-  auto attr = SET_USE_500(ObModIds::OB_SCHEMA_ID_VERSIONS);
+  auto attr = SET_USE_500(ObModIds::OB_SCHEMA_ID_VERSIONS, ObCtxIds::SCHEMA_SERVICE);
   if (OB_ISNULL(sql_proxy)
      || NULL != schema_service_
      || OB_ISNULL(sql_proxy->get_pool())
@@ -263,11 +263,7 @@ int ObServerSchemaService::destroy_schema_struct(uint64_t tenant_id)
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("mem_mgr is null", K(ret), K(tenant_id));
     } else {
-      FLOG_INFO("[SCHEMA_RELEASE] try release schema_mgr_for_cache", K(ret), K(tenant_id),
-                "schema_mgr_tenant_id", schema_mgr->get_tenant_id(),
-                "schema_version", schema_mgr->get_schema_version());
-      schema_mgr->~ObSchemaMgr();
-      if (OB_FAIL(mem_mgr->free(static_cast<void *>(schema_mgr)))) {
+      if (OB_FAIL(mem_mgr->free_schema_mgr(schema_mgr))) {
         LOG_ERROR("free schema mgr for cache failed", K(ret), K(tenant_id));
       } else {
         schema_mgr = NULL;
@@ -3791,24 +3787,46 @@ int ObServerSchemaService::fetch_increment_schemas(
   int ret = OB_SUCCESS;
   ObArray<SchemaKey> schema_keys;
 
-#define GET_BATCH_SCHEMAS(SCHEMA, SCHEMA_TYPE, SCHEMA_KEYS) \
-  if (OB_SUCC(ret)) {                          \
-    schema_keys.reset();                        \
-    const SCHEMA_KEYS &new_keys = all_keys.new_##SCHEMA##_keys_;    \
-    ObArray<SCHEMA_TYPE> &simple_schemas = simple_incre_schemas.simple_##SCHEMA##_schemas_;   \
-    if (OB_FAIL(convert_schema_keys_to_array(new_keys, schema_keys))) {      \
-      LOG_WARN("convert set to array failed", K(ret));                                    \
+#define GET_BATCH_SCHEMAS(SCHEMA, SCHEMA_TYPE, SCHEMA_KEYS)                               \
+  if (OB_SUCC(ret)) {                                                                     \
+    schema_keys.reset();                                                                  \
+    const SCHEMA_KEYS &new_keys = all_keys.new_##SCHEMA##_keys_;                          \
+    ObArray<SCHEMA_TYPE> &simple_schemas = simple_incre_schemas.simple_##SCHEMA##_schemas_;\
+    if (OB_FAIL(convert_schema_keys_to_array(new_keys, schema_keys))) {                   \
+      LOG_WARN("convert set to array failed", KR(ret));                                   \
     } else if (OB_FAIL(schema_service_->get_batch_##SCHEMA##s(schema_status, sql_client,  \
         schema_version, schema_keys, simple_schemas))) {                                  \
-      LOG_WARN("get batch "#SCHEMA"s failed", K(ret), K(schema_keys));                    \
+      LOG_WARN("get batch "#SCHEMA"s failed", KR(ret), K(schema_keys));                   \
     } else {                                                                              \
       ALLOW_NEXT_LOG();                                                                   \
       LOG_INFO("get batch "#SCHEMA"s success", K(schema_keys));                           \
       if (schema_keys.size() != simple_schemas.size()) {                                  \
         ret = OB_ERR_UNEXPECTED;                                                          \
-        LOG_ERROR("unexpected "#SCHEMA" result cnt", K(ret), K(schema_keys.size()), K(simple_schemas.size())); \
+        LOG_ERROR("unexpected "#SCHEMA" result cnt",                                      \
+                  KR(ret), K(schema_keys.size()), K(simple_schemas.size()));              \
       }                                                                                   \
-    }\
+    }                                                                                     \
+  }
+
+#define GET_BATCH_SCHEMAS_WITH_ALLOCATOR(SCHEMA, SCHEMA_TYPE, SCHEMA_KEYS)                \
+  if (OB_SUCC(ret)) {                                                                     \
+    schema_keys.reset();                                                                  \
+    const SCHEMA_KEYS &new_keys = all_keys.new_##SCHEMA##_keys_;                          \
+    ObArray<SCHEMA_TYPE *> &simple_schemas = simple_incre_schemas.simple_##SCHEMA##_schemas_;\
+    if (OB_FAIL(convert_schema_keys_to_array(new_keys, schema_keys))) {                   \
+      LOG_WARN("convert set to array failed", KR(ret));                                   \
+    } else if (OB_FAIL(schema_service_->get_batch_##SCHEMA##s(schema_status, sql_client,  \
+      simple_incre_schemas.allocator_, schema_version, schema_keys, simple_schemas))) {   \
+      LOG_WARN("get batch "#SCHEMA"s failed", KR(ret), K(schema_keys));                   \
+    } else {                                                                              \
+      ALLOW_NEXT_LOG();                                                                   \
+      LOG_INFO("get batch "#SCHEMA"s success", K(schema_keys));                           \
+      if (schema_keys.size() != simple_schemas.size()) {                                  \
+        ret = OB_ERR_UNEXPECTED;                                                          \
+        LOG_ERROR("unexpected "#SCHEMA" result cnt",                                      \
+                  KR(ret), K(schema_keys.size()), K(simple_schemas.size()));              \
+      }                                                                                   \
+    }                                                                                     \
   }
 
 #define GET_BATCH_SCHEMAS_WITHOUT_SCHEMA_STATUS(SCHEMA, SCHEMA_TYPE, SCHEMA_KEYS) \
@@ -3834,7 +3852,7 @@ int ObServerSchemaService::fetch_increment_schemas(
   GET_BATCH_SCHEMAS(user, ObSimpleUserSchema, UserKeys);
   GET_BATCH_SCHEMAS(database, ObSimpleDatabaseSchema, DatabaseKeys);
   GET_BATCH_SCHEMAS(tablegroup, ObSimpleTablegroupSchema, TablegroupKeys);
-  GET_BATCH_SCHEMAS(table, ObSimpleTableSchemaV2, TableKeys);
+  GET_BATCH_SCHEMAS_WITH_ALLOCATOR(table, ObSimpleTableSchemaV2, TableKeys);
   GET_BATCH_SCHEMAS(outline, ObSimpleOutlineSchema, OutlineKeys);
   GET_BATCH_SCHEMAS(routine, ObSimpleRoutineSchema, RoutineKeys);
   GET_BATCH_SCHEMAS(package, ObSimplePackageSchema, PackageKeys);
@@ -4141,7 +4159,7 @@ APPLY_SCHEMA_TO_CACHE_IMPL(ObSysVariableMgr, sys_variable, ObSimpleSysVariableSc
 APPLY_SCHEMA_TO_CACHE_IMPL(ObSchemaMgr, user, ObSimpleUserSchema, UserKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObSchemaMgr, database, ObSimpleDatabaseSchema, DatabaseKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObSchemaMgr, tablegroup, ObSimpleTablegroupSchema, TablegroupKeys);
-APPLY_SCHEMA_TO_CACHE_IMPL(ObSchemaMgr, table, ObSimpleTableSchemaV2, TableKeys);
+APPLY_SCHEMA_TO_CACHE_IMPL(ObSchemaMgr, table, ObSimpleTableSchemaV2*, TableKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObOutlineMgr, outline, ObSimpleOutlineSchema, OutlineKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObRoutineMgr, routine, ObSimpleRoutineSchema, RoutineKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObPackageMgr, package, ObSimplePackageSchema, PackageKeys);
@@ -5175,18 +5193,21 @@ int ObServerSchemaService::convert_to_simple_schema(
 }
 
 int ObServerSchemaService::convert_to_simple_schema(
+    common::ObIAllocator &allocator,
     const ObIArray<ObTableSchema> &schemas,
-    ObIArray<ObSimpleTableSchemaV2> &simple_schemas)
+    ObIArray<ObSimpleTableSchemaV2 *> &simple_schemas)
 {
   int ret= OB_SUCCESS;
   simple_schemas.reset();
 
   FOREACH_CNT_X(schema, schemas, OB_SUCC(ret)) {
-    ObSimpleTableSchemaV2 simple_schema;
-    if (OB_FAIL(convert_to_simple_schema(*schema, simple_schema))) {
-      LOG_WARN("convert failed", K(ret));
+    ObSimpleTableSchemaV2 *simple_schema = NULL;
+    if (OB_FAIL(ObSchemaUtils::alloc_schema(allocator, simple_schema))) {
+      LOG_WARN("fail to alloc simple schema", KR(ret));
+    } else if (OB_FAIL(convert_to_simple_schema(*schema, *simple_schema))) {
+      LOG_WARN("convert failed", KR(ret));
     } else if (OB_FAIL(simple_schemas.push_back(simple_schema))) {
-      LOG_WARN("push back failed", K(ret));
+      LOG_WARN("push back failed", KR(ret));
     }
   }
 
@@ -5194,22 +5215,25 @@ int ObServerSchemaService::convert_to_simple_schema(
 }
 
 int ObServerSchemaService::convert_to_simple_schema(
+    common::ObIAllocator &allocator,
     const ObIArray<ObTableSchema *> &schemas,
-    ObIArray<ObSimpleTableSchemaV2> &simple_schemas)
+    ObIArray<ObSimpleTableSchemaV2 *> &simple_schemas)
 {
   int ret= OB_SUCCESS;
   simple_schemas.reset();
 
   FOREACH_CNT_X(schema, schemas, OB_SUCC(ret)) {
     const ObTableSchema *table_schema = *schema;
-    ObSimpleTableSchemaV2 simple_schema;
+    ObSimpleTableSchemaV2 *simple_schema = NULL;
     if (OB_ISNULL(table_schema)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("NULL ptr", K(ret), K(table_schema));
-    } else if (OB_FAIL(convert_to_simple_schema(*table_schema, simple_schema))) {
-      LOG_WARN("convert failed", K(ret));
+      LOG_WARN("NULL ptr", KR(ret), KP(table_schema));
+    } else if (OB_FAIL(ObSchemaUtils::alloc_schema(allocator, simple_schema))) {
+      LOG_WARN("fail to alloc simple schema", KR(ret));
+    } else if (OB_FAIL(convert_to_simple_schema(*table_schema, *simple_schema))) {
+      LOG_WARN("convert failed", KR(ret));
     } else if (OB_FAIL(simple_schemas.push_back(simple_schema))) {
-      LOG_WARN("push back failed", K(ret));
+      LOG_WARN("push back failed", KR(ret));
     }
   }
 
@@ -5350,7 +5374,7 @@ int ObServerSchemaService::refresh_full_schema(
             LOG_WARN("schema may be not persisted, try again",
                      KR(ret), K(schema_status), K(core_schema_version));
           } else if (core_schema_version > local_schema_version) {
-            // for core table schema, we publis as core_temp_version
+            // for core table schema, we publish as core_temp_version
             int64_t publish_version = 0;
             if (OB_FAIL(ObSchemaService::gen_core_temp_version(core_schema_version, publish_version))) {
               LOG_WARN("gen_core_temp_version failed", KR(ret), K(schema_status), K(core_schema_version));
@@ -5488,7 +5512,7 @@ int ObServerSchemaService::init_schema_struct(uint64_t tenant_id)
 #define INIT_TENANT_MEM_MGR(map, tenant_id, mem_mgr_label, schema_mgr_label) \
     if (OB_FAIL(ret)) { \
     } else if (OB_ISNULL(map.get(tenant_id))) { \
-      void *buff = ob_malloc(sizeof(ObSchemaMemMgr), mem_mgr_label); \
+      void *buff = ob_malloc(sizeof(ObSchemaMemMgr), SET_USE_500(mem_mgr_label, ObCtxIds::SCHEMA_SERVICE)); \
       ObSchemaMemMgr *schema_mem_mgr = NULL; \
       bool overwrite = true; \
       if (OB_ISNULL(buff)) { \
@@ -5537,33 +5561,25 @@ int ObServerSchemaService::init_schema_struct(uint64_t tenant_id)
 
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(schema_mgr_for_cache_map_.get(tenant_id))) {
-      void *buffer = NULL;
-      ObIAllocator *allocator = NULL;
       ObSchemaMgr *schema_mgr_for_cache = NULL;
       ObSchemaMemMgr *mem_mgr = NULL;
+      bool alloc_for_liboblog = false;
       if (OB_FAIL(mem_mgr_map_.get_refactored(tenant_id, mem_mgr))) {
         LOG_WARN("fail to get mem_mgr", K(ret), K(tenant_id));
       } else if (OB_ISNULL(mem_mgr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("mem_mgr is null", K(ret), K(tenant_id));
-      } else if (OB_FAIL(mem_mgr->alloc(sizeof(ObSchemaMgr), buffer, &allocator))) {
+      } else if (OB_FAIL(mem_mgr->alloc_schema_mgr(schema_mgr_for_cache, alloc_for_liboblog))) {
         LOG_WARN("alloc schema mgr failed", K(ret));
-      } else if (FALSE_IT(schema_mgr_for_cache = new(buffer)ObSchemaMgr(*allocator))) {
-        // will not reach here
       } else if (OB_FAIL(schema_mgr_for_cache->init(tenant_id))) {
         LOG_WARN("init schema mgr for cache failed", K(ret));
       } else if (OB_FAIL(schema_mgr_for_cache_map_.set_refactored(tenant_id, schema_mgr_for_cache))) {
         LOG_WARN("fail to set schema_mgr", K(ret), K(tenant_id));
       }
-      if (OB_FAIL(ret)) {
-        if (NULL != schema_mgr_for_cache) {
-          schema_mgr_for_cache->~ObSchemaMgr();
-          ob_free(buffer);
-          schema_mgr_for_cache = NULL;
-          buffer= NULL;
-        } else if (NULL != buffer) {
-          ob_free(buffer);
-          buffer = NULL;
+      if (OB_FAIL(ret) && OB_NOT_NULL(mem_mgr)) {
+        int64_t tmp_ret = OB_SUCCESS;
+        if (OB_TMP_FAIL(mem_mgr->free_schema_mgr(schema_mgr_for_cache))) {
+          LOG_ERROR("fail to free mem_mgr", KR(ret));
         }
       }
     } else {
@@ -5826,7 +5842,11 @@ int ObServerSchemaService::try_fetch_publish_core_schemas(
       }
       if (OB_SUCC(ret)) {
         ObSchemaMgr *schema_mgr_for_cache = NULL;
-        ObArray<ObSimpleTableSchemaV2> simple_core_schemas;
+        auto attr = SET_USE_500("PubCoreSchema", ObCtxIds::SCHEMA_SERVICE);
+        ObArenaAllocator allocator(attr);
+        ObArray<ObSimpleTableSchemaV2*> simple_core_schemas(
+                         common::OB_MALLOC_NORMAL_BLOCK_SIZE,
+                         common::ModulePageAllocator(allocator));
         if (OB_FAIL(schema_mgr_for_cache_map_.get_refactored(tenant_id, schema_mgr_for_cache))) {
           LOG_WARN("fail to get schema mgr for cache", KR(ret), K(schema_status));
         } else if (OB_ISNULL(schema_mgr_for_cache)) {
@@ -5834,7 +5854,7 @@ int ObServerSchemaService::try_fetch_publish_core_schemas(
           LOG_WARN("schema_mgr_for_cache is null", KR(ret), K(schema_status));
         } else if (OB_FAIL(update_schema_cache(core_tables))) {
           LOG_WARN("failed to update schema cache", KR(ret), K(schema_status));
-        } else if (OB_FAIL(convert_to_simple_schema(core_schemas, simple_core_schemas))) {
+        } else if (OB_FAIL(convert_to_simple_schema(allocator, core_schemas, simple_core_schemas))) {
           LOG_WARN("convert to simple schema failed", KR(ret), K(schema_status));
         } else if (OB_FAIL(schema_mgr_for_cache->add_tables(simple_core_schemas))) {
           LOG_WARN("add tables failed", KR(ret), K(schema_status));
@@ -5894,7 +5914,11 @@ int ObServerSchemaService::try_fetch_publish_sys_schemas(
                K(schema_status), K(schema_version), K(new_schema_version));
     } else if (!sys_schema_change) {
       ObSchemaMgr *schema_mgr_for_cache = NULL;
-      ObArray<ObSimpleTableSchemaV2> simple_sys_schemas;
+      auto attr = SET_USE_500("PubSysSchema", ObCtxIds::SCHEMA_SERVICE);
+      ObArenaAllocator allocator(attr);
+      ObArray<ObSimpleTableSchemaV2*> simple_sys_schemas(
+                       common::OB_MALLOC_NORMAL_BLOCK_SIZE,
+                       common::ModulePageAllocator(allocator));
       if (OB_FAIL(schema_mgr_for_cache_map_.get_refactored(tenant_id, schema_mgr_for_cache))) {
         LOG_WARN("fail to get schema mgr for cache", KR(ret), K(tenant_id));
       } else if (OB_ISNULL(schema_mgr_for_cache)) {
@@ -5902,7 +5926,7 @@ int ObServerSchemaService::try_fetch_publish_sys_schemas(
         LOG_WARN("schema_mgr_for_cache is null", KR(ret), K(schema_status));
       } else if (OB_FAIL(update_schema_cache(sys_schemas))) {
         LOG_WARN("failed to update schema cache", KR(ret), K(schema_status));
-      } else if (OB_FAIL(convert_to_simple_schema(sys_schemas, simple_sys_schemas))) {
+      } else if (OB_FAIL(convert_to_simple_schema(allocator, sys_schemas, simple_sys_schemas))) {
         LOG_WARN("convert to simple schema failed", KR(ret), K(schema_status));
       } else if (OB_FAIL(schema_mgr_for_cache->add_tables(simple_sys_schemas))) {
         LOG_WARN("add tables failed", KR(ret), K(schema_status));
@@ -6056,38 +6080,44 @@ int ObServerSchemaService::refresh_tenant_full_normal_schema(
     }
 
     if (OB_SUCC(ret)) {
-      ObArray<ObSimpleUserSchema> simple_users;
-      ObArray<ObSimpleDatabaseSchema> simple_databases;
-      ObArray<ObSimpleTablegroupSchema> simple_tablegroups;
-      ObArray<ObSimpleTableSchemaV2> simple_tables;
-      ObArray<ObSimpleOutlineSchema> simple_outlines;
-      ObArray<ObSimpleRoutineSchema> simple_routines;
-      ObArray<ObSimpleSynonymSchema> simple_synonyms;
-      ObArray<ObSimplePackageSchema> simple_packages;
-      ObArray<ObSimpleTriggerSchema> simple_triggers;
-      ObArray<ObDBPriv> db_privs;
-      ObArray<ObSysPriv> sys_privs;
-      ObArray<ObTablePriv> table_privs;
-      ObArray<ObObjPriv> obj_privs;
-      ObArray<ObSimpleUDFSchema> simple_udfs;
-      ObArray<ObSimpleUDTSchema> simple_udts;
-      ObArray<ObSequenceSchema> simple_sequences;
-      ObArray<ObKeystoreSchema> simple_keystores;
-      ObArray<ObProfileSchema> simple_profiles;
-      ObArray<ObSAuditSchema> simple_audits;
+      auto attr = SET_USE_500("RefFullSchema", ObCtxIds::SCHEMA_SERVICE);
+      ObArenaAllocator allocator(attr);
+      #define INIT_ARRAY(TYPE, name) \
+        ObArray<TYPE> name(common::OB_MALLOC_NORMAL_BLOCK_SIZE, \
+                           common::ModulePageAllocator(allocator));
+      INIT_ARRAY(ObSimpleUserSchema, simple_users);
+      INIT_ARRAY(ObSimpleDatabaseSchema, simple_databases);
+      INIT_ARRAY(ObSimpleTablegroupSchema, simple_tablegroups);
+      INIT_ARRAY(ObSimpleTableSchemaV2*, simple_tables);
+      INIT_ARRAY(ObSimpleOutlineSchema, simple_outlines);
+      INIT_ARRAY(ObSimpleRoutineSchema, simple_routines);
+      INIT_ARRAY(ObSimpleSynonymSchema, simple_synonyms);
+      INIT_ARRAY(ObSimplePackageSchema, simple_packages);
+      INIT_ARRAY(ObSimpleTriggerSchema, simple_triggers);
+      INIT_ARRAY(ObDBPriv, db_privs);
+      INIT_ARRAY(ObSysPriv, sys_privs);
+      INIT_ARRAY(ObTablePriv, table_privs);
+      INIT_ARRAY(ObObjPriv, obj_privs);
+      INIT_ARRAY(ObSimpleUDFSchema, simple_udfs);
+      INIT_ARRAY(ObSimpleUDTSchema, simple_udts);
+      INIT_ARRAY(ObSequenceSchema, simple_sequences);
+      INIT_ARRAY(ObKeystoreSchema, simple_keystores);
+      INIT_ARRAY(ObProfileSchema, simple_profiles);
+      INIT_ARRAY(ObSAuditSchema, simple_audits);
+      INIT_ARRAY(ObLabelSePolicySchema, simple_label_se_policys);
+      INIT_ARRAY(ObLabelSeComponentSchema, simple_label_se_components);
+      INIT_ARRAY(ObLabelSeLabelSchema, simple_label_se_labels);
+      INIT_ARRAY(ObLabelSeUserLevelSchema, simple_label_se_user_levels);
+      INIT_ARRAY(ObTablespaceSchema, simple_tablespaces);
+      INIT_ARRAY(ObDbLinkSchema, simple_dblinks);
+      INIT_ARRAY(ObDirectorySchema, simple_directories);
+      INIT_ARRAY(ObContextSchema, simple_contexts);
+      INIT_ARRAY(ObSimpleMockFKParentTableSchema, simple_mock_fk_parent_tables);
+      INIT_ARRAY(ObRlsPolicySchema, simple_rls_policys);
+      INIT_ARRAY(ObRlsGroupSchema, simple_rls_groups);
+      INIT_ARRAY(ObRlsContextSchema, simple_rls_contexts);
+      #undef INIT_ARRAY
       ObSimpleSysVariableSchema simple_sys_variable;
-      ObArray<ObLabelSePolicySchema> simple_label_se_policys;
-      ObArray<ObLabelSeComponentSchema> simple_label_se_components;
-      ObArray<ObLabelSeLabelSchema> simple_label_se_labels;
-      ObArray<ObLabelSeUserLevelSchema> simple_label_se_user_levels;
-      ObArray<ObTablespaceSchema> simple_tablespaces;
-      ObArray<ObDbLinkSchema> simple_dblinks;
-      ObArray<ObDirectorySchema> simple_directories;
-      ObArray<ObContextSchema> simple_contexts;
-      ObArray<ObSimpleMockFKParentTableSchema> simple_mock_fk_parent_tables;
-      ObArray<ObRlsPolicySchema> simple_rls_policys;
-      ObArray<ObRlsGroupSchema> simple_rls_groups;
-      ObArray<ObRlsContextSchema> simple_rls_contexts;
 
       if (OB_FAIL(schema_service_->get_sys_variable(sql_client, schema_status, tenant_id,
           schema_version, simple_sys_variable))) {
@@ -6102,8 +6132,8 @@ int ObServerSchemaService::refresh_tenant_full_normal_schema(
           sql_client, schema_status, schema_version, tenant_id, simple_tablegroups))) {
         LOG_WARN("get all tablegroups failed", K(ret), K(schema_version), K(tenant_id));
       } else if (OB_FAIL(schema_service_->get_all_tables(
-          sql_client, schema_status, schema_version, tenant_id, simple_tables))) {
-        LOG_WARN("get all table schema failed", K(ret), K(schema_version), K(tenant_id));
+          sql_client, allocator, schema_status, schema_version, tenant_id, simple_tables))) {
+        LOG_WARN("get all table schema failed", KR(ret), K(schema_version), K(tenant_id));
       } else if (OB_FAIL(schema_service_->get_all_outlines(
           sql_client, schema_status, schema_version, tenant_id, simple_outlines))) {
         LOG_WARN("get all outline schema failed", K(ret), K(schema_version), K(tenant_id));
@@ -6216,6 +6246,7 @@ int ObServerSchemaService::refresh_tenant_full_normal_schema(
         }
       }
 
+      const bool refresh_full_schema = true;
       // add simple schema for cache
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(schema_mgr_for_cache->sys_variable_mgr_
@@ -6227,7 +6258,7 @@ int ObServerSchemaService::refresh_tenant_full_normal_schema(
         LOG_WARN("add databases failed", K(ret));
       } else if (OB_FAIL(schema_mgr_for_cache->add_tablegroups(simple_tablegroups))) {
         LOG_WARN("add tablegroups failed", K(ret));
-      } else if (OB_FAIL(schema_mgr_for_cache->add_tables(simple_tables))) {
+      } else if (OB_FAIL(schema_mgr_for_cache->add_tables(simple_tables, refresh_full_schema))) {
         LOG_WARN("add tables failed", K(ret));
       } else if (OB_FAIL(schema_mgr_for_cache->outline_mgr_.add_outlines(simple_outlines))) {
         LOG_WARN("add outlines failed", K(ret));

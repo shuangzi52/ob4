@@ -69,15 +69,14 @@ public:
   bool need_close_cursor() { return need_close_cursor_; }
   void set_close_cursor() { need_close_cursor_ = true; }
   void reset_close_cursor() { need_close_cursor_ = false; }
-
   
 protected:
   virtual int deserialize()  { return common::OB_SUCCESS; }
   virtual int process();
 private:
-  int do_process(sql::ObSQLSessionInfo &session);
+  int do_process(sql::ObSQLSessionInfo &session, bool &need_response_error);
   int set_session_active(sql::ObSQLSessionInfo &session) const;
-  int process_fetch_stmt(sql::ObSQLSessionInfo &session);
+  int process_fetch_stmt(sql::ObSQLSessionInfo &session, bool &need_response_error);
   int response_result(pl::ObPLCursorInfo &cursor,
                       sql::ObSQLSessionInfo &session,
                       int64_t fetch_limit,

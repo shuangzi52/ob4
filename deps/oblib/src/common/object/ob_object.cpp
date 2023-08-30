@@ -594,6 +594,9 @@ int ObLobLocatorV2::get_inrow_data(ObString &inrow_data) const
   } else if (OB_ISNULL(ptr_)) {
     ret = OB_ERR_UNEXPECTED;
     COMMON_LOG(WARN, "Lob: get null ptr", K(ret), K(size_), K(ptr_));
+  } else if (is_freed()) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "Lob: has been freed", K(ret), KPC(loc));
   } else if (!is_lob_disk_locator() && loc->is_simple()) {
     inrow_data.assign_ptr(ptr_ + MEM_LOB_COMMON_HEADER_LEN, size_ - MEM_LOB_COMMON_HEADER_LEN);
   } else if (OB_FAIL(get_disk_locator(disk_loc_buff))) {
@@ -2221,7 +2224,7 @@ DEF_TO_STRING(ObHexEscapeSqlStr)
   int64_t buf_pos = 0;
   if (buf != NULL && buf_len > 0 && !str_.empty()) {
     const char *end = str_.ptr() + str_.length();
-    if (lib::is_oracle_mode()) {
+    if (do_oracle_mode_escape_) {
       for (const char *cur = str_.ptr(); cur < end && buf_pos < buf_len; ++cur) {
         if ('\'' == *cur) {
           //在oracle模式中,只处理单引号转义
@@ -2301,7 +2304,7 @@ int64_t ObHexEscapeSqlStr::get_extra_length() const
   int64_t ret_length = 0;
   if (!str_.empty()) {
     const char *end = str_.ptr() + str_.length();
-    if (lib::is_oracle_mode()) {
+    if (do_oracle_mode_escape_) {
       for (const char *cur = str_.ptr(); cur < end; ++cur) {
         if ('\'' == *cur) {
           ++ret_length;

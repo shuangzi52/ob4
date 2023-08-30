@@ -72,6 +72,15 @@ int ObExprNvlUtil::calc_result_type(ObExprResType &type,
       type.set_result_flag(NOT_NULL_FLAG);
     }
   }
+
+  if (OB_SUCC(ret) && ob_is_user_defined_sql_type(type.get_type())) {
+    if (type1.is_xml_sql_type() || type2.is_xml_sql_type()) {
+      type.set_subschema_id(ObXMLSqlType);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unsupported udt failed", K(ret), K(type1), K(type2));
+    }
+  }
   return ret;
 }
 
@@ -290,9 +299,9 @@ ObExprNaNvl::~ObExprNaNvl()
 {}
 
 int ObExprNaNvl::calc_result_type2(ObExprResType &type,
-                                       ObExprResType &type1,
-                                       ObExprResType &type2,
-                                       ObExprTypeCtx &type_ctx) const
+                                   ObExprResType &type1,
+                                   ObExprResType &type2,
+                                   ObExprTypeCtx &type_ctx) const
 {
   UNUSED(type_ctx);
   int ret =  OB_SUCCESS;
@@ -308,6 +317,10 @@ int ObExprNaNvl::calc_result_type2(ObExprResType &type,
     LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "NUMBER",
                   ob_obj_type_str(type2.get_type()));
     LOG_WARN("invalid type of parameter", K(ret), K(type2));
+  } else if (ObTinyIntType == type1.get_type() || ObTinyIntType == type2.get_type()) {
+    ret = OB_ERR_CALL_WRONG_ARG;
+    LOG_WARN("PLS-00306: wrong number or types of arguments in call", K(ret));
+    LOG_USER_ERROR(OB_ERR_CALL_WRONG_ARG, static_cast<int>(strlen(get_name())), get_name());
   }
   if (OB_SUCC(ret)) {
     type.set_type(ObNumberType);
@@ -438,9 +451,7 @@ int ObExprNaNvl::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
 int ObExprNaNvl::eval_nanvl_util(const ObExpr &expr, ObDatum &expr_datum, ObDatum *param1, ObDatum *param2, bool &ret_bool)
 {
   int ret = OB_SUCCESS;
-  if (param1->is_null() || param2->is_null()) {
-    expr_datum.set_null();
-  } else if (expr.args_[0]->datum_meta_.type_ != ObFloatType
+  if (expr.args_[0]->datum_meta_.type_ != ObFloatType
              && expr.args_[0]->datum_meta_.type_ != ObDoubleType) {
     expr_datum.set_datum(*param1);
   } else {
@@ -470,7 +481,7 @@ int ObExprNaNvl::eval_nanvl(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_da
     expr_datum.set_null();
   } else if (OB_FAIL(expr.args_[1]->eval(ctx, param2))) {
     LOG_WARN("eval second param failed", K(ret));
-  } else if (param1->is_null() || param2->is_null()) {
+  } else if (param1->is_null() || (param2->is_null() && ObDoubleType != expr.args_[1]->datum_meta_.get_type())) {
     expr_datum.set_null();
   } else {
     if (OB_FAIL(eval_nanvl_util(expr, expr_datum, param1, param2, ret_bool))){
@@ -520,7 +531,9 @@ int ObExprNaNvl::eval_nanvl_batch(const ObExpr &expr,
         param1 = &expr.args_[0]->locate_expr_datum(ctx, i);
         param2 = &expr.args_[1]->locate_expr_datum(ctx, i);
         eval_flags.set(i);
-        if (OB_FAIL(eval_nanvl_util(expr, results[i], param1, param2, ret_bool))){
+        if (param1->is_null() || (param2->is_null() && ObDoubleType != expr.args_[1]->datum_meta_.get_type())) {
+          results[i].set_null();
+        } else if (OB_FAIL(eval_nanvl_util(expr, results[i], param1, param2, ret_bool))){
           LOG_WARN("eval_nanvl unexpect error", K(ret));
         } else {
           // do nothing

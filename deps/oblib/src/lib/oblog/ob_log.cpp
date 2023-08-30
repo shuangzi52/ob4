@@ -28,6 +28,7 @@
 #include "lib/utility/ob_fast_convert.h"
 #include "lib/utility/ob_rate_limiter.h"
 #include "lib/container/ob_vector.h"
+#include "lib/container/ob_se_array.h"
 #include "lib/allocator/ob_vslice_alloc.h"
 #include "lib/allocator/ob_fifo_allocator.h"
 #include "common/ob_smart_var.h"
@@ -467,6 +468,8 @@ void ObLogger::print_trace_buffer(const char* mod_name,
   }
 }
 
+
+
 const char *const ObLogger::errstr_[] = {"ERROR", "WARN", "INFO", "EDIAG", "WDIAG", "TRACE", "DEBUG"};
 
 ObLogger::ObLogger()
@@ -496,11 +499,20 @@ ObLogger::~ObLogger()
   (void)pthread_mutex_destroy(&file_size_mutex_);
   (void)pthread_mutex_destroy(&file_index_mutex_);
 }
-
+void ObLogger::stop()
+{
+  OB_LOGGER.set_enable_async_log(false);
+  ObBaseLogWriter::stop();
+}
+void ObLogger::wait()
+{
+  ObBaseLogWriter::wait();
+}
 void ObLogger::destroy()
 {
-  ObBaseLogWriter::stop();
-  ObBaseLogWriter::wait();
+  stop_append_log_ = true;
+  enable_async_log_ = false;
+  enable_log_limit_ = false;
   ObBaseLogWriter::destroy();
   if (error_allocator_) {
     error_allocator_->~ObFIFOAllocator();
@@ -733,7 +745,7 @@ void ObLogger::rotate_log(const char *filename,
                 tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(t.tv_usec/1000));
 
         ret = rename(filename, old_log_file); //If failed, TODO
-        int tmp_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, ObPLogFileStruct::LOG_FILE_MODE);
+        int tmp_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, ObPLogFileStruct::LOG_FILE_MODE);
         if (tmp_fd > 0) {
           if (fd > STDERR_FILENO) {
             (void)dup2(tmp_fd, fd);
@@ -777,7 +789,7 @@ void ObLogger::rotate_log(const char *filename,
         }
 
         ret = rename(filename, old_log_file); //If failed, TODO
-        int tmp_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND, ObPLogFileStruct::LOG_FILE_MODE);
+        int tmp_fd = open(filename, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, ObPLogFileStruct::LOG_FILE_MODE);
         if (tmp_fd > 0) {
           if (redirect_flag) {
             (void)dup2(tmp_fd, STDERR_FILENO);
@@ -811,7 +823,7 @@ void ObLogger::rotate_log(const char *filename,
             }
           }
           ret = rename(wf_filename, old_wf_log_file); //If failed, TODO
-          tmp_fd = open(wf_filename, O_WRONLY | O_CREAT | O_APPEND, ObPLogFileStruct::LOG_FILE_MODE);
+          tmp_fd = open(wf_filename, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, ObPLogFileStruct::LOG_FILE_MODE);
           if (tmp_fd > 0) {
             if (wf_fd > STDERR_FILENO) {
               (void)dup2(tmp_fd, wf_fd);
@@ -1544,7 +1556,7 @@ bool ObLogger::is_force_allows() const
 {
   bool bret = false;
   auto log_limiter = (nullptr != tl_log_limiter_) ? tl_log_limiter_ : default_log_limiter_;
-  if (nullptr != log_limiter
+  if (enable_log_limit_ && nullptr != log_limiter
       && log_limiter->is_force_allows()) {
     bret = true;
   }
@@ -1554,7 +1566,7 @@ bool ObLogger::is_force_allows() const
 void ObLogger::check_reset_force_allows()
 {
   auto log_limiter = (nullptr != tl_log_limiter_ ? tl_log_limiter_ : default_log_limiter_);
-  if (nullptr != log_limiter
+  if (enable_log_limit_ && nullptr != log_limiter
       && log_limiter->is_force_allows()) {
     log_limiter->reset_force_allows();
   }
@@ -1680,6 +1692,43 @@ int64_t ObLogger::get_wait_us(const int32_t level)
   return ret_timeout_us;
 }
 
+#ifdef OB_BUILD_AUDIT_SECURITY
+int ObLogger::async_audit_dump(const common::ObBasebLogPrint &info)
+{
+  int ret = OB_SUCCESS;
+  if (OB_LIKELY(is_async_log_used())
+      && OB_LIKELY(info.get_data_length() > 0)) {
+    const int32_t level = OB_LOG_LEVEL_INFO;
+    ObPLogItem *log_item = NULL;
+    set_disable_logging(true);
+    //1. fill log buffer
+    if (OB_FAIL(alloc_log_item(level, MAX_LOG_SIZE, log_item))) {
+      LOG_STDERR("alloc_log_item error, ret=%d\n", ret);
+    } else if (OB_ISNULL(log_item)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      int64_t pos = log_item->get_data_len();
+      log_item->set_timestamp(info.get_timestamp());
+      log_item->set_fd_type(FD_AUDIT_FILE);
+      if (OB_FAIL(info.print_data(log_item->get_buf(), log_item->get_buf_size(), pos))) {
+        LOG_STDERR("print_data error ret = %d\n", ret);
+      } else if (FALSE_IT(check_log_end(*log_item, pos))) {
+      } else if (OB_FAIL(append_log(*log_item))) {
+        LOG_STDERR("append_log error ret = %d\n", ret);
+      }
+    }
+
+    //3. stat
+    if (OB_FAIL(ret)) {
+      inc_dropped_log_count(level);
+      free_log_item(log_item);
+      log_item = NULL;
+    }
+    set_disable_logging(false);
+  }
+  return ret;
+}
+#endif
 
 int ObLogger::alloc_log_item(const int32_t level, const int64_t size, ObPLogItem *&log_item)
 {

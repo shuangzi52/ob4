@@ -1,4 +1,4 @@
-//Copyrigh (c) 2021 OceanBase
+// Copyrigh(c) 2021 OceanBase
 // OceanBase is licensed under Mulan PubL v2.
 // You can use this software according to the terms and conditions of the Mulan PubL v2.
 // You may obtain a copy of Mulan PubL v2 at:
@@ -11,14 +11,14 @@
 #ifndef OCEANBASE_DUP_TABLE_TABLETS_H
 #define OCEANBASE_DUP_TABLE_TABLETS_H
 
-#include "lib/list/ob_dlist.h"
-#include "lib/queue/ob_fixed_queue.h"
 #include "common/ob_tablet_id.h"
-#include "lib/lock/ob_spin_rwlock.h"
 #include "lib/hash/ob_hashmap.h"
 #include "lib/hash/ob_hashset.h"
-#include "ob_dup_table_ts_sync.h"
+#include "lib/list/ob_dlist.h"
+#include "lib/lock/ob_spin_rwlock.h"
+#include "lib/queue/ob_fixed_queue.h"
 #include "ob_dup_table_base.h"
+#include "ob_dup_table_ts_sync.h"
 
 namespace oceanbase
 {
@@ -35,15 +35,39 @@ class ObDupTableLSHandler;
 //******  ObLSDupTabletsMgr
 //**********************************************************************
 
+struct DupTabletInfo
+{
+  int64_t update_dup_schema_ts_;
+
+  void reset() { update_dup_schema_ts_ = 0; }
+
+  DupTabletInfo() { reset(); }
+
+  TO_STRING_KV(K(update_dup_schema_ts_));
+};
+
+typedef common::hash::
+    ObHashMap<common::ObTabletID, DupTabletInfo, common::hash::NoPthreadDefendMode>
+        DupTabletIdMap;
+
 enum class DupTabletSetChangeFlag
 {
-  UNKNOWN = -1,
+  UNKNOWN = 0,
   UNUSED,
   TEMPORARY,
   CHANGE_LOGGING,
   CONFIRMING,
   CONFIRMED,
 
+};
+
+enum class DupTableRelatedSetOpType
+{
+  INVALID = 0,
+  OLD_GC,
+  NEW_GC,
+  MEGRE_READABLE,
+  OPERATED_NEW_GC, // this type means this set in operate
 };
 
 static const char *get_dup_tablet_flag_str(const DupTabletSetChangeFlag &flag)
@@ -81,13 +105,11 @@ static const char *get_dup_tablet_flag_str(const DupTabletSetChangeFlag &flag)
   return flag_str;
 }
 
-struct DupTabletSetChangeStatus
+class DupTabletSetChangeStatus
 {
-  DupTabletSetChangeFlag flag_;
-  share::SCN tablet_change_scn_;
-  share::SCN need_confirm_scn_;
-  share::SCN readable_version_;
-  int64_t trx_ref_;
+  OB_UNIS_VERSION(1);
+
+public:
 
   void init()
   {
@@ -102,16 +124,24 @@ struct DupTabletSetChangeStatus
     need_confirm_scn_.reset();
     readable_version_.set_min();
     trx_ref_ = 0;
+    is_logging = false;
   }
 
   DupTabletSetChangeStatus() { reset(); }
+  ~DupTabletSetChangeStatus() { reset(); }
+
+  const share::SCN &get_readable_version() const { return readable_version_; }
+  const share::SCN &get_tablet_change_scn() const { return tablet_change_scn_; }
+  const share::SCN &get_need_confirm_scn() const { return need_confirm_scn_; }
+  const DupTabletSetChangeFlag &get_tablet_set_change_flag() const { return flag_; }
+  int64_t get_trx_ref() const { return trx_ref_; }
 
   bool is_valid() const { return flag_ != DupTabletSetChangeFlag::UNKNOWN; }
   bool need_log() const
   {
     return flag_ == DupTabletSetChangeFlag::TEMPORARY
            || flag_ == DupTabletSetChangeFlag::CHANGE_LOGGING
-           || (flag_ == DupTabletSetChangeFlag::CONFIRMING && need_confirm_scn_ <= readable_version_)
+           || flag_ == DupTabletSetChangeFlag::CONFIRMING
            || flag_ == DupTabletSetChangeFlag::CONFIRMED;
     // TODO submit log if readable_version has changed.
   }
@@ -126,12 +156,16 @@ struct DupTabletSetChangeStatus
   bool is_free() const { return flag_ == DupTabletSetChangeFlag::UNUSED; }
   bool is_modifiable() const { return flag_ == DupTabletSetChangeFlag::TEMPORARY; }
 
+  void set_logging() { is_logging = true; }
+  void clean_logging() { is_logging = false; }
+  bool check_logging() const { return is_logging; }
+
   bool is_change_logging() const { return flag_ == DupTabletSetChangeFlag::CHANGE_LOGGING; }
   bool is_confirming() const { return flag_ == DupTabletSetChangeFlag::CONFIRMING; }
   bool can_be_confirmed_anytime() const
   {
-    return (trx_ref_ == 0 && readable_version_ >= need_confirm_scn_
-           && flag_ == DupTabletSetChangeFlag::CONFIRMING)
+    return (trx_ref_ == 0 && readable_version_ >= need_confirm_scn_ && readable_version_.is_valid()
+            && need_confirm_scn_.is_valid() && flag_ == DupTabletSetChangeFlag::CONFIRMING)
            || flag_ == DupTabletSetChangeFlag::CONFIRMED;
   }
   bool has_confirmed() const { return DupTabletSetChangeFlag::CONFIRMED == flag_; }
@@ -236,90 +270,175 @@ struct DupTabletSetChangeStatus
                K(need_confirm_scn_),
                K(readable_version_),
                K(trx_ref_));
-};
 
-struct DupTabletInfo
-{
-  int64_t update_dup_schema_ts_;
-
-  void reset() { update_dup_schema_ts_ = 0; }
-
-  DupTabletInfo() { reset(); }
-
-  TO_STRING_KV(K(update_dup_schema_ts_));
-};
-
-typedef common::hash::
-    ObHashMap<common::ObTabletID, DupTabletInfo, common::hash::NoPthreadDefendMode>
-        DupTabletIdMap;
-
-// class DupTabletHashMap : public DupTabletIdMap
-// {
-// public:
-//   NEED_SERIALIZE_AND_DESERIALIZE;
-//   TO_STRING_KV(K(common_header_), K(size()));
-//   const DupTabletCommonHeader &get_common_header() { return common_header_; }
-//
-//   int create(int64_t unique_id, int64_t bucket_num, const lib::ObLabel &bucket_label);
-//   void destroy()
-//   {
-//     DupTabletIdMap::destroy();
-//     common_header_.reset();
-//   }
-//
-// private:
-//   DupTabletCommonHeader common_header_;
-// };
-
-class DupTabletChangeMap : public common::ObDLinkBase<DupTabletChangeMap>, public DupTabletIdMap
-{
 public:
-  NEED_SERIALIZE_AND_DESERIALIZE;
-  DupTabletChangeMap(const uint64_t set_id) : change_status_(), common_header_(set_id) { reuse(); }
+  DupTabletSetChangeFlag flag_;
+  share::SCN tablet_change_scn_;
+  share::SCN need_confirm_scn_;
+  share::SCN readable_version_;
+  int64_t trx_ref_;
+  bool is_logging;
+};
+
+struct DupTabletSetAttribute
+{
+  DupTabletSetCommonHeader common_header_;
+  DupTabletSetChangeStatus change_status_;
 
   void reuse()
   {
+
     change_status_.init();
     change_status_.set_temporary();
     // common_header_.clean_sp_op();
     // common_header_.set_free();
     common_header_.reuse();
+  }
+
+  void reset()
+  {
+    common_header_.reset();
+    change_status_.reset();
+  }
+  DupTabletSetAttribute(const uint64_t uid) : common_header_(uid), change_status_() { reuse(); }
+  DupTabletSetAttribute() { reset(); }
+
+  TO_STRING_KV(K(common_header_), K(change_status_));
+
+  OB_UNIS_VERSION(1);
+};
+
+struct RelatedSetAttribute
+{
+  DupTabletSetCommonHeader related_common_header_;
+  DupTabletSetChangeStatus related_change_status_;
+  DupTableRelatedSetOpType related_set_type_;
+  void reuse()
+  {
+    related_change_status_.init();
+    related_change_status_.set_temporary();
+    related_common_header_.reuse();
+    related_set_type_ = DupTableRelatedSetOpType::INVALID;
+  }
+
+  void reset()
+  {
+    related_common_header_.reset();
+    related_change_status_.reset();
+    related_set_type_ = DupTableRelatedSetOpType::INVALID;
+  }
+
+  RelatedSetAttribute(const uint64_t uid) : related_common_header_(uid), related_change_status_() { reuse(); }
+  RelatedSetAttribute() { reset(); }
+
+  DupTableRelatedSetOpType get_related_set_op_type() const { return related_set_type_; }
+  void set_related_set_op_type(DupTableRelatedSetOpType related_set_type) { related_set_type_ = related_set_type; }
+  const DupTabletSetCommonHeader &get_related_common_header() const { return related_common_header_; }
+  void set_related_common_header(const DupTabletSetCommonHeader &related_common_header) {
+    related_common_header_.copy_tablet_set_common_header(related_common_header);
+  }
+
+  TO_STRING_KV(K(related_change_status_), K(related_common_header_), K(related_set_type_));
+
+  OB_UNIS_VERSION(1);
+};
+
+class DupTabletChangeMap : public common::ObDLinkBase<DupTabletChangeMap>, public DupTabletIdMap
+{
+public:
+  NEED_SERIALIZE_AND_DESERIALIZE;
+  static int deserialize_set_attribute(const char *buf,
+                                       int64_t data_len,
+                                       int64_t pos,
+                                       DupTabletSetAttribute &deser_attr);
+
+  DupTabletChangeMap(const uint64_t set_id) : dup_set_attr_(set_id) { reuse(); }
+
+  void reuse()
+  {
+    dup_set_attr_.reuse();
+    related_set_attr_.reset();
     DupTabletIdMap::clear();
+    last_gc_scan_ts_ = 0;
   }
 
   void destroy()
   {
-    reset();
+    dup_set_attr_.reset();
+    common::ObDLinkBase<DupTabletChangeMap>::reset();
     DupTabletIdMap::destroy();
+    last_gc_scan_ts_ = 0;
   }
 
-  int create(int64_t bucket_num);
+  int create(const uint64_t tenant_id, const int64_t bucket_num);
 
   DupTabletSetChangeStatus *get_change_status()
   {
     DupTabletSetChangeStatus *change_status_ptr = nullptr;
-    if (common_header_.is_readable_set()) {
+    if (dup_set_attr_.common_header_.is_readable_set()) {
       change_status_ptr = nullptr;
     } else {
-      change_status_ptr = &change_status_;
+      change_status_ptr = &dup_set_attr_.change_status_;
     }
     return change_status_ptr;
   }
-  DupTabletCommonHeader &get_common_header() { return common_header_; }
+  DupTabletSetCommonHeader &get_common_header() { return dup_set_attr_.common_header_; }
+  const DupTabletSetCommonHeader &get_RO_common_header() const { return dup_set_attr_.common_header_; }
+  void set_related_set_op_type (DupTableRelatedSetOpType type) { related_set_attr_.set_related_set_op_type(type); }
+  DupTableRelatedSetOpType get_related_set_op_type() const { return related_set_attr_.get_related_set_op_type(); }
+  const DupTabletSetCommonHeader &get_related_common_header() const { return related_set_attr_.get_related_common_header(); }
+  const RelatedSetAttribute &get_related_set_attr() { return related_set_attr_; }
+  void set_related_common_header(const DupTabletSetCommonHeader &common_header) {
+    related_set_attr_.set_related_common_header(common_header);
+  }
   bool need_reserve(const share::SCN &scn) const
   {
-    return change_status_.need_reserve(scn);
+    return dup_set_attr_.change_status_.need_reserve(scn);
+  }
+  share::SCN get_tablet_change_scn() { return dup_set_attr_.change_status_.tablet_change_scn_; }
+  const DupTabletSetChangeStatus &get_RO_change_status() const
+  {
+    return dup_set_attr_.change_status_;
   }
 
-  TO_STRING_KV(K(change_status_),
-               K(common_header_),
-               K(DupTabletIdMap::size()),
-               K(DupTabletIdMap::created()));
+  bool need_gc_scan(int64_t gc_start_time) {
+    bool bool_ret = false;
+
+    if (get_related_set_op_type() == DupTableRelatedSetOpType::INVALID) {
+      bool_ret = true;
+    }
+    if (bool_ret) {
+      if (last_gc_scan_ts_ <= 0
+          || gc_start_time > last_gc_scan_ts_) {
+        bool_ret = true;
+      } else {
+        bool_ret = false;
+      }
+    }
+
+    return bool_ret;
+  }
+  void set_last_gc_scan_ts(const int64_t gc_start_time) {
+    if (gc_start_time < last_gc_scan_ts_) {
+      DUP_TABLE_LOG(INFO, "not update last_gc_scan_ts_ with min value",
+                    K(gc_start_time), KPC(this));
+    } else {
+      last_gc_scan_ts_ = gc_start_time;
+    }
+  }
+  int64_t get_last_gc_scan_ts() { return last_gc_scan_ts_; }
+
+  bool is_logging() const { return dup_set_attr_.change_status_.check_logging(); }
+  void set_logging() { dup_set_attr_.change_status_.set_logging(); }
+  void clean_logging() { dup_set_attr_.change_status_.clean_logging(); }
+
+  TO_STRING_KV(K(dup_set_attr_), K(DupTabletIdMap::size()), K(DupTabletIdMap::created()),
+               K(related_set_attr_), K(last_gc_scan_ts_));
 
 private:
-  DupTabletSetChangeStatus change_status_;
-  DupTabletCommonHeader common_header_;
-  // DupTabletIdMap tablet_id_map_;
+  DupTabletSetAttribute dup_set_attr_;
+  RelatedSetAttribute related_set_attr_;
+  int64_t last_gc_scan_ts_;
 };
 
 class TabletsSerCallBack : public IHashSerCallBack
@@ -333,10 +452,7 @@ public:
 class TabletsDeSerCallBack : public IHashDeSerCallBack
 {
 public:
-  TabletsDeSerCallBack(const char *buf,
-                       int64_t buf_len,
-                       int64_t pos,
-                       int64_t deser_time)
+  TabletsDeSerCallBack(const char *buf, int64_t buf_len, int64_t pos, int64_t deser_time)
       : IHashDeSerCallBack(buf, buf_len, pos), deser_time_(deser_time)
   {}
   int operator()(DupTabletChangeMap &dup_tablet_map);
@@ -351,141 +467,27 @@ public:
   int64_t operator()(const common::hash::HashMapPair<common::ObTabletID, DupTabletInfo> &hash_pair);
 };
 
-
-class DupTabletChangeLogTail
+class DupTabletLogBody
 {
   OB_UNIS_VERSION(1);
 
 public:
-  DupTabletChangeLogTail() {}
-  DupTabletChangeLogTail(const share::SCN &readable_version, bool confirm_all)
-      : readable_version_(readable_version), has_confirmed_(confirm_all)
-  {}
-  bool is_valid() const;
-  void reset()
-  {
-    readable_version_.set_min();
-    has_confirmed_ = false;
-  }
-
-  share::SCN readable_version_;
-  bool has_confirmed_;
-
-  TO_STRING_KV(K(readable_version_), K(has_confirmed_));
-};
-
-typedef ObSEArray<DupTabletCommonHeader, 10> OpObjectArr;
-class DupTabletSpecialOpArg
-{
-  OB_UNIS_VERSION(1);
+  static int deserialize_dup_attribute(const char *buf,
+                                       const int64_t data_len,
+                                       int64_t pos,
+                                       DupTabletSetAttribute &deser_attr);
 
 public:
-  DupTabletSpecialOpArg() {}
+  DupTabletLogBody(DupTabletChangeMap &hash_map) : hash_map_(hash_map) {}
 
-  void reset() { op_objects_.reset(); }
-  bool is_valid() { return !op_objects_.empty(); }
+  void reset() {}
 
-  TO_STRING_KV(K(op_objects_));
-public:
-  OpObjectArr op_objects_;
-};
+  const DupTabletChangeMap &get_cur_map_ref() { return hash_map_; }
 
-typedef common::hash::ObHashMap<uint64_t, DupTabletSpecialOpArg, common::hash::NoPthreadDefendMode>
-    SpecialOpArgMap;
-
-class DupTabletCommonLogBody
-{
-  OB_UNIS_VERSION(1);
-
-public:
-  DupTabletCommonLogBody(DupTabletChangeMap &hash_map) : tablet_id_map_(hash_map) {}
-
-  TO_STRING_KV(K(tablet_id_map_));
-
-protected:
-  DupTabletChangeMap &tablet_id_map_;
-};
-
-class DupTabletChangeLogBody : public DupTabletCommonLogBody
-{
-  OB_UNIS_VERSION(1);
-
-public:
-  DupTabletChangeLogBody(DupTabletChangeMap &hash_map) : DupTabletCommonLogBody(hash_map)
-  {
-    change_tail_.readable_version_ =
-        DupTabletCommonLogBody::tablet_id_map_.get_change_status()->readable_version_;
-    change_tail_.has_confirmed_ = tablet_id_map_.get_change_status()->has_confirmed();
-  }
-
-  const DupTabletChangeLogTail &get_change_tail() { return change_tail_; }
-
-  INHERIT_TO_STRING_KV("common_log_body", DupTabletCommonLogBody, K(change_tail_));
+  TO_STRING_KV(K(hash_map_));
 
 private:
-  DupTabletChangeLogTail change_tail_;
-};
-
-class DupTabletSpecialOpLogBody : public DupTabletChangeLogBody
-{
-  OB_UNIS_VERSION(1);
-
-public:
-  DupTabletSpecialOpLogBody(DupTabletChangeMap &hash_map, DupTabletSpecialOpArg &op_arg)
-      : DupTabletChangeLogBody(hash_map), sp_op_arg_(op_arg)
-  {}
-
-  INHERIT_TO_STRING_KV("change_log_body", DupTabletChangeLogBody, K(sp_op_arg_));
-
-private:
-  DupTabletSpecialOpArg &sp_op_arg_;
-};
-
-class DupTabletLog
-{
-public:
-  int serialize(char *buf, const int64_t buf_len, int64_t &pos) const;
-  int deserialize_common_header(const char *buf, const int64_t data_len, int64_t &pos);
-  int deserialize_content(const char *buf, const int64_t data_len, int64_t &pos);
-
-  int64_t get_serialize_size();
-
-public:
-  DupTabletLog(DupTabletChangeMap *hash_map) : hash_map_(hash_map)
-  {
-    common_header_ = hash_map_->get_common_header();
-  }
-
-  DupTabletLog(DupTabletChangeLogTail change_tail,
-               DupTabletChangeMap *hash_map,
-               DupTabletSpecialOpArg *sp_op_arg = nullptr)
-      : hash_map_(hash_map), change_tail_(change_tail), special_op_arg_(sp_op_arg)
-  {
-    common_header_ = hash_map_->get_common_header();
-  };
-
-  DupTabletLog() { reset(); };
-
-  void reset()
-  {
-    common_header_.reset();
-    hash_map_ = nullptr;
-    change_tail_.reset();
-    special_op_arg_ = nullptr;
-  }
-
-  int set_hash_map_ptr(DupTabletChangeMap *hash_map_ptr,
-                       DupTabletSpecialOpArg *special_op_arg_ = nullptr);
-  const DupTabletCommonHeader &get_common_header();
-  const DupTabletChangeLogTail &get_change_tail();
-
-  TO_STRING_KV(K(common_header_), K(change_tail_), K(hash_map_));
-
-private:
-  DupTabletCommonHeader common_header_;
-  DupTabletChangeMap *hash_map_;
-  DupTabletChangeLogTail change_tail_;
-  DupTabletSpecialOpArg *special_op_arg_;
+  DupTabletChangeMap &hash_map_;
 };
 
 // ***********************************************************************************************
@@ -570,7 +572,8 @@ private:
 // ***********************************************************************************************
 // *  If move a tablet from old to readable without confirm
 // *  Problem:
-// *  1. Leader (A)  tablet1(readable->old); submit lease log(log_ts = n); tablet1(old->new->readable); switch_to_follower
+// *  1. Leader (A)  tablet1(readable->old); submit lease log(log_ts = n);
+// tablet1(old->new->readable); switch_to_follower
 // *     Follower (B) replay log n=>tablet1(readable->old); switch_to_leader
 // *  2. Follower(A) tablet1(readable),replay_ts = n
 // *     Leaser(B) tablet1(old); confirm A replay_ts > n ; tablet1(old->delete)
@@ -580,7 +583,7 @@ class ObLSDupTabletsMgr
 {
 public:
   ObLSDupTabletsMgr()
-      : changing_new_set_(nullptr), removing_old_set_(nullptr), tablet_diag_info_log_buf_(nullptr)
+      : changing_new_set_(nullptr), removing_old_set_(nullptr), tablet_set_diag_info_log_buf_(nullptr),tablet_id_diag_info_log_buf_(nullptr)
   {
     reset();
   }
@@ -590,19 +593,26 @@ public:
 
   bool is_master() { return ATOMIC_LOAD(&is_master_); }
 
+  int offline();
+
   const static int64_t MAX_CONFIRMING_TABLET_COUNT;
+
 public:
   int check_readable(const common::ObTabletID &tablet_id,
                      bool &readable,
                      const share::SCN &snapshot,
                      DupTableInterfaceStat interface_stat);
+  int search_dup_tablet_for_read(const common::ObTabletID &tablet_id, bool &is_dup_table);
   // For part_ctx, check_dup_table will be invoked after submit_log in LS which has dup_table
   // tablets. It will bring performance effect for normal part_ctx without dup_table tablets.
-  int find_dup_tablet_in_set(const common::ObTabletID &tablet_id,
-                             bool &is_dup_table,
-                             const share::SCN &from_scn,
-                             const share::SCN &to_scn);
+  int search_dup_tablet_in_redo_log(const common::ObTabletID &tablet_id,
+                                    bool &is_dup_table,
+                                    const share::SCN &from_scn,
+                                    const share::SCN &to_scn);
   int gc_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval);
+  // new gc methods
+  int scan_readable_set_for_gc();
+
   int refresh_dup_tablet(const common::ObTabletID &tablet_id,
                          bool is_dup_table,
                          int64_t refresh_time);
@@ -628,13 +638,16 @@ public:
                         const share::SCN &scn,
                         const bool for_replay,
                         const DupTabletSetIDArray &unique_id_array,
-                        bool &merge_confirmed);
+                        bool &modify_readable_set);
 
   int try_to_confirm_tablets(const share::SCN &confirm_scn);
   // bool need_log_tablets();
   int64_t get_dup_tablet_count();
   bool has_dup_tablet();
   int64_t get_readable_tablet_set_count();
+  int64_t get_need_confirm_tablet_set_count();
+  bool check_removing_tablet_exist();
+  bool check_changing_new_tablet_exist();
   int64_t get_all_tablet_set_count();
 
   int leader_takeover(const bool is_resume, const bool recover_all_readable_from_ckpt);
@@ -646,10 +659,8 @@ public:
   //              K(need_confirm_new_queue_.get_size()),
   //              K(old_tablets_),
   //              K(readable_tablets_));
-  int get_tablets_stat(ObDupLSTabletsStatIterator &collect_iter,
-                       const share::ObLSID &ls_id);
-  int get_tablet_set_stat(ObDupLSTabletSetStatIterator &collect_iter,
-                          const share::ObLSID &ls_id);
+  int get_tablets_stat(ObDupLSTabletsStatIterator &collect_iter, const share::ObLSID &ls_id);
+  int get_tablet_set_stat(ObDupLSTabletSetStatIterator &collect_iter, const share::ObLSID &ls_id);
 
 private:
   class GcDiscardedDupTabletHandler
@@ -657,7 +668,7 @@ private:
   public:
     GcDiscardedDupTabletHandler(int64_t update_ts,
                                 int64_t gc_time_interval,
-                                const DupTabletCommonHeader &common_header,
+                                const DupTabletSetCommonHeader &common_header,
                                 DupTabletChangeMap &old_tablets)
         : gc_ts_(update_ts), gc_time_interval_(gc_time_interval), gc_tablet_cnt_(0),
           ret_(OB_SUCCESS), src_common_header_(common_header), old_tablets_(old_tablets)
@@ -671,7 +682,29 @@ private:
     int64_t gc_time_interval_;
     int64_t gc_tablet_cnt_;
     int ret_;
-    DupTabletCommonHeader src_common_header_;
+    DupTabletSetCommonHeader src_common_header_;
+    DupTabletChangeMap &old_tablets_;
+  };
+
+  class GcOneReadableSetHandler
+  {
+  public:
+    GcOneReadableSetHandler(int64_t update_ts,
+                            int64_t tablet_gc_window,
+                            DupTabletChangeMap &old_tablets,
+                            int64_t max_gc_tablet_cnt)
+        : gc_ts_(update_ts), tablet_gc_window_(tablet_gc_window), gc_tablet_cnt_(0),
+          max_gc_tablet_cnt_(max_gc_tablet_cnt), old_tablets_(old_tablets)
+    {}
+
+    int operator()(common::hash::HashMapPair<common::ObTabletID, DupTabletInfo> &hash_pair);
+    int64_t get_gc_tablet_cnt() const { return gc_tablet_cnt_; }
+
+  private:
+    int64_t gc_ts_;
+    int64_t tablet_gc_window_;
+    int64_t gc_tablet_cnt_;
+    int64_t max_gc_tablet_cnt_;
     DupTabletChangeMap &old_tablets_;
   };
 
@@ -726,9 +759,9 @@ private:
                           const TabletSetAttr attr,
                           // const int64_t tablet_gc_window,
                           ObDupLSTabletsStatIterator &collect_iter)
-        : collect_ts_(collect_ts),ls_id_(ls_id), tenant_id_(tenant_id), addr_(addr),
+        : collect_ts_(collect_ts), ls_id_(ls_id), tenant_id_(tenant_id), addr_(addr),
           is_master_(is_master), tablet_set_id_(tablet_set_id), attr_(attr),
-          //tablet_gc_window_(tablet_gc_window)
+          // tablet_gc_window_(tablet_gc_window)
           collect_iter_(collect_iter)
     {}
     int operator()(const common::hash::HashMapPair<common::ObTabletID, DupTabletInfo> &hash_pair);
@@ -759,39 +792,58 @@ private:
   int get_free_tablet_set(DupTabletChangeMap *&free_set, const uint64_t target_id = 0);
 
   // If get a free tablet set, need set tablet set type and push into queue
-  int get_target_tablet_set_(const DupTabletCommonHeader &target_common_header,
+  int get_target_tablet_set_(const DupTabletSetCommonHeader &target_common_header,
                              DupTabletChangeMap *&target_set,
                              const bool construct_target_set = false,
-                             const bool need_changing_new_set = false);
+                             const bool force_search_target_set = false);
 
-  int return_tablet_set(DupTabletChangeMap *need_free_set);
+  int check_and_recycle_empty_readable_set_(DupTabletChangeMap *need_free_set, bool &need_remove);
+  int return_tablet_set_(DupTabletChangeMap *need_free_set);
 
-  int clean_readable_tablets_(const share::SCN & min_reserve_tablet_scn);
-  int clean_durable_confirming_tablets_(const share::SCN & min_reserve_tablet_scn);
+  int clean_readable_tablets_(const share::SCN &min_reserve_tablet_scn);
+  int clean_durable_confirming_tablets_(const share::SCN &min_reserve_tablet_scn);
   int clean_unlog_tablets_();
   int construct_empty_block_confirm_task_(const int64_t trx_ref);
   int search_special_op_(uint64_t special_op_type);
   int clear_all_special_op_();
   int construct_clean_confirming_set_task_();
   int construct_clean_all_readable_set_task_();
-  int try_exec_special_op_(DupTabletChangeMap *op_tablet_set, const share::SCN &min_reserve_tablet_scn,const bool for_replay);
-
+  int try_exec_special_op_(DupTabletChangeMap *op_tablet_set,
+                           const share::SCN &min_reserve_tablet_scn,
+                           const bool for_replay);
   bool need_seralize_readable_set() { return true; }
 
   int cal_single_set_max_ser_size_(DupTabletChangeMap *hash_map,
                                    int64_t &max_ser_size,
+                                   const int64_t ser_size_limit,
                                    DupTabletSetIDArray &id_array);
 
   int merge_into_readable_tablets_(DupTabletChangeMap *change_map_ptr, const bool for_replay);
 
+  int validate_replay_dup_tablet_set(const DupTabletSetCommonHeader &target_common_header,
+                                     const DupTabletSetChangeStatus &target_change_status,
+                                     DupTabletChangeMap *replay_target_set);
+  int prepare_serialize_src_set_with_related_set_(DupTabletChangeMap *src_set,
+                                                  int64_t &max_ser_size,
+                                                  const int64_t max_log_buf_len,
+                                                  DupTabletSetIDArray &unique_id_array,
+                                                  DupTabletChangeMap *related_set);
+
+  int remove_src_and_related_set_header_from_array_(DupTabletChangeMap *src_set,
+                                                    DupTabletChangeMap *related_set,
+                                                    DupTabletSetIDArray &unique_id_array);
+  DupTabletChangeMap *get_need_gc_set_(bool &new_round);
+  int remove_tablet_from_readable_set_();
 private:
   //
   static int64_t GC_DUP_TABLETS_TIME_INTERVAL;  // 5 min
   static int64_t GC_DUP_TABLETS_FAILED_TIMEOUT; // 25 min
-  const static int64_t GC_TIMEOUT;                    // 1s
+  const static int64_t GC_TIMEOUT;              // 1s
 
   const static int64_t RESERVED_FREE_SET_COUNT;
   const static int64_t MAX_FREE_SET_COUNT;
+  const static int64_t MAX_GC_TABLET_COUNT;
+
 
 public:
   TO_STRING_KV(K(free_set_pool_.get_size()),
@@ -819,16 +871,19 @@ private:
   common::ObDList<DupTabletChangeMap> need_confirm_new_queue_;
   common::ObDList<DupTabletChangeMap> readable_tablets_list_;
   DupTabletChangeMap *removing_old_set_;
-
-  SpecialOpArgMap op_arg_map_;
-
   // gc_dup_table
   int64_t last_gc_succ_time_;
-
+  /*  1. gc one round means iter all readable set
+   *  2. use readable_set_in_gc_ point to readable set not finish gc in one round
+   *  3. use gc_start_time_ mark gc one round start time one round
+   */
+  DupTabletChangeMap *readable_set_in_gc_;
+  int64_t gc_start_time_;
   int64_t last_no_free_set_time_;
   int64_t extra_free_set_alloc_count_;
 
-  char *tablet_diag_info_log_buf_;
+  char *tablet_set_diag_info_log_buf_;
+  char *tablet_id_diag_info_log_buf_;
 };
 
 class ObLSDupTablets
@@ -843,6 +898,7 @@ public:
   ObTabletIDArray &get_array() { return array_; }
   const ObTabletIDArray &get_array() const { return array_; }
   void set_ls_id(const share::ObLSID &ls_id) { ls_id_ = ls_id; }
+
 private:
   share::ObLSID ls_id_;
   ObTabletIDArray array_;
@@ -852,15 +908,18 @@ class ObTenantDupTabletSchemaHelper
 {
 public:
   typedef common::hash::ObHashSet<common::ObTabletID, hash::NoPthreadDefendMode> TabletIDSet;
+
 public:
-  ObTenantDupTabletSchemaHelper()  {}
+  ObTenantDupTabletSchemaHelper() {}
+
 public:
   int refresh_and_get_tablet_set(TabletIDSet &tenant_dup_tablet_set);
+
 private:
-  int get_all_dup_tablet_set_(TabletIDSet & tablets_set);
+  int get_all_dup_tablet_set_(TabletIDSet &tablets_set);
+
 private:
 };
-
 
 } // namespace transaction
 

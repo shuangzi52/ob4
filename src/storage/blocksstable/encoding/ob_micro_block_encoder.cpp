@@ -97,10 +97,20 @@ ObMicroBlockEncoder::ObMicroBlockEncoder() : ctx_(), header_(NULL),
     buffered_rows_checksum_(0), estimate_size_(0), estimate_size_limit_(0),
     header_size_(0), expand_pct_(DEFAULT_ESTIMATE_REAL_SIZE_PCT),
     row_buf_holder_(blocksstable::OB_ENCODING_LABEL_ROW_BUFFER, OB_MALLOC_MIDDLE_BLOCK_SIZE),
-    encoder_allocator_(encoder_sizes, common::ObModIds::OB_ENCODER_ALLOCATOR),
+    encoder_allocator_(encoder_sizes, ObMemAttr(MTL_ID(), common::ObModIds::OB_ENCODER_ALLOCATOR)),
     string_col_cnt_(0), estimate_base_store_size_(0), length_(0),
     is_inited_(false)
 {
+  datum_rows_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  all_col_datums_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  encoders_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  fix_data_encoders_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  var_data_encoders_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  row_indexs_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  hashtables_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  multi_prefix_trees_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  deep_copy_indexes_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
+  col_ctxs_.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
 }
 
 ObMicroBlockEncoder::~ObMicroBlockEncoder()
@@ -306,14 +316,15 @@ int ObMicroBlockEncoder::init_all_col_values(const ObMicroBlockEncodingCtx &ctx)
   if (OB_FAIL(all_col_datums_.reserve(ctx.column_cnt_))) {
     LOG_WARN("reserve array failed", K(ret), "size", ctx.column_cnt_);
   }
+  lib::ObMemAttr attr(MTL_ID(), blocksstable::OB_ENCODING_LABEL_PIVOT);
   for (int64_t i = all_col_datums_.count(); i < ctx.column_cnt_ && OB_SUCC(ret); ++i) {
-    ObColDatums *c = OB_NEW(ObColDatums, blocksstable::OB_ENCODING_LABEL_PIVOT);
+    ObColDatums *c = OB_NEW(ObColDatums, attr);
     if (OB_ISNULL(c)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("alloc memory failed", K(ret), K(ctx));
     } else if (OB_FAIL(all_col_datums_.push_back(c))) {
       LOG_WARN("push back column values failed", K(ret));
-      OB_DELETE(ObColDatums, blocksstable::OB_ENCODING_LABEL_PIVOT, c);
+      OB_DELETE(ObColDatums, attr, c);
     }
   }
   return ret;
@@ -780,6 +791,7 @@ int ObMicroBlockEncoder::fill_row_data(const int64_t fix_data_size)
 {
   int ret = OB_SUCCESS;
   ObArray<int64_t> var_lengths;
+  var_lengths.set_attr(ObMemAttr(MTL_ID(), "MicroBlkEncoder"));
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));

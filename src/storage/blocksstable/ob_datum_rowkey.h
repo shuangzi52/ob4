@@ -33,6 +33,7 @@ public:
   ObDatumRowkey(ObStorageDatumBuffer &datum_buffer);
   ~ObDatumRowkey() = default;
   OB_INLINE void reset() { MEMSET(this, 0, sizeof(ObDatumRowkey)); }
+  void destroy(ObIAllocator &allocator);
   OB_INLINE int assign(ObStorageDatum *datums, const int datum_cnt);
   OB_INLINE bool is_valid() const { return nullptr != datums_ && datum_cnt_ > 0; }
   OB_INLINE bool is_memtable_valid() const { return store_rowkey_.is_valid() && is_valid(); }
@@ -72,7 +73,8 @@ public:
   #undef DEF_ROWKEY_TYPE_FUNCS
 
   int equal(const ObDatumRowkey &rhs, const ObStorageDatumUtils &datum_utils, bool &is_equal) const;
-  int compare(const ObDatumRowkey &rhs, const ObStorageDatumUtils &datum_utils, int &cmp_ret) const;
+  int compare(const ObDatumRowkey &rhs, const ObStorageDatumUtils &datum_utils, int &cmp_ret,
+              const bool compare_datum_cnt = true) const;
   int from_rowkey(const ObRowkey &rowkey, common::ObIAllocator &allocator);
   int from_rowkey(const ObRowkey &rowkey, ObStorageDatumBuffer &datum_buffer);
   int to_store_rowkey(const common::ObIArray<share::schema::ObColDesc> &col_descs,

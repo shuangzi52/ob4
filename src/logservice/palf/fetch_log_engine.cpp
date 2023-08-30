@@ -104,7 +104,9 @@ FetchLogEngine::FetchLogEngine()
     allocator_(NULL),
     replayable_point_(),
     cache_lock_(),
-    fetch_task_cache_()
+    fetch_task_cache_(),
+    fetch_wait_cost_stat_("[PALF STAT FETCH LOG TASK IN QUEUE TIME]", PALF_STAT_PRINT_INTERVAL_US),
+    fetch_log_cost_stat_("[PALF STAT FETCH LOG EXECUTE COST TIME]", PALF_STAT_PRINT_INTERVAL_US)
 {}
 
 
@@ -267,16 +269,16 @@ void FetchLogEngine::handle(void *task)
   if (!is_inited_) {
     PALF_LOG(WARN, "FetchLogEngine not init");
   } else if (OB_ISNULL(task)) {
-    PALF_LOG(WARN, "invalid argument", KP(task));
+    ret = OB_ERR_UNEXPECTED;
+    PALF_LOG(WARN, "invalid argument", KR(ret), KP(task));
   } else {
     int64_t handle_start_time_us = ObTimeUtility::current_time();
     FetchLogTask *fetch_log_task = static_cast<FetchLogTask *>(task);
     int64_t palf_id = -1;
     FetchLogStat fetch_stat;
     if (OB_ISNULL(fetch_log_task)) {
-      PALF_LOG(ERROR, "fetch_log_task is NULL");
-    } else if (is_task_queue_timeout_(fetch_log_task)) {
-      PALF_LOG(WARN, "fetch log task wait timeout, ignore", K(ret), KPC(fetch_log_task));
+      ret = OB_ERR_UNEXPECTED;
+      PALF_LOG(ERROR, "fetch_log_task is NULL", KR(ret));
     } else {
       palf_id = fetch_log_task->get_id();
       PALF_LOG(INFO, "handle fetch_log_task", KPC(fetch_log_task));
@@ -309,8 +311,12 @@ void FetchLogEngine::handle(void *task)
     if (OB_NOT_NULL(fetch_log_task)) {
       (void) try_remove_task_from_cache_(fetch_log_task);
     }
+    int64_t fetch_log_task_submit_time_us = fetch_log_task->get_timestamp_us();
     int64_t handle_finish_time_us = ObTimeUtility::current_time();
+    int64_t fetch_wait_cost_time_us = handle_start_time_us - fetch_log_task_submit_time_us;
     int64_t handle_cost_time_us = handle_finish_time_us - handle_start_time_us;
+    fetch_wait_cost_stat_.stat(fetch_wait_cost_time_us);
+    fetch_log_cost_stat_.stat(handle_cost_time_us);
     if (REACH_TIME_INTERVAL(100 * 1000L)) {
       PALF_LOG(INFO, "handle fetch log task", K(ret), K(palf_id), K(handle_cost_time_us), KPC(fetch_log_task), K(fetch_stat));
     } else if (handle_cost_time_us > 200 * 1000L) {
@@ -343,22 +349,6 @@ FetchLogTask *FetchLogEngine::alloc_fetch_log_task()
 void FetchLogEngine::free_fetch_log_task(FetchLogTask *task)
 {
   allocator_->free_palf_fetch_log_task(task);
-}
-
-bool FetchLogEngine::is_task_queue_timeout_(FetchLogTask *task) const
-{
-  bool bool_ret = false;
-
-  if (!is_inited_) {
-    PALF_LOG_RET(WARN, OB_NOT_INIT, "FetchLogEngine not init");
-  } else if (OB_ISNULL(task)) {
-    PALF_LOG_RET(WARN, OB_INVALID_ARGUMENT, "invalid argument", KP(task));
-  } else {
-    bool_ret = (ObTimeUtility::current_time() - task->get_timestamp_us())
-               > PALF_FETCH_LOG_INTERVAL_US;
-  }
-
-  return bool_ret;
 }
 
 int FetchLogEngine::update_replayable_point(const share::SCN &replayable_scn)

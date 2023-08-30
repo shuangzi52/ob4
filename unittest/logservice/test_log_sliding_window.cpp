@@ -545,12 +545,13 @@ TEST_F(TestLogSlidingWindow, test_after_flush_log)
   default_mlist.add_server(self_);
   GlobalLearnerList learners;
   LogConfigMeta config_meta;
-  LogConfigInfo init_config_info;
+  LogConfigInfoV2 init_config_info;
   LogConfigVersion init_config_version;
   init_config_version.generate(curr_proposal_id, 0);
   EXPECT_EQ(OB_SUCCESS, init_config_info.generate(default_mlist, 1, learners, init_config_version));
   config_meta.curr_ = init_config_info;
   mock_mm_.log_ms_meta_ = config_meta;
+  mock_mm_.sw_ = &log_sw_;
 
   mock_state_mgr_.mock_proposal_id_ = curr_proposal_id;
 
@@ -718,12 +719,13 @@ TEST_F(TestLogSlidingWindow, test_ack_log)
   default_mlist.add_server(self_);
   GlobalLearnerList learners;
   LogConfigMeta config_meta;
-  LogConfigInfo init_config_info;
+  LogConfigInfoV2 init_config_info;
   LogConfigVersion init_config_version;
   init_config_version.generate(curr_proposal_id, 0);
   EXPECT_EQ(OB_SUCCESS, init_config_info.generate(default_mlist, 1, learners, init_config_version));
   config_meta.curr_ = init_config_info;
   mock_mm_.log_ms_meta_ = config_meta;
+  mock_mm_.sw_ = &log_sw_;
 
   char *buf = data_buf_;
   int64_t buf_len = 2 * 1024 * 1024;
@@ -738,8 +740,8 @@ TEST_F(TestLogSlidingWindow, test_ack_log)
   default_mlist.add_server(server);
   LSN invalid_lsn;
   EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.ack_log(server, invalid_lsn));
-  LogConfigInfo new_config_info = init_config_info;
-  new_config_info.log_sync_memberlist_ = default_mlist;
+  LogConfigInfoV2 new_config_info = init_config_info;
+  new_config_info.config_.log_sync_memberlist_ = default_mlist;
   mock_mm_.log_ms_meta_.curr_ = new_config_info;
 
   mock_state_mgr_.role_ = LEADER;

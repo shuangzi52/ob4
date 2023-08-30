@@ -165,11 +165,25 @@ int ObMemoryDump::init()
   return ret;
 }
 
-void ObMemoryDump::destroy()
+void ObMemoryDump::stop()
 {
   if (is_inited_) {
     TG_STOP(TGDefIDs::MEMORY_DUMP);
+  }
+}
+
+void ObMemoryDump::wait()
+{
+  if (is_inited_) {
     TG_WAIT(TGDefIDs::MEMORY_DUMP);
+  }
+}
+
+void ObMemoryDump::destroy()
+{
+  if (is_inited_) {
+    stop();
+    wait();
     queue_.destroy();
     is_inited_ = false;
   }
@@ -194,10 +208,12 @@ int ObMemoryDump::push(void *task)
 int ObMemoryDump::load_malloc_sample_map(ObMallocSampleMap &malloc_sample_map)
 {
   int ret = OB_SUCCESS;
-  ObLatchRGuard guard(iter_lock_, ObLatchIds::MEM_DUMP_ITER_LOCK);
-  auto &map = r_stat_->malloc_sample_map_;
-  for (auto it = map.begin(); OB_SUCC(ret) && it != map.end(); ++it) {
-    ret = malloc_sample_map.set_refactored(it->first, it->second);
+  if (is_inited_) {
+    ObLatchRGuard guard(iter_lock_, ObLatchIds::MEM_DUMP_ITER_LOCK);
+    auto &map = r_stat_->malloc_sample_map_;
+    for (auto it = map.begin(); OB_SUCC(ret) && it != map.end(); ++it) {
+      ret = malloc_sample_map.set_refactored(it->first, it->second);
+    }
   }
   return ret;
 }

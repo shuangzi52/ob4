@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -160,7 +168,8 @@ void ObTableLoadTableCtx::unregister_job_stat()
   }
 }
 
-int ObTableLoadTableCtx::init_coordinator_ctx(const ObIArray<int64_t> &idx_array, uint64_t user_id)
+int ObTableLoadTableCtx::init_coordinator_ctx(const ObIArray<int64_t> &idx_array,
+                                              ObTableLoadExecCtx *exec_ctx)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -174,7 +183,7 @@ int ObTableLoadTableCtx::init_coordinator_ctx(const ObIArray<int64_t> &idx_array
     if (OB_ISNULL(coordinator_ctx = OB_NEWx(ObTableLoadCoordinatorCtx, (&allocator_), this))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to new ObTableLoadCoordinatorCtx", KR(ret));
-    } else if (OB_FAIL(coordinator_ctx->init(idx_array, user_id))) {
+    } else if (OB_FAIL(coordinator_ctx->init(idx_array, exec_ctx))) {
       LOG_WARN("fail to init coordinator ctx", KR(ret));
     } else if (OB_FAIL(coordinator_ctx->set_status_inited())) {
       LOG_WARN("fail to set coordinator status inited", KR(ret));

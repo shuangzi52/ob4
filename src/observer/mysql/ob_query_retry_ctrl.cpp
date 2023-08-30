@@ -32,7 +32,7 @@ using namespace oceanbase::transaction;
 namespace observer
 {
 
-common::hash::ObHashMap<int, std::pair<ObQueryRetryCtrl::retry_func, ObQueryRetryCtrl::retry_func>, common::hash::NoPthreadDefendMode> ObQueryRetryCtrl::map_;
+common::hash::ObHashMap<int, ObQueryRetryCtrl::RetryFuncs, common::hash::NoPthreadDefendMode> ObQueryRetryCtrl::map_;
 
 void ObRetryPolicy::try_packet_retry(ObRetryParam &v) const
 {
@@ -113,7 +113,7 @@ public:
   ~ObRefreshLocationCachePolicy() = default;
   virtual void test(ObRetryParam &v) const override
   {
-    v.result_.refresh_location_cache(is_async, v.err_);
+    v.result_.force_refresh_location_cache(is_async, v.err_);
   }
 };
 
@@ -174,6 +174,21 @@ public:
   }
 };
 
+class ObBatchExecOptRetryPolicy : public ObRetryPolicy
+{
+public:
+  ObBatchExecOptRetryPolicy() = default;
+  ~ObBatchExecOptRetryPolicy() = default;
+  virtual void test(ObRetryParam &v) const override
+  {
+    if (v.ctx_.is_do_insert_batch_opt()) {
+      v.retry_type_ = RETRY_TYPE_LOCAL;
+    } else {
+      v.retry_type_ = RETRY_TYPE_NONE;
+    }
+  }
+};
+
 class ObSwitchConsumerGroupRetryPolicy : public ObRetryPolicy
 {
 public:
@@ -223,7 +238,7 @@ public:
                K(v.session_.get_retry_info().get_last_query_retry_err()));
       if (v.session_.get_retry_info().is_rpc_timeout() || is_transaction_rpc_timeout_err(v.err_)) {
         // rpc超时了，可能是location cache不对，异步刷新location cache
-        v.result_.refresh_location_cache(true, v.err_); // 非阻塞
+        v.result_.force_refresh_location_cache(true, v.err_); // 非阻塞
         LOG_WARN("sql rpc timeout, or trans rpc timeout, maybe location is changed, "
                  "refresh location cache non blockly", K(v),
                  K(v.session_.get_retry_info().is_rpc_timeout()));
@@ -251,7 +266,7 @@ public:
       v.retry_type_ = RETRY_TYPE_NONE;
       v.no_more_test_ = true;
     } else if (ObStmt::is_ddl_stmt(v.result_.get_stmt_type(), v.result_.has_global_variable())) {
-      if (OB_EAGAIN == err || OB_SNAPSHOT_DISCARDED == err || OB_ERR_PARALLEL_DDL_CONFLICT == err) {
+      if (is_ddl_stmt_packet_retry_err(err)) {
         try_packet_retry(v);
       } else {
         v.client_ret_ = err;
@@ -432,9 +447,12 @@ public:
     if (v.force_local_retry_ || (v.local_retry_times_ <= 1 && !v.result_.is_pl_stmt(v.result_.get_stmt_type()))) {
       v.retry_type_ = RETRY_TYPE_LOCAL;
     } else {
+      const ObMultiStmtItem &multi_stmr_item = v.ctx_.multi_stmt_item_;
       try_packet_retry(v);
-      if (RETRY_TYPE_LOCAL == v.retry_type_ && !v.ctx_.multi_stmt_item_.is_part_of_multi_stmt()) {
-        // rewrite err
+      if (RETRY_TYPE_LOCAL == v.retry_type_ &&
+          !(multi_stmr_item.is_part_of_multi_stmt() || multi_stmr_item.is_batched_multi_stmt())) {
+        // 1. multi_query without batch_optimization must do local_retry
+        // 2. If is multi_query with batch_optimization, must do local_retry
         v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
         v.retry_type_ = RETRY_TYPE_NONE;
         v.no_more_test_ = true;
@@ -609,6 +627,21 @@ private:
   }
 };
 
+class ObAutoincCacheNotEqualRetryPolicy: public ObRetryPolicy
+{
+public:
+  ObAutoincCacheNotEqualRetryPolicy() = default;
+  ~ObAutoincCacheNotEqualRetryPolicy() = default;
+  virtual void test(ObRetryParam &v) const override
+  {
+    if (v.stmt_retry_times_ < ObQueryRetryCtrl::MAX_SCHEMA_ERROR_LOCAL_RETRY_TIMES) {
+      v.retry_type_ = RETRY_TYPE_LOCAL;
+    } else {
+      try_packet_retry(v);
+    }
+  }
+};
+
 
 ////////// end of policies ////////////
 
@@ -696,6 +729,14 @@ void ObQueryRetryCtrl::schema_error_proc(ObRetryParam &v)
   retry_obj.test(schema_update_policy);
 }
 
+void ObQueryRetryCtrl::autoinc_cache_not_equal_retry_proc(ObRetryParam &v)
+{
+  ObRetryObject retry_obj(v);
+  ObAutoincCacheNotEqualRetryPolicy autoinc_retry_policy;
+  ObCommonRetryLinearShortWaitPolicy retry_short_wait;
+  retry_obj.test(autoinc_retry_policy).test(retry_short_wait);
+}
+
 void ObQueryRetryCtrl::snapshot_discard_proc(ObRetryParam &v)
 {
   if (ObQueryRetryCtrl::is_isolation_RR_or_SE(v.session_.get_tx_isolation())) {
@@ -738,6 +779,13 @@ void ObQueryRetryCtrl::force_local_retry_proc(ObRetryParam &v)
   retry_obj.test(force_local_retry);
 }
 
+void ObQueryRetryCtrl::batch_execute_opt_retry_proc(ObRetryParam &v)
+{
+  ObRetryObject retry_obj(v);
+  ObBatchExecOptRetryPolicy batch_opt_retry;
+  retry_obj.test(batch_opt_retry);
+}
+
 void ObQueryRetryCtrl::switch_consumer_group_retry_proc(ObRetryParam &v)
 {
   ObRetryObject retry_obj(v);
@@ -747,10 +795,25 @@ void ObQueryRetryCtrl::switch_consumer_group_retry_proc(ObRetryParam &v)
 
 void ObQueryRetryCtrl::timeout_proc(ObRetryParam &v)
 {
+#ifdef OB_BUILD_SPM
+  if (OB_UNLIKELY(v.err_ == OB_TIMEOUT &&
+                  ObSpmCacheCtx::STAT_FIRST_EXECUTE_PLAN == v.ctx_.spm_ctx_.spm_stat_ &&
+                  v.ctx_.spm_ctx_.need_spm_timeout_)) {
+    const_cast<ObSqlCtx &>(v.ctx_).spm_ctx_.spm_stat_ = ObSpmCacheCtx::STAT_FALLBACK_EXECUTE_PLAN;
+    const_cast<ObSqlCtx &>(v.ctx_).spm_ctx_.need_spm_timeout_ = false;
+    ObRetryObject retry_obj(v);
+    ObForceLocalRetryPolicy force_local_retry;
+    retry_obj.test(force_local_retry);
+  } else if (is_try_lock_row_err(v.session_.get_retry_info().get_last_query_retry_err())) {
+    v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
+    v.retry_type_ = RETRY_TYPE_NONE;
+  }
+#else
   if (is_try_lock_row_err(v.session_.get_retry_info().get_last_query_retry_err())) {
     v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
     v.retry_type_ = RETRY_TYPE_NONE;
   }
+#endif
 }
 
 /////// For inner SQL only ///////////////
@@ -864,8 +927,13 @@ void ObQueryRetryCtrl::before_func(ObRetryParam &v)
 
 void ObQueryRetryCtrl::after_func(ObRetryParam &v)
 {
-  if (OB_TRY_LOCK_ROW_CONFLICT != v.client_ret_ && OB_ERR_PROXY_REROUTE != v.client_ret_) {
-    //锁冲突就不要打印了，避免日志刷屏
+  if (OB_TRY_LOCK_ROW_CONFLICT == v.client_ret_
+        || OB_ERR_PROXY_REROUTE == v.client_ret_
+        || (v.is_from_pl_ && OB_READ_NOTHING == v.client_ret_)) {
+    //锁冲突不打印了，避免日志刷屏
+    // 二次路由不打印
+    // PL 里面的 OB_READ_NOTHING 不打印日志
+  } else {
     LOG_WARN_RET(v.client_ret_, "[RETRY] check if need retry", K(v), "need_retry", RETRY_TYPE_NONE != v.retry_type_);
   }
   if (RETRY_TYPE_NONE != v.retry_type_) {
@@ -891,10 +959,11 @@ int ObQueryRetryCtrl::init()
   //  r: error code
   //  func: processor for obmp* query
   //  inner_func: processor for inner connection query
+  //  das_func: processor for DAS task retry
 #ifndef ERR_RETRY_FUNC
-#define ERR_RETRY_FUNC(tag, r, func, inner_func) \
+#define ERR_RETRY_FUNC(tag, r, func, inner_func, das_func) \
   if (OB_SUCC(ret)) { \
-    if (OB_SUCCESS != (ret = map_.set_refactored(r, std::make_pair(func, inner_func)))) { \
+    if (OB_SUCCESS != (ret = map_.set_refactored(r, RetryFuncs(func, inner_func, das_func)))) { \
       LOG_ERROR("Duplicated error code registered", "code", #r, KR(ret)); \
     } \
   }
@@ -902,92 +971,94 @@ int ObQueryRetryCtrl::init()
 
   // register your error code retry handler here, no order required
   /* schema */
-  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_ERROR,                    schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_TENANT_EXIST,                    schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_TENANT_NOT_EXIST,                schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_BAD_DATABASE,                schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_DATABASE_EXIST,                  schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_TABLEGROUP_NOT_EXIST,            schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_TABLEGROUP_EXIST,                schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_TABLE_NOT_EXIST,                 schema_error_proc,          inner_common_schema_error_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_TABLE_EXIST,                 schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_BAD_FIELD_ERROR,             schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_COLUMN_DUPLICATE,            schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_USER_EXIST,                  schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_USER_NOT_EXIST,              schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_PRIVILEGE,                schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_DB_PRIVILEGE,             schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_TABLE_PRIVILEGE,          schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH,  schema_error_proc,          inner_schema_error_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_REMOTE_SCHEMA_NOT_FULL,      schema_error_proc,          inner_schema_error_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_PARTITION_IS_BLOCKED,            schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_SP_ALREADY_EXISTS,           schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_SP_DOES_NOT_EXIST,           schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_OBJECT_NAME_NOT_EXIST,           schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_OBJECT_NAME_EXIST,               schema_error_proc,          empty_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_EAGAIN,                   schema_error_proc,          inner_schema_error_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_NOT_UPTODATE,             schema_error_proc,          inner_schema_error_proc);
-  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_PARALLEL_DDL_CONFLICT,       schema_error_proc,          inner_schema_error_proc);
+  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_ERROR,                    schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_TENANT_EXIST,                    schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_TENANT_NOT_EXIST,                schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_BAD_DATABASE,                schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_DATABASE_EXIST,                  schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_TABLEGROUP_NOT_EXIST,            schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_TABLEGROUP_EXIST,                schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_TABLE_NOT_EXIST,                 schema_error_proc,          inner_common_schema_error_proc,                       nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_TABLE_EXIST,                 schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_BAD_FIELD_ERROR,             schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_COLUMN_DUPLICATE,            schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_USER_EXIST,                  schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_USER_NOT_EXIST,              schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_PRIVILEGE,                schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_DB_PRIVILEGE,             schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_NO_TABLE_PRIVILEGE,          schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH,  schema_error_proc,          inner_schema_error_proc,                              nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_REMOTE_SCHEMA_NOT_FULL,      schema_error_proc,          inner_schema_error_proc,                              nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_SP_ALREADY_EXISTS,           schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_SP_DOES_NOT_EXIST,           schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_OBJECT_NAME_NOT_EXIST,           schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_OBJECT_NAME_EXIST,               schema_error_proc,          empty_proc,                                           nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_EAGAIN,                   schema_error_proc,          inner_schema_error_proc,                              nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_SCHEMA_NOT_UPTODATE,             schema_error_proc,          inner_schema_error_proc,                              nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_ERR_PARALLEL_DDL_CONFLICT,       schema_error_proc,          inner_schema_error_proc,                              nullptr);
+  ERR_RETRY_FUNC("SCHEMA",   OB_AUTOINC_CACHE_NOT_EQUAL,         autoinc_cache_not_equal_retry_proc, autoinc_cache_not_equal_retry_proc, nullptr);
 
   /* location */
-  ERR_RETRY_FUNC("LOCATION", OB_LOCATION_LEADER_NOT_EXIST,       location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_LS_LOCATION_LEADER_NOT_EXIST,    location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_NO_READABLE_REPLICA,             location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_NOT_MASTER,                      location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_RS_NOT_MASTER,                   location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_RS_SHUTDOWN,                     location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_PARTITION_NOT_EXIST,             location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_LOCATION_NOT_EXIST,              location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_PARTITION_IS_STOPPED,            location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_SERVER_IS_INIT,                  location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_SERVER_IS_STOPPING,              location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_TENANT_NOT_IN_SERVER,            location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_TRANS_RPC_TIMEOUT,               location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_USE_DUP_FOLLOW_AFTER_DML,        location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_TRANS_STMT_NEED_RETRY,           location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_LS_NOT_EXIST,                    location_error_proc,        inner_location_error_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_LOCATION_LEADER_NOT_EXIST,       location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc, ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_LS_LOCATION_LEADER_NOT_EXIST,    location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc, ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_NO_READABLE_REPLICA,             location_error_nothing_readable_proc, inner_location_error_nothing_readable_proc, ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_NOT_MASTER,                      location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_RS_NOT_MASTER,                   location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_RS_SHUTDOWN,                     location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_PARTITION_NOT_EXIST,             location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_LOCATION_NOT_EXIST,              location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_PARTITION_IS_STOPPED,            location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_SERVER_IS_INIT,                  location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_SERVER_IS_STOPPING,              location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_TENANT_NOT_IN_SERVER,            location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_TRANS_RPC_TIMEOUT,               location_error_proc,        inner_location_error_proc,                            nullptr);
+  ERR_RETRY_FUNC("LOCATION", OB_USE_DUP_FOLLOW_AFTER_DML,        location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_TRANS_STMT_NEED_RETRY,           location_error_proc,        inner_location_error_proc,                            nullptr);
+  ERR_RETRY_FUNC("LOCATION", OB_LS_NOT_EXIST,                    location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
   // OB_TABLET_NOT_EXIST may be caused by old version schema or incorrect location.
   // Just use location_error_proc to retry sql and a new schema guard will be obtained during the retry process.
-  ERR_RETRY_FUNC("LOCATION", OB_TABLET_NOT_EXIST,                location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_LS_LOCATION_NOT_EXIST,           location_error_proc,        inner_location_error_proc);
-  ERR_RETRY_FUNC("LOCATION", OB_MAPPING_BETWEEN_TABLET_AND_LS_NOT_EXIST, location_error_proc,inner_location_error_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_TABLET_NOT_EXIST,                location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_not_exist_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_LS_LOCATION_NOT_EXIST,           location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_PARTITION_IS_BLOCKED,            location_error_proc,        inner_location_error_proc,                            ObDASRetryCtrl::tablet_location_retry_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_MAPPING_BETWEEN_TABLET_AND_LS_NOT_EXIST, location_error_proc,inner_location_error_proc,                            ObDASRetryCtrl::tablet_not_exist_retry_proc);
 
-  ERR_RETRY_FUNC("LOCATION", OB_GET_LOCATION_TIME_OUT,           location_error_proc,        inner_table_location_error_proc);
+  ERR_RETRY_FUNC("LOCATION", OB_GET_LOCATION_TIME_OUT,           location_error_proc,        inner_table_location_error_proc,                      ObDASRetryCtrl::tablet_location_retry_proc);
 
 
 
   /* network */
-  ERR_RETRY_FUNC("NETWORK",  OB_RPC_CONNECT_ERROR,               peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc);
-  ERR_RETRY_FUNC("NETWORK",  OB_RPC_SEND_ERROR,                  peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc);
-  ERR_RETRY_FUNC("NETWORK",  OB_RPC_POST_ERROR,                  peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc);
+  ERR_RETRY_FUNC("NETWORK",  OB_RPC_CONNECT_ERROR,               peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc,       ObDASRetryCtrl::task_network_retry_proc);
+  ERR_RETRY_FUNC("NETWORK",  OB_RPC_SEND_ERROR,                  peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc,       ObDASRetryCtrl::task_network_retry_proc);
+  ERR_RETRY_FUNC("NETWORK",  OB_RPC_POST_ERROR,                  peer_server_status_uncertain_proc, inner_peer_server_status_uncertain_proc,       ObDASRetryCtrl::task_network_retry_proc);
 
   /* storage */
-  ERR_RETRY_FUNC("STORAGE",  OB_SNAPSHOT_DISCARDED,              snapshot_discard_proc,         short_wait_retry_proc);
-  ERR_RETRY_FUNC("STORAGE",  OB_DATA_NOT_UPTODATE,               long_wait_retry_proc,          short_wait_retry_proc);
-  ERR_RETRY_FUNC("STORAGE",  OB_REPLICA_NOT_READABLE,            long_wait_retry_proc,          short_wait_retry_proc);
-  ERR_RETRY_FUNC("STORAGE",  OB_PARTITION_IS_SPLITTING,          short_wait_retry_proc,         short_wait_retry_proc);
-  ERR_RETRY_FUNC("STORAGE",  OB_DISK_HUNG,                  nonblock_location_error_proc,  empty_proc);
+  ERR_RETRY_FUNC("STORAGE",  OB_SNAPSHOT_DISCARDED,              snapshot_discard_proc,         short_wait_retry_proc,                             nullptr);
+  ERR_RETRY_FUNC("STORAGE",  OB_DATA_NOT_UPTODATE,               long_wait_retry_proc,          short_wait_retry_proc,                             nullptr);
+  ERR_RETRY_FUNC("STORAGE",  OB_REPLICA_NOT_READABLE,            long_wait_retry_proc,          short_wait_retry_proc,                             ObDASRetryCtrl::tablet_nothing_readable_proc);
+  ERR_RETRY_FUNC("STORAGE",  OB_PARTITION_IS_SPLITTING,          short_wait_retry_proc,         short_wait_retry_proc,                             nullptr);
+  ERR_RETRY_FUNC("STORAGE",  OB_DISK_HUNG,                       nonblock_location_error_proc,  empty_proc,                                        nullptr);
 
   /* trx */
-  ERR_RETRY_FUNC("TRX",      OB_TRY_LOCK_ROW_CONFLICT,           try_lock_row_conflict_proc, inner_try_lock_row_conflict_proc);
-  ERR_RETRY_FUNC("TRX",      OB_TRANSACTION_SET_VIOLATION,       trx_set_violation_proc,     trx_set_violation_proc);
-  ERR_RETRY_FUNC("TRX",      OB_TRANS_CANNOT_SERIALIZE,          trx_can_not_serialize_proc, trx_can_not_serialize_proc);
-  ERR_RETRY_FUNC("TRX",      OB_GTS_NOT_READY,                   short_wait_retry_proc,      short_wait_retry_proc);
-  ERR_RETRY_FUNC("TRX",      OB_GTI_NOT_READY,                   short_wait_retry_proc,      short_wait_retry_proc);
-  ERR_RETRY_FUNC("TRX",      OB_TRANS_WEAK_READ_VERSION_NOT_READY, short_wait_retry_proc,    short_wait_retry_proc);
+  ERR_RETRY_FUNC("TRX",      OB_TRY_LOCK_ROW_CONFLICT,           try_lock_row_conflict_proc, inner_try_lock_row_conflict_proc,                     nullptr);
+  ERR_RETRY_FUNC("TRX",      OB_TRANSACTION_SET_VIOLATION,       trx_set_violation_proc,     trx_set_violation_proc,                               nullptr);
+  ERR_RETRY_FUNC("TRX",      OB_TRANS_CANNOT_SERIALIZE,          trx_can_not_serialize_proc, trx_can_not_serialize_proc,                           nullptr);
+  ERR_RETRY_FUNC("TRX",      OB_GTS_NOT_READY,                   short_wait_retry_proc,      short_wait_retry_proc,                                nullptr);
+  ERR_RETRY_FUNC("TRX",      OB_GTI_NOT_READY,                   short_wait_retry_proc,      short_wait_retry_proc,                                nullptr);
+  ERR_RETRY_FUNC("TRX",      OB_TRANS_WEAK_READ_VERSION_NOT_READY, short_wait_retry_proc,    short_wait_retry_proc,                                nullptr);
 
   /* sql */
-  ERR_RETRY_FUNC("SQL",      OB_ERR_INSUFFICIENT_PX_WORKER,      px_thread_not_enough_proc,  short_wait_retry_proc);
+  ERR_RETRY_FUNC("SQL",      OB_ERR_INSUFFICIENT_PX_WORKER,      px_thread_not_enough_proc,  short_wait_retry_proc,                                nullptr);
   // create a new interval part when inserting a row which has no matched part,
   // wait and retry, will see new part
-  ERR_RETRY_FUNC("SQL",      OB_NO_PARTITION_FOR_INTERVAL_PART,  short_wait_retry_proc,             short_wait_retry_proc);
-  ERR_RETRY_FUNC("SQL",      OB_SQL_RETRY_SPM,                   force_local_retry_proc,            force_local_retry_proc);
-  ERR_RETRY_FUNC("SQL",      OB_NEED_SWITCH_CONSUMER_GROUP,      switch_consumer_group_retry_proc,  empty_proc);
+  ERR_RETRY_FUNC("SQL",      OB_NO_PARTITION_FOR_INTERVAL_PART,  short_wait_retry_proc,             short_wait_retry_proc,                         nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_BATCHED_MULTI_STMT_ROLLBACK,     batch_execute_opt_retry_proc,      batch_execute_opt_retry_proc,                  nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_SQL_RETRY_SPM,                   force_local_retry_proc,            force_local_retry_proc,                        nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_NEED_SWITCH_CONSUMER_GROUP,      switch_consumer_group_retry_proc,  empty_proc,                                    nullptr);
 
   /* timeout */
-  ERR_RETRY_FUNC("SQL",      OB_TIMEOUT,                         timeout_proc,                timeout_proc);
-  ERR_RETRY_FUNC("SQL",      OB_TRANS_TIMEOUT,                   timeout_proc,                timeout_proc);
-  ERR_RETRY_FUNC("SQL",      OB_TRANS_STMT_TIMEOUT,              timeout_proc,                timeout_proc);
+  ERR_RETRY_FUNC("SQL",      OB_TIMEOUT,                         timeout_proc,                timeout_proc,                                        nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_TRANS_TIMEOUT,                   timeout_proc,                timeout_proc,                                        nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_TRANS_STMT_TIMEOUT,              timeout_proc,                timeout_proc,                                        nullptr);
 
   /* ddl */
 
@@ -1018,17 +1089,32 @@ ObQueryRetryCtrl::~ObQueryRetryCtrl()
 {
 }
 
+int ObQueryRetryCtrl::get_das_retry_func(int err, ObDASRetryCtrl::retry_func &retry_func)
+{
+  int ret = OB_SUCCESS;
+  retry_func = nullptr;
+  RetryFuncs funcs;
+  if (OB_FAIL(map_.get_refactored(err, funcs))) {
+    if (OB_HASH_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+    }
+  } else {
+    retry_func = funcs.element<2>();
+  }
+  return ret;
+}
+
 int ObQueryRetryCtrl::get_func(int err, bool is_inner_sql, retry_func &func)
 {
   int ret = OB_SUCCESS;
-  std::pair<retry_func, retry_func> funcs;
+  RetryFuncs funcs;
   if (OB_FAIL(map_.get_refactored(err, funcs))) {
     if (OB_HASH_NOT_EXIST == ret) {
       func = empty_proc;
       ret = OB_SUCCESS;
     }
   } else {
-    func = is_inner_sql ? funcs.second : funcs.first;
+    func = is_inner_sql ? funcs.element<1>() : funcs.element<0>();
   }
   return ret;
 }
@@ -1095,7 +1181,31 @@ void ObQueryRetryCtrl::test_and_save_retry_state(const ObGlobalContext &gctx,
   if (RETRY_TYPE_NONE != retry_type_) {
     retry_err_code_ = client_ret;
   }
+  if (RETRY_TYPE_NONE != retry_type_) {
+    result.set_close_fail_callback([this](const int err, int &client_ret)-> void { this->on_close_resultset_fail_(err, client_ret); });
+  }
 }
 
+void ObQueryRetryCtrl::on_close_resultset_fail_(const int err, int &client_ret)
+{
+  // some unretryable error happened in close result set phase
+  if (OB_SUCCESS != err && RETRY_TYPE_NONE != retry_type_) {
+    // the txn relative error in close stmt
+    // thses error will cause the txn must to be rollbacked
+    // and can not accept new request any more, so if retry
+    // current stmt, it must be failed, hence we cancel retry
+    if (OB_TRANS_NEED_ROLLBACK == err ||
+        OB_TRANS_INVALID_STATE == err ||
+        OB_TRANS_HAS_DECIDED == err) {
+      retry_type_ = RETRY_TYPE_NONE;
+      // also clear the packet retry
+      THIS_WORKER.unset_need_retry();
+      // rewrite the client error code
+      // when decide to cancel the retry, return an unretryable error
+      // is better, because it won't leak the internal error to user
+      client_ret = err;
+    }
+  }
+}
 }/* ns observer*/
 }/* ns oceanbase */

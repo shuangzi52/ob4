@@ -258,6 +258,16 @@ int ObTransformSimplifySubquery::is_subquery_to_expr_valid(const ObSelectStmt *s
              && !stmt->is_set_stmt()) {
     is_valid = true;
   }
+  if (OB_SUCC(ret) && is_valid) {
+    if (OB_ISNULL(stmt->get_select_item(0).expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("stmt is null", K(ret), K(stmt));
+    } else if (stmt->get_select_item(0).expr_->is_const_expr()) {
+      // do nothing
+    } else if (stmt->get_select_item(0).expr_->has_flag(CNT_PL_UDF)) {
+      is_valid = false;
+    }
+  }
   return ret;
 }
 
@@ -1270,6 +1280,13 @@ int ObTransformSimplifySubquery::eliminate_subquery(ObDMLStmt *stmt,
         }
         LOG_TRACE("finish to eliminate subquery", K(can_be_eliminated), K(ret));
 
+      } else if (OB_FAIL(empty_table_subquery_can_be_eliminated_in_exists(expr, can_be_eliminated))) {
+        LOG_WARN("failed to check empty table subquery can be eliminate", K(ret));
+      } else if (can_be_eliminated) {
+        if (OB_FAIL(do_trans_empty_table_subquery_as_expr(expr, trans_happened))) {
+          LOG_WARN("failed to do trans empty table subquery as expr", K(ret));
+        }
+        LOG_TRACE("finish to eliminate empty table subquery", K(ret));
       } else if (!can_be_eliminated) {
         if (OB_FAIL(simplify_select_items(stmt, expr->get_expr_type(), subquery, false, trans_happened))) {
           LOG_WARN("Simplify select items in EXISTS fails", K(ret));
@@ -1677,6 +1694,10 @@ int ObTransformSimplifySubquery::eliminate_groupby_distinct_in_any_all(ObRawExpr
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get unexpected null", K(ret), K(expr));
   } else if (!expr->has_flag(IS_WITH_ALL) && !expr->has_flag(IS_WITH_ANY)) {
+  } else if (OB_UNLIKELY(2 != expr->get_param_count())
+             || OB_UNLIKELY(!expr->get_param_expr(1)->is_query_ref_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected expr", K(ret), KPC(expr));
   } else if (OB_ISNULL(subq_expr = static_cast<ObQueryRefRawExpr *>(expr->get_param_expr(1))) ||
              OB_ISNULL(static_cast<ObRawExpr *>(expr->get_param_expr(0)))) {
     ret = OB_INVALID_ARGUMENT;
@@ -2141,6 +2162,7 @@ int ObTransformSimplifySubquery::check_can_trans_as_exists(ObRawExpr* expr, bool
   int ret = OB_SUCCESS;
   ObQueryRefRawExpr* right_hand = NULL;
   ObRawExpr* left_hand = NULL;
+  bool dummy = false;
   is_valid = false;
   if (OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2167,17 +2189,22 @@ int ObTransformSimplifySubquery::check_can_trans_as_exists(ObRawExpr* expr, bool
     // do nothing
   } else if (OB_FAIL(check_stmt_can_trans_as_exists(right_hand->get_ref_stmt(),
                                                     !right_hand->get_exec_params().empty(),
+                                                    dummy,
                                                     is_valid))) {
     LOG_WARN("failed to check stmt can trans as exists", K(ret));
   }
   return ret;
 }
 
-int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *stmt, bool is_correlated, bool &is_valid)
+int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *stmt,
+                                                                bool is_correlated,
+                                                                bool &match_index,
+                                                                bool &is_valid)
 {
   int ret = OB_SUCCESS;
   bool contain_rownum = false;
   is_valid = false;
+  match_index = false;
   if (OB_ISNULL(stmt) ||
       OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2188,6 +2215,7 @@ int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *st
              stmt->has_limit()) {
     // do nothing
   } else if (stmt->is_set_stmt()) {
+    bool has_index_matched = false;
     if (stmt->is_recursive_union()) {
     } else if (stmt->get_set_op() == ObSelectStmt::EXCEPT) {
       if (OB_UNLIKELY(stmt->get_set_query().empty())) {
@@ -2195,17 +2223,28 @@ int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *st
         LOG_WARN("get except set query is empty", K(ret));
       } else if (OB_FAIL(SMART_CALL(check_stmt_can_trans_as_exists(stmt->get_set_query(0),
                                                                    is_correlated,
+                                                                   has_index_matched,
                                                                    is_valid)))) {
         LOG_WARN("failted to check stmt can trans as exists", K(ret));
+      } else {
+        match_index = has_index_matched;
+        is_valid = has_index_matched && is_valid;
       }
     } else {
       is_valid = true;
       for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < stmt->get_set_query().count(); ++i) {
+        has_index_matched = false;
         if (OB_FAIL(SMART_CALL(check_stmt_can_trans_as_exists(stmt->get_set_query(i),
                                                               is_correlated,
+                                                              has_index_matched,
                                                               is_valid)))) {
           LOG_WARN("failted to check stmt can trans as exists", K(ret));
+        } else if (has_index_matched) {
+          match_index = has_index_matched;
         }
+      }
+      if (OB_SUCC(ret)) {
+        is_valid = match_index && is_valid;
       }
     }
   } else if (stmt->is_contains_assignment() ||
@@ -2220,6 +2259,8 @@ int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *st
   } else if (stmt->has_group_by() ||
              stmt->has_having()) {
     // do nothing
+  } else if (0 == stmt->get_from_item_size()) {
+    is_valid = true;
   } else {
     ObArenaAllocator alloc;
     EqualSets &equal_sets = ctx_->equal_sets_;
@@ -2243,6 +2284,8 @@ int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *st
                                                             &equal_sets,
                                                             &const_exprs))) {
           LOG_WARN("failed to check is match index prefix", K(ret));
+        } else if (is_valid) {
+          match_index = true;
         }
       }
     }
@@ -2419,6 +2462,113 @@ int ObTransformSimplifySubquery::try_trans_any_all_as_exists(
     } else {
       trans_happened |= is_happened;
     }
+  }
+  return ret;
+}
+
+int ObTransformSimplifySubquery::empty_table_subquery_can_be_eliminated_in_exists(ObRawExpr *expr,
+                                                                                  bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  ObQueryRefRawExpr* query_ref = NULL;
+  ObSelectStmt* ref_stmt = NULL;
+  bool contain_rownum = false;
+  bool has_limit = false;
+  is_valid = false;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (T_OP_EXISTS != expr->get_expr_type() &&
+             T_OP_NOT_EXISTS != expr->get_expr_type()) {
+    is_valid = false;
+  } else if (OB_UNLIKELY(expr->get_param_count() != 1) ||
+             OB_ISNULL(expr->get_param_expr(0)) ||
+             OB_UNLIKELY(!expr->get_param_expr(0)->is_query_ref_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected exists/not exists expr", K(ret));
+  } else if (OB_FALSE_IT(query_ref = static_cast<ObQueryRefRawExpr*>(expr->get_param_expr(0)))) {
+  } else if (OB_ISNULL(ref_stmt = query_ref->get_ref_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected ref stmt", K(ret));
+  } else if (OB_FAIL(ref_stmt->has_rownum(contain_rownum))) {
+    LOG_WARN("failed to check ref stmt has rownum", K(ret));
+  } else if (OB_FAIL(check_limit(expr->get_expr_type(), ref_stmt, has_limit))) {
+    LOG_WARN("failed to check limit", K(ret));
+  } else if (contain_rownum || has_limit) {
+    is_valid = false;
+  } else if (query_ref->get_ref_count() > 1) {
+    is_valid = false;
+  } else if (0 != ref_stmt->get_from_item_size() ||
+             0 == ref_stmt->get_condition_size() ||
+             ref_stmt->is_set_stmt() ||
+             ref_stmt->is_contains_assignment() ||
+             ref_stmt->has_group_by() ||
+             ref_stmt->has_having() ||
+             ref_stmt->is_hierarchical_query() ||
+             ref_stmt->has_sequence() ||
+             ref_stmt->has_window_function()) {
+    is_valid = false;
+  } else {
+    is_valid = true;
+  }
+  return ret;
+}
+
+int ObTransformSimplifySubquery::do_trans_empty_table_subquery_as_expr(ObRawExpr *&expr,
+                                                                       bool &trans_happened)
+{
+  int ret = OB_SUCCESS;
+  ObQueryRefRawExpr* query_ref = NULL;
+  ObSelectStmt* ref_stmt = NULL;
+  bool add_limit_constraint = false;
+  ObSEArray<ObRawExpr*, 4> conditions;
+  ObRawExpr *out_expr = NULL;
+  trans_happened = false;
+  if (OB_ISNULL(expr) ||
+      OB_ISNULL(ctx_) ||
+      OB_ISNULL(ctx_->expr_factory_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_UNLIKELY(expr->get_param_count() != 1) ||
+             OB_ISNULL(expr->get_param_expr(0)) ||
+             OB_UNLIKELY(!expr->get_param_expr(0)->is_query_ref_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected exists/not exists expr", K(ret));
+  } else if (OB_FALSE_IT(query_ref = static_cast<ObQueryRefRawExpr*>(expr->get_param_expr(0)))) {
+  } else if (OB_ISNULL(ref_stmt = query_ref->get_ref_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected ref stmt", K(ret));
+  } else if (OB_FAIL(need_add_limit_constraint(expr->get_expr_type(), ref_stmt, add_limit_constraint))){
+    LOG_WARN("failed to check limit constraints", K(ret));
+  } else if (add_limit_constraint &&
+            OB_FAIL(ObTransformUtils::add_const_param_constraints(ref_stmt->get_limit_expr(), ctx_))) {
+    LOG_WARN("failed to add const param constraints", K(ret));
+  } else if (OB_FAIL(conditions.assign(ref_stmt->get_condition_exprs()))) {
+    LOG_WARN("failed to assign condition exprs", K(ret));
+  } else if (ObTransformUtils::decorrelate(conditions, query_ref->get_exec_params())) {
+    LOG_WARN("failed to decorrelate condition exprs", K(ret));
+  } else if (OB_FAIL(ObRawExprUtils::build_and_expr(*ctx_->expr_factory_,
+                                                    conditions,
+                                                    out_expr))) {
+    LOG_WARN("failed to formalize expr", K(ret));
+  } else if (OB_ISNULL(out_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (T_OP_NOT_EXISTS == expr->get_expr_type() &&
+             OB_FAIL(ObRawExprUtils::build_lnnvl_expr(*ctx_->expr_factory_,
+                                                      out_expr,
+                                                      out_expr))) {
+    LOG_WARN("failed to build lnnvl expr", K(ret));
+  } else if (OB_ISNULL(out_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_FAIL(out_expr->formalize(ctx_->session_info_))) {
+    LOG_WARN("failed to formalize expr", K(ret));
+  } else if (OB_FAIL(out_expr->pull_relation_id())) {
+    LOG_WARN("failed to pull relation id", K(ret));
+  } else {
+    expr = out_expr;
+    trans_happened = true;
   }
   return ret;
 }

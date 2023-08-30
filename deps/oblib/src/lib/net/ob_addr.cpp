@@ -19,6 +19,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include "lib/utility/utility.h"
+#include "lib/net/ob_net_util.h"
+#include "include/easy_define.h"
 
 namespace oceanbase
 {
@@ -28,6 +30,43 @@ namespace common
 // --------------------------------------------------------
 // class ObAddr implements
 // --------------------------------------------------------
+ObAddr::ObAddr(const easy_addr_t& addr)
+{
+  if (addr.family == AF_INET) {
+    version_ = IPV4;
+    ip_.v4_ = addr.u.addr;
+  } else if (addr.family == AF_INET6) {
+    version_ = IPV6;
+    MEMCPY(ip_.v6_, addr.u.addr6, sizeof(ip_.v6_));
+  } else if (addr.family == AF_UNIX) {
+    version_ = UNIX;
+    MEMCPY(ip_.unix_path_, addr.u.unix_path, sizeof(ip_.unix_path_));
+  }
+  port_ = addr.port;
+}
+
+ObAddr::ObAddr(const sockaddr &addr)
+{
+  if (AF_INET == addr.sa_family) {
+    version_ = IPV4;
+    const sockaddr_in &addr_in = *static_cast<const sockaddr_in *>(static_cast<const void *>(&addr));
+    ip_.v4_ = ntohl(addr_in.sin_addr.s_addr);
+    port_ = ntohs(addr_in.sin_port);
+  } else if (AF_INET6 == addr.sa_family) {
+    version_ = IPV6;
+    const sockaddr_in6 &addr_in6 = *static_cast<const sockaddr_in6 *>(static_cast<const void *>(&addr));
+    MEMCPY(ip_.v6_, &addr_in6.sin6_addr, sizeof(ip_.v6_));
+    port_ = ntohs(addr_in6.sin6_port);
+  } else if (AF_UNIX == addr.sa_family) {
+    version_ = UNIX;
+    const sockaddr_un &addr_un = *static_cast<const sockaddr_un *>(static_cast<const void *>(&addr));
+    MEMCPY(ip_.unix_path_, addr_un.sun_path, sizeof(ip_.unix_path_));
+    port_ = 0;
+  } else {
+    port_ = 0;
+  }
+}
+
 int ObAddr::convert_ipv4_addr(const char *ip)
 {
   int ret = OB_SUCCESS;
@@ -529,5 +568,14 @@ OB_DEF_SERIALIZE_SIZE(ObAddr)
 OB_SERIALIZE_MEMBER(ObAddrWithSeq,
                     server_addr_,
                     server_seq_);
+
+DEF_TO_STRING(ObAddrWithSeq)
+{
+  int64_t pos = 0;
+  J_OBJ_START();
+  J_KV(K_(server_addr), K_(server_seq));
+  J_OBJ_END();
+  return pos;
+}
 } // end namespace common
 } // end namespace oceanbase

@@ -146,7 +146,7 @@ void ObMvccTransNode::get_snapshot_version_barrier(int64_t &version,
 }
 
 void ObMvccTransNode::get_trans_id_and_seq_no(ObTransID &tx_id,
-                                              int64_t &seq_no)
+                                              ObTxSEQ &seq_no)
 {
   tx_id = tx_id_;
   seq_no = seq_no_;
@@ -233,7 +233,7 @@ int64_t ObMvccTransNode::to_string(char *buf, const int64_t buf_len) const
                           & (~SNAPSHOT_VERSION_BARRIER_BIT),
                           snapshot_version_barrier_ >> 62,
                           to_cstring(*mtd),
-                          seq_no_);
+                          seq_no_.cast_to_int());
   return pos;
 }
 
@@ -820,7 +820,7 @@ int ObMvccRow::mvcc_write_(ObIMemtableCtx &ctx,
   ObMvccTransNode *iter = ATOMIC_LOAD(&list_head_);
   ObTransID writer_tx_id = ctx.get_tx_id();
   const SCN snapshot_version = snapshot.version_;
-  const int64_t reader_seq_no = snapshot.scn_;
+  const ObTxSEQ reader_seq_no = snapshot.scn_;
   bool &can_insert = res.can_insert_;
   bool &need_insert = res.need_insert_;
   bool &is_new_locked = res.is_new_locked_;
@@ -897,6 +897,7 @@ int ObMvccRow::mvcc_write_(ObIMemtableCtx &ctx,
         lock_state.lock_dml_flag_ = iter->get_dml_flag();
         lock_state.is_delayed_cleanout_ = iter->is_delayed_cleanout();
         lock_state.mvcc_row_ = this;
+        lock_state.trans_scn_ = iter->get_scn();
       }
     }
   }
@@ -913,6 +914,7 @@ int ObMvccRow::mvcc_write_(ObIMemtableCtx &ctx,
                                                                    list_head_->get_dml_flag(),
                                                                    list_head_->get_seq_no()))) {
         TRANS_LOG(WARN, "check sequence set violation failed", K(ret), KPC(this));
+      } else if (nullptr != list_head_ && FALSE_IT(res.is_checked_ = true)) {
       } else if (OB_SUCC(check_double_insert_(snapshot_version,
                                               writer_node,
                                               list_head_))) {
@@ -1044,6 +1046,7 @@ int ObMvccRow::check_row_locked(ObMvccAccessCtx &ctx, ObStoreRowLockState &lock_
   ObRowLatchGuard guard(latch_);
 
   auto iter = ATOMIC_LOAD(&list_head_);
+  auto tx_table_guards = ctx.get_tx_table_guards();
   bool need_retry = true;
 
   while (OB_SUCC(ret) && need_retry) {
@@ -1055,8 +1058,12 @@ int ObMvccRow::check_row_locked(ObMvccAccessCtx &ctx, ObStoreRowLockState &lock_
       need_retry = false;
     } else {
       auto data_tx_id = iter->tx_id_;
-      if (!(iter->is_committed() || iter->is_aborted()) && iter->is_delayed_cleanout() &&
-          OB_FAIL(ctx.get_tx_table_guard().cleanout_tx_node(data_tx_id, *this, *iter, false /*need_row_latch*/))) {
+      if (!(iter->is_committed() || iter->is_aborted())
+          && iter->is_delayed_cleanout()
+          && OB_FAIL(tx_table_guards.cleanout_tx_node(data_tx_id,
+                                                *this,
+                                                *iter,
+                                                false  /*need_row_latch*/))) {
         TRANS_LOG(WARN, "cleanout tx state failed", K(ret), K(*this));
       } else if (iter->is_committed() || iter->is_elr()) {
         // Case 2: the newest node is decided, so node currently is not be locked
@@ -1074,6 +1081,7 @@ int ObMvccRow::check_row_locked(ObMvccAccessCtx &ctx, ObStoreRowLockState &lock_
         lock_state.lock_data_sequence_ = iter->get_seq_no();
         lock_state.lock_dml_flag_ = iter->get_dml_flag();
         lock_state.is_delayed_cleanout_ = iter->is_delayed_cleanout();
+        lock_state.trans_scn_ = iter->get_scn();
         need_retry = false;
       }
     }

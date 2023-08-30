@@ -113,8 +113,7 @@ enum ColumnGatherFlag
   NO_NEED_STAT          = 0,
   VALID_OPT_COL         = 1,
   NEED_BASIC_STAT       = 1 << 1,
-  NEED_AVG_LEN          = 1 << 2,
-  NEED_TRUNCATE_STR     = 1 << 3
+  NEED_AVG_LEN          = 1 << 2
 };
 
 enum ObGranularityType
@@ -232,30 +231,6 @@ struct ObStatTableWrapper {
                K_(last_gather_duration));
 };
 
-struct ObGatherTableStatsHelper {
-  ObGatherTableStatsHelper():
-    stat_tables_(),
-    duration_time_(-1),
-    succeed_count_(0),
-    failed_count_(0)
-    {}
-  inline bool need_gather_table_stats() const
-  {
-    return !stat_tables_.empty();
-  }
-  int get_duration_time(sql::ParamStore &params);
-  ObArray<ObStatTableWrapper> stat_tables_;
-
-  //duration_time to is used to mark the gather database stats job can use max time. default value
-  //is -1, it's meaning gather until all table have been gathered.
-  int64_t duration_time_;
-  int64_t succeed_count_;
-  int64_t failed_count_;
-  TO_STRING_KV(K_(stat_tables),
-               K_(duration_time),
-               K_(succeed_count),
-               K_(failed_count));
-};
 struct ObGlobalStatParam
 {
   ObGlobalStatParam()
@@ -378,11 +353,9 @@ struct ObColumnStatParam {
   inline void set_valid_opt_col() { gather_flag_ |= ColumnGatherFlag::VALID_OPT_COL; }
   inline void set_need_basic_stat() { gather_flag_ |= ColumnGatherFlag::NEED_BASIC_STAT; }
   inline void set_need_avg_len() { gather_flag_ |= ColumnGatherFlag::NEED_AVG_LEN; }
-  inline void set_need_truncate_str() { gather_flag_ |= ColumnGatherFlag::NEED_TRUNCATE_STR; }
   inline bool is_valid_opt_col() const { return gather_flag_ & ColumnGatherFlag::VALID_OPT_COL; }
   inline bool need_basic_stat() const { return gather_flag_ & ColumnGatherFlag::NEED_BASIC_STAT; }
   inline bool need_avg_len() const { return gather_flag_ & ColumnGatherFlag::NEED_AVG_LEN; }
-  inline bool need_truncate_str() const { return gather_flag_ & ColumnGatherFlag::NEED_TRUNCATE_STR; }
 
   ObString column_name_;
   uint64_t column_id_;
@@ -580,13 +553,15 @@ struct ObTableStatParam {
 
 struct ObOptStat
 {
+  ObOptStat() : table_stat_(NULL), column_stats_() {
+    column_stats_.set_attr(lib::ObMemAttr(MTL_ID(), "ObOptStat"));
+  }
+  virtual ~ObOptStat();
   ObOptTableStat *table_stat_;
   // turn the column stat into pointer
   ObArray<ObOptColumnStat *> column_stats_;
-
-  virtual ~ObOptStat();
-
-  TO_STRING_KV("","");
+  TO_STRING_KV(K(table_stat_),
+               K(column_stats_.count()));
 };
 
 struct ObHistogramParam

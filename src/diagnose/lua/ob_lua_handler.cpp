@@ -115,11 +115,27 @@ int ObLuaHandler::process(const char* lua_code)
 
 ObUnixDomainListener::~ObUnixDomainListener()
 {
+  destroy();
+}
+
+void ObUnixDomainListener::stop()
+{
   if (IS_INIT) {
-    if (!ATOMIC_SET(&stop_, true)) {
-      // set stop successfully
-      wait();
-    }
+    ATOMIC_STORE(&stop_, true);
+  }
+}
+
+void ObUnixDomainListener::wait()
+{
+  if (IS_INIT && ATOMIC_LOAD(&running_)) {
+    worker_.join();
+    ATOMIC_STORE(&running_, false);
+  }
+}
+
+void ObUnixDomainListener::destroy()
+{
+  if (IS_INIT) {
     is_inited_ = false;
   }
 }
@@ -167,7 +183,7 @@ int ObUnixDomainListener::run()
       OB_LOG(ERROR, "ObUnixDomainListener add listen to epoll failed", K(errno));
       ret = OB_ERR_UNEXPECTED;
     } else {
-      ATOMIC_STORE(&stop_, false);
+      ATOMIC_STORE(&running_, true);
       worker_ = std::thread([=]() {
         lib::set_thread_name("LuaHandler");
         lib::ObStackHeaderGuard stack_header_guard;
@@ -241,9 +257,4 @@ int ObUnixDomainListener::run()
     }
   }
   return ret;
-}
-
-void ObUnixDomainListener::wait()
-{
-  worker_.join();
 }

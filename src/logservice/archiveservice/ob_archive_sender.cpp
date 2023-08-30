@@ -116,7 +116,7 @@ void ObArchiveSender::destroy()
 int ObArchiveSender::start()
 {
   int ret = OB_SUCCESS;
-  ObThreadPool::set_run_wrapper(MTL_CTX(), lib::ThreadCGroup::BACK_CGROUP);
+  ObThreadPool::set_run_wrapper(MTL_CTX());
   if (OB_UNLIKELY(! inited_)) {
     ret = OB_NOT_INIT;
     ARCHIVE_LOG(INFO, "ObArchiveSender has not been initialized", KR(ret));
@@ -285,7 +285,11 @@ int ObArchiveSender::do_consume_send_task_()
   // As task issued flag is marked, no matter task is handled succ or fail
   // the flag should be dealed.
   if (OB_FAIL(get_send_task_(task, task_exist))) {
-    ARCHIVE_LOG(WARN, "get send task failed", K(ret));
+    if (OB_ENTRY_NOT_EXIST != ret) {
+      ARCHIVE_LOG(WARN, "get send task failed", K(ret));
+    } else {
+      ARCHIVE_LOG(TRACE, "get send task failed", K(ret));
+    }
   } else if (! task_exist) {
   } else if (FALSE_IT(handle(*task, consume_status))) {
   } else {
@@ -583,6 +587,7 @@ int ObArchiveSender::archive_log_(const ObBackupDest &backup_dest,
   int64_t origin_data_len = 0;
   char *filled_data = NULL;
   int64_t filled_data_len = 0;
+  const bool is_full_file = (task.get_end_lsn() - task.get_start_lsn()) == MAX_ARCHIVE_FILE_SIZE;
   const int64_t start_ts = common::ObTimeUtility::current_time();
   // 1. decide archive file
   if (OB_FAIL(decide_archive_file_(task, arg.cur_file_id_, arg.cur_file_offset_,
@@ -612,7 +617,7 @@ int ObArchiveSender::archive_log_(const ObBackupDest &backup_dest,
     ARCHIVE_LOG(WARN, "fill file header if needed failed", K(ret));
   }
   // 6. push log
-  else if (OB_FAIL(push_log_(id, path.get_obstr(), backup_dest.get_storage_info(), new_file ?
+  else if (OB_FAIL(push_log_(id, path.get_obstr(), backup_dest.get_storage_info(), is_full_file, new_file ?
           file_offset : file_offset + ARCHIVE_FILE_HEADER_SIZE,
           new_file ? filled_data : origin_data, new_file ? filled_data_len : origin_data_len))) {
     ARCHIVE_LOG(WARN, "push log failed", K(ret), K(task));
@@ -722,6 +727,7 @@ int ObArchiveSender::fill_file_header_if_needed_(const ObArchiveSendTask &task,
 int ObArchiveSender::push_log_(const ObLSID &id,
     const ObString &uri,
     const share::ObBackupStorageInfo *storage_info,
+    const bool is_full_file,
     const int64_t offset,
     char *data,
     const int64_t data_len)
@@ -729,7 +735,7 @@ int ObArchiveSender::push_log_(const ObLSID &id,
   int ret = OB_SUCCESS;
   ObArchiveIO archive_io;
 
-  if (OB_FAIL(archive_io.push_log(uri, storage_info, data, data_len, offset))) {
+  if (OB_FAIL(archive_io.push_log(uri, storage_info, data, data_len, offset, is_full_file))) {
     ARCHIVE_LOG(WARN, "push log failed", K(ret));
   } else {
     ARCHIVE_LOG(INFO, "push log succ", K(id));
@@ -787,7 +793,8 @@ bool ObArchiveSender::is_retry_ret_code_(const int ret_code) const
   return is_io_error(ret_code)
     || OB_ALLOCATE_MEMORY_FAILED == ret_code
     || OB_BACKUP_DEVICE_OUT_OF_SPACE == ret_code
-    || OB_BACKUP_PWRITE_OFFSET_NOT_MATCH == ret_code;
+    || OB_BACKUP_PWRITE_OFFSET_NOT_MATCH == ret_code
+    || OB_IO_LIMIT == ret_code;
 }
 
 bool ObArchiveSender::is_ignore_ret_code_(const int ret_code) const

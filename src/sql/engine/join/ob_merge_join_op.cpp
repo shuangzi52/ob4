@@ -137,7 +137,12 @@ int ObMergeJoinOp::inner_open()
                                                           MY_SPEC.equal_cond_infos_;
     const int64_t left_width = left_->get_spec().width_;
     const int64_t right_width = right_->get_spec().width_;
-    left_mem_bound_ratio_ = 1.2 * ((double)left_width) / ((double)(left_width + right_width));
+    const double width_ratio = ((double)left_width) / ((double)(left_width + right_width));
+    const double MIN_LEFT_MEM_BOUND_RATIO = 0.2;
+    const double MAX_LEFT_MEM_BOUND_RATIO = 0.8;
+    // We prefer more memory to the left, otherwise there may waste memory, so left_mem_bound_ratio_
+    // is multiplied by a coefficient of 1.2.
+    left_mem_bound_ratio_ = MAX(MIN(MAX_LEFT_MEM_BOUND_RATIO, 1.2 * width_ratio), MIN_LEFT_MEM_BOUND_RATIO);
     const int64_t cache_size = MY_SPEC.max_batch_size_ * BATCH_MULTIPLE_TIMES *
                                   (left_width + right_width);
     if (OB_FAIL(sql_mem_processor_.init(&mem_context_->get_malloc_allocator(),
@@ -810,8 +815,10 @@ int ObMergeJoinOp::calc_equal_conds(int64_t &cmp_res)
        OB_SUCC(ret) && 0 == cmp_res && i < MY_SPEC.equal_cond_infos_.count();
        i++) {
     const ObMergeJoinSpec::EqualConditionInfo &equal_cond = MY_SPEC.equal_cond_infos_.at(i);
-    ObExpr *l_expr = equal_cond.expr_->args_[0];
-    ObExpr *r_expr = equal_cond.expr_->args_[1];
+    ObExpr *l_expr = equal_cond.is_opposite_ ? equal_cond.expr_->args_[1]
+                                             : equal_cond.expr_->args_[0];
+    ObExpr *r_expr = equal_cond.is_opposite_ ? equal_cond.expr_->args_[0]
+                                             : equal_cond.expr_->args_[1];
     ObDatum *l_datum = NULL;
     ObDatum *r_datum = NULL;
     if (OB_FAIL(l_expr->eval(eval_ctx_, l_datum))
@@ -827,9 +834,6 @@ int ObMergeJoinOp::calc_equal_conds(int64_t &cmp_res)
         } else if (cmp_ret != 0) {
           cmp_res = cmp_ret;
           cmp_res *= MY_SPEC.merge_directions_.at(i);
-          if (equal_cond.is_opposite_) {
-            cmp_res *= -1;
-          }
         }
       }
     }
@@ -959,28 +963,22 @@ int ObMergeJoinOp::ChildBatchFetcher::init(
 int ObMergeJoinOp::ChildBatchFetcher::get_next_batch(const int64_t max_row_cnt)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(0 != backup_rows_cnt_)) {
+  const int64_t remain_backup_rows = backup_rows_cnt_ - backup_rows_used_;
+  if (OB_UNLIKELY(0 != remain_backup_rows)) {
     if (OB_UNLIKELY(backup_datums_.count() != all_exprs_->count())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("store datums cnt and child output cnt not equal", K(ret),
                 K(backup_datums_.count()), K(all_exprs_->count()));
     } else {
-      const int64_t restore_cnt = MIN(max_row_cnt, backup_rows_cnt_);
+      const int64_t restore_cnt = MIN(max_row_cnt, remain_backup_rows);
       for (int64_t i = 0; i < backup_datums_.count(); i++) {
         ObDatum *datum = all_exprs_->at(i)->locate_batch_datums(merge_join_op_.eval_ctx_);
-        MEMCPY(datum, backup_datums_.at(i), sizeof(ObDatum) * restore_cnt);
+        MEMCPY(datum, backup_datums_.at(i) + backup_rows_used_, sizeof(ObDatum) * restore_cnt);
       }
       brs_.size_ = restore_cnt;
       brs_.end_ = false;
       brs_.skip_ = NULL;
-      backup_rows_cnt_ -= restore_cnt;
-      if (OB_LIKELY(0 == backup_rows_cnt_)) {
-        backup_datums_.reset();
-      } else {
-        for (int64_t i = 0; i < backup_datums_.count(); i++) {
-          backup_datums_.at(i) = backup_datums_.at(i) + restore_cnt;
-        }
-      }
+      backup_rows_used_ += restore_cnt;
     }
   } else {
     if (brs_.end_) {
@@ -1017,21 +1015,36 @@ int ObMergeJoinOp::ChildBatchFetcher::backup_remain_rows()
   if (OB_UNLIKELY(cur_idx_ >= brs_.size_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("no remain rows", K(ret), K(cur_idx_), K(brs_.size_));
-  } else {
-    int64_t alloc_size = sizeof(ObDatum) * (brs_.size_ - cur_idx_);
+  } else if (backup_datums_.empty()) {
+    int64_t alloc_size = sizeof(ObDatum) * merge_join_op_.spec_.max_batch_size_;
     for (int64_t i = 0; i < all_exprs_->count() && OB_SUCC(ret); i++) {
-      backup_rows_cnt_ = 0;
       ObDatum *datum = NULL;
-      ObDatumVector src_datum = all_exprs_->at(i)->locate_expr_datumvector(merge_join_op_.eval_ctx_);
       if (OB_ISNULL(datum = static_cast<ObDatum *>(allocator.alloc(alloc_size)))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("allocate memory failed", K(ret));
       } else if (OB_FAIL(backup_datums_.push_back(datum))) {
         LOG_WARN("push back failed", K(ret));
-      } else {
-        for (int64_t j = cur_idx_; j < brs_.size_ && OB_SUCC(ret); j++) {
-          if (!brs_.skip_->contain(j)) {
-            datum[backup_rows_cnt_++] = *src_datum.at(j);
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_UNLIKELY(all_exprs_->count() != backup_datums_.count())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("count mismatch", K(ret), K(all_exprs_->count()), K(backup_datums_.count()));
+    } else {
+      for (int64_t i = 0; i < all_exprs_->count() && OB_SUCC(ret); i++) {
+        backup_rows_cnt_ = 0;
+        backup_rows_used_ = 0;
+        ObDatumVector src_datum = all_exprs_->at(i)->locate_expr_datumvector(merge_join_op_.eval_ctx_);
+        ObDatum *datum = backup_datums_.at(i);
+        if (OB_ISNULL(datum)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("backup datums memory is null", K(ret), K(i), K(all_exprs_->count()));
+        } else {
+          for (int64_t j = cur_idx_; j < brs_.size_ && OB_SUCC(ret); j++) {
+            if (!brs_.skip_->contain(j)) {
+              datum[backup_rows_cnt_++] = *src_datum.at(j);
+            }
           }
         }
       }

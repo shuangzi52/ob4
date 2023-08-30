@@ -101,12 +101,12 @@ int ObRawExprPrinter::print(ObRawExpr *expr)
       && scope_ != T_FIELD_LIST_SCOPE
       && scope_ != T_GROUP_SCOPE
       && scope_ != T_WHERE_SCOPE
-      && scope_ != T_NONE_SCOPE) {
+      && scope_ != T_NONE_SCOPE
+      && scope_ != T_ORDER_SCOPE
+      && (scope_ == T_HAVING_SCOPE && lib::is_mysql_mode())) {
     //expr is a alias column ref
     //alias column target list
-    PRINT_QUOT;
-    DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_alias_column_name()));
-    PRINT_QUOT;
+    PRINT_IDENT_WITH_QUOT(expr->get_alias_column_name());
   } else {
     switch (expr->get_expr_class()) {
     case ObRawExpr::EXPR_CONST: {
@@ -221,9 +221,8 @@ int ObRawExprPrinter::print(ObConstRawExpr *expr)
       }
     }
 
-    /** To preserve the type information of questionmark when it is NULL, print a cast*/
     if (OB_FAIL(ret)) {
-    } else if (is_bool_expr && OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, "1 = "))) {
+    } else if (is_bool_expr && OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, "(1 = "))) {
       /**
        * For SQL like "select * from T1 where C1 = 1 and C1 = 2",
        * because the where clause is always false,
@@ -235,8 +234,13 @@ int ObRawExprPrinter::print(ObConstRawExpr *expr)
       LOG_WARN("fail to print 1 =", K(ret));
     } else if (OB_NOT_NULL(param_store_) && 0 <= idx && idx < param_store_->count()) {
       OZ (param_store_->at(idx).print_sql_literal(buf_, buf_len_, *pos_, print_params_));
-    } else if (OB_FAIL(ObLinkStmtParam::write(buf_, buf_len_, *pos_, expr->get_value().get_unknown()))) {
-      LOG_WARN("fail to write param to buf", K(ret));
+    } else if (OB_FAIL(ObLinkStmtParam::write(buf_, buf_len_, *pos_,
+                                              expr->get_value().get_unknown(),
+                                              expr->get_data_type()))) {
+      LOG_WARN("fail to write param to buf", K(expr->get_value().get_unknown()), K(expr->get_expr_obj_meta()), K(ret));
+    }
+    if (is_bool_expr){
+      DATA_PRINTF(")");
     }
   } else if (OB_NOT_NULL(param_store_) && T_QUESTIONMARK == expr->get_expr_type()) {
     int64_t idx = expr->get_value().get_unknown();
@@ -285,7 +289,7 @@ int ObRawExprPrinter::print(ObConstRawExpr *expr)
        * by rewriting startup_filter as "0 = 1" or "1 = 1".
        * 
        */
-      if (OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, expr->get_value().get_bool() ? "1 = 1" : "0 = 1"))) {
+      if (OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, expr->get_value().get_bool() ? "(1 = 1)" : "(0 = 1)"))) {
         LOG_WARN("fail to print startup filter", K(ret));
       }
     } else if (OB_FAIL(expr->get_value().print_sql_literal(buf_, buf_len_, *pos_, print_params_))) {
@@ -375,101 +379,61 @@ int ObRawExprPrinter::print(ObColumnRefRawExpr *expr)
     PRINT_EXPR(expr->get_dependant_expr());
   } else {
     ObArenaAllocator arena_alloc;
-    ObString col_name;
-    if (OB_FAIL(ObSQLUtils::generate_new_name_with_escape_character(allocator, expr->get_column_name(),
-        col_name, is_oracle_mode))) {
-      LOG_WARN("fail to generate new name with escape character", K(ret));
-    } else if (is_oracle_mode &&
+    ObString col_name = expr->get_column_name();
+    if (is_oracle_mode &&
           OB_FAIL(ObSelectStmtPrinter::remove_double_quotation_for_string(col_name, arena_alloc))) {
       LOG_WARN("failed to remove double quotation for string", K(ret));
-    } else if (OB_FAIL(ObCharset::charset_convert(allocator,
-                                                  col_name,
-                                                  CS_TYPE_UTF8MB4_BIN,
-                                                  print_params_.cs_type_,
-                                                  col_name))) {
-      LOG_WARN("fail to convert charset", K(ret));
     } else if (print_params_.for_dblink_) {
       if (!expr->is_cte_generated_column() &&
           !expr->get_database_name().empty()) {
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_database_name()));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(expr->get_database_name());
         DATA_PRINTF(".");
       }
       if (!expr->get_table_name().empty()) {
         ObString table_name = expr->get_table_name();
-        CONVERT_CHARSET_FOR_RPINT(allocator, table_name);
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(table_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(table_name);
         DATA_PRINTF(".");
       }
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(col_name);
     } else if (expr->is_cte_generated_column()) {
       ObString table_name = expr->get_synonym_name().empty() ?
                                                   expr->get_table_name() : expr->get_synonym_name();
       if (OB_SUCC(ret)) {
         // note: expr's table_name is equal to alias if table's alias is not empty,
-        CONVERT_CHARSET_FOR_RPINT(allocator, table_name);
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(table_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(table_name);
         DATA_PRINTF(".");
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(col_name);
       }
     } else if (OB_UNLIKELY(only_column_namespace_)) {
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(col_name);
     } else if (expr->is_from_alias_table()) {
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_table_name()));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(expr->get_table_name());
       DATA_PRINTF(".");
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(col_name);
     } else {
       if (!expr->get_synonym_name().empty() && !expr->get_synonym_db_name().empty()) {
         ObString synonyn_db_name = expr->get_synonym_db_name();
-        CONVERT_CHARSET_FOR_RPINT(allocator, synonyn_db_name);
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(synonyn_db_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(synonyn_db_name);
         DATA_PRINTF(".");
       } else if (!expr->get_synonym_name().empty() && expr->get_synonym_db_name().empty()) {
         // do nothing, synonym database name is not explicit
       } else if (expr->get_database_name().length() > 0) {
         ObString database_name = expr->get_database_name();
-        CONVERT_CHARSET_FOR_RPINT(allocator, database_name);
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(database_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(database_name);
         DATA_PRINTF(".");
       }
       ObString table_name = expr->get_synonym_name().empty() ?
                                   expr->get_table_name() : expr->get_synonym_name();
       if (OB_SUCC(ret)) {
-        CONVERT_CHARSET_FOR_RPINT(allocator, table_name);
         // note: expr's table_name is equal to alias if table's alias is not empty,
         if (!table_name.empty()) {
-          PRINT_QUOT;
-          DATA_PRINTF("%.*s", LEN_AND_PTR(table_name));
-          PRINT_QUOT;
+          PRINT_IDENT_WITH_QUOT(table_name);
           DATA_PRINTF(".");
-          PRINT_QUOT;
-          DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-          PRINT_QUOT;
+          PRINT_IDENT_WITH_QUOT(col_name);
         } else {
           // oracle allow derived table without alias name, table_name is empty here.
           // e.g.:  select * from (select 1 from dual)
-          PRINT_QUOT;
-          DATA_PRINTF("%.*s", LEN_AND_PTR(col_name));
-          PRINT_QUOT;
+          PRINT_IDENT_WITH_QUOT(col_name);
         }
       }
     }
@@ -743,25 +707,26 @@ int ObRawExprPrinter::print(ObOpRawExpr *expr)
       break;
     }
     case T_OBJ_ACCESS_REF: {
-      bool parent_is_table = false;
       ObObjAccessRawExpr *obj_access_expr = static_cast<ObObjAccessRawExpr*>(expr);
-      for (int64_t i = 0; OB_SUCC(ret) && i < obj_access_expr->get_access_idxs().count(); ++i) {
-        const ObString &var_name = obj_access_expr->get_access_idxs().at(i).var_name_;
-        if (!var_name.empty()) {
-          if (parent_is_table) {
-            DATA_PRINTF("(");
-          } else if (i > 0) {
-            DATA_PRINTF(".");
-          }
-          DATA_PRINTF("%.*s", LEN_AND_PTR(var_name));
-          if (parent_is_table) {
-            DATA_PRINTF(")");
-          }
-        } else {
-          int64_t var_index = obj_access_expr->get_access_idxs().at(i).var_index_;
-          DATA_PRINTF("(%ld)", var_index);
+      bool parent_is_table = false;
+      for (int64_t i = 0; OB_SUCC(ret) && i < obj_access_expr->get_orig_access_idxs().count(); ++i) {
+        pl::ObObjAccessIdx &current_idx = obj_access_expr->get_orig_access_idxs().at(i);
+        if (parent_is_table) {
+          DATA_PRINTF("(");
+        } else if (i > 0) {
+          DATA_PRINTF(".");
         }
-        parent_is_table = obj_access_expr->get_access_idxs().at(i).elem_type_.is_nested_table_type();
+        if (OB_NOT_NULL(current_idx.get_sysfunc_)) {
+          PRINT_EXPR(current_idx.get_sysfunc_);
+        } else if (!current_idx.var_name_.empty()) {
+          DATA_PRINTF("%.*s", current_idx.var_name_.length(), current_idx.var_name_.ptr());
+        } else {
+          DATA_PRINTF("%ld", current_idx.var_index_);
+        }
+        if (parent_is_table) {
+          DATA_PRINTF(")");
+        }
+        parent_is_table = current_idx.elem_type_.is_nested_table_type();
       }
       break;
     }
@@ -802,7 +767,21 @@ int ObRawExprPrinter::print(ObOpRawExpr *expr)
       SET_SYMBOL_IF_EMPTY("MULTISET");
       break;
     }
-    case T_OP_BOOL:
+    case T_OP_BOOL:{
+      CK(1 == expr->get_param_count());
+      if (print_params_.for_dblink_ && lib::is_mysql_mode()) {
+        DATA_PRINTF("!!(");
+        PRINT_EXPR(expr->get_param_expr(0));
+        DATA_PRINTF(")");
+      } else if (expr->has_flag(IS_INNER_ADDED_EXPR)) {
+        // ignore print inner added expr
+        PRINT_EXPR(expr->get_param_expr(0));
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("bool expr have to be inner expr for now", K(ret), K(*expr));
+      }
+      break;
+    }
     case T_FUN_SYS_REMOVE_CONST: {
       if (expr->has_flag(IS_INNER_ADDED_EXPR)) {
         // ignore print inner added expr
@@ -1797,12 +1776,33 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
       LOG_WARN("fail to print cast_type", K(ret));
     }
   }
+
   if (OB_SUCC(ret)) {
     if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(3))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("pretty value isn't int value");
+      LOG_WARN("truncate value isn't int value");
     } else {
       int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(3))->get_value().get_int();
+      switch (type) {
+        case 0:
+          break;
+        case 1:
+          DATA_PRINTF(" TRUNCATE");
+          break;
+        default:
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid type value.", K(type));
+          break;
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().is_int()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ascii value isn't int value");
+    } else {
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF("");
@@ -1818,11 +1818,11 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("type value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" error");
@@ -1835,7 +1835,7 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
           break;
         case 2:
           DATA_PRINTF(" default ");
-          PRINT_EXPR(expr->get_param_expr(5));
+          PRINT_EXPR(expr->get_param_expr(6));
           break;
         default:
           ret = OB_ERR_UNEXPECTED;
@@ -1848,11 +1848,11 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("type value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" error");
@@ -1863,7 +1863,7 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
           break;
         case 2:
           DATA_PRINTF(" default ");
-          PRINT_EXPR(expr->get_param_expr(8));
+          PRINT_EXPR(expr->get_param_expr(9));
           break;
         default:
           ret = OB_ERR_UNEXPECTED;
@@ -1878,7 +1878,7 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
   if (lib::is_oracle_mode()) {
     if (OB_SUCC(ret)) {
       bool not_first_node = false;
-      for (size_t i = 10;  OB_SUCC(ret) && i < expr->get_param_count(); i++) {
+      for (size_t i = 11;  OB_SUCC(ret) && i < expr->get_param_count(); i++) {
         if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(i))->get_value().is_int()) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("type value isn't int value");
@@ -1893,7 +1893,6 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
               not_first_node = false;
               break;
             case 1:
-            case 3:
               if (not_first_node) {
                 DATA_PRINTF(")");
               }
@@ -1906,6 +1905,8 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
               }
               DATA_PRINTF(" ignore ");
               not_first_node = false;
+              break;
+            case 3:
               break;
             case 4:
               if (not_first_node) {
@@ -1943,7 +1944,7 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
               LOG_WARN("invalid type value.", K(type));
               break;
           }
-          if (OB_SUCC(ret) && type <= 3) {
+          if (OB_SUCC(ret) && type < 3) {
             DATA_PRINTF(" on mismatch ");
           }
         }
@@ -1962,9 +1963,27 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
   if (OB_SUCC(ret)) {
     if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(3))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("scalar value isn't int value");
+      LOG_WARN("truncate value isn't int value");
     } else {
       int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(3))->get_value().get_int();
+      switch (type) {
+        case 1:
+          DATA_PRINTF(" TRUNCATE");
+          break;
+        case 0:
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().is_int()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("scalar value isn't int value");
+    } else {
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" ALLOW SCALARS");
@@ -1982,11 +2001,11 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("pretty value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(4))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF("");
@@ -2002,11 +2021,11 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(6))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("ascii value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(5))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(6))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF("");
@@ -2022,11 +2041,11 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(6))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("wrapper value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(6))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" WITHOUT WRAPPER");
@@ -2062,11 +2081,11 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("type value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(7))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" error on error");
@@ -2093,11 +2112,11 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
     }
   }
   if (OB_SUCC(ret)) {
-    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().is_int()) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(9))->get_value().is_int()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("type value isn't int value");
     } else {
-      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(8))->get_value().get_int();
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(9))->get_value().get_int();
       switch (type) {
         case 0:
           DATA_PRINTF(" error on empty");
@@ -2123,29 +2142,28 @@ int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
       }
     }
   }
-  if (lib::is_oracle_mode()) {
-    if (OB_SUCC(ret)) {
-      if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(9))->get_value().is_int()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("type value isn't int value");
-      } else {
-        int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(9))->get_value().get_int();
-        switch (type) {
-          case 0:
-            DATA_PRINTF(" error on mismatch");
-            break;
-          case 1:
-          case 2:
-            DATA_PRINTF(" null on mismatch");
-            break;
-          case 3:
-            DATA_PRINTF(" dot on mismatch");
-            break;
-          default:
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("invalid type value.", K(type));
-            break;
-        }
+
+  if (OB_SUCC(ret)) {
+    if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(10))->get_value().is_int()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("type value isn't int value");
+    } else {
+      int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(10))->get_value().get_int();
+      switch (type) {
+        case 0:
+          DATA_PRINTF(" error on mismatch");
+          break;
+        case 1:
+        case 2:
+          DATA_PRINTF(" null on mismatch");
+          break;
+        case 3:
+          DATA_PRINTF(" dot on mismatch");
+          break;
+        default:
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid type value.", K(type));
+          break;
       }
     }
   }
@@ -2361,7 +2379,7 @@ int ObRawExprPrinter::print_json_expr(ObSysFunRawExpr *expr)
       }
       case T_FUN_SYS_JSON_QUERY: {
         // json query (json doc, json path, (returning cast_type) opt_scalars opt_pretty opt_ascii opt_wrapper on_error on_empty on_mismatch).
-        if (OB_UNLIKELY(expr->get_param_count() != 10)) {
+        if (OB_UNLIKELY(expr->get_param_count() != 11)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected param count of expr to type", K(ret), KPC(expr), K(expr->get_param_count()));
         } else {
@@ -2826,19 +2844,13 @@ int ObRawExprPrinter::print(ObSysFunRawExpr *expr)
           LOG_WARN("param count should be equal 1", K(ret), K(seq_expr->get_param_count()));
         } else {
           if (!seq_expr->get_database_name().empty()) {
-            PRINT_QUOT;
-            DATA_PRINTF("%.*s", LEN_AND_PTR(seq_expr->get_database_name()));
-            PRINT_QUOT;
+            PRINT_IDENT_WITH_QUOT(seq_expr->get_database_name());
             DATA_PRINTF(".");
           }
           if (!seq_expr->get_name().empty() && !seq_expr->get_action().empty()) {
-            PRINT_QUOT;
-            DATA_PRINTF("%.*s", LEN_AND_PTR(seq_expr->get_name()));
-            PRINT_QUOT;
+            PRINT_IDENT_WITH_QUOT(seq_expr->get_name());
             DATA_PRINTF(".");
-            PRINT_QUOT;
-            DATA_PRINTF("%.*s", LEN_AND_PTR(seq_expr->get_action()));
-            PRINT_QUOT;
+            PRINT_IDENT_WITH_QUOT(seq_expr->get_action());
           } else {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("sequence should sepcify format as seqname.action", K(ret));
@@ -3012,16 +3024,12 @@ int ObRawExprPrinter::print(ObSysFunRawExpr *expr)
           LOG_WARN("unexpected param type of expr", K(ret), KPC(expr));
         } else {
           sub_pk_expr = static_cast<ObColumnRefRawExpr*>(expr->get_param_expr(1));
-          ObString table_name = sub_pk_expr->get_table_name();
-          if (!table_name.empty()) {
-            PRINT_QUOT;
-            DATA_PRINTF("%.*s", LEN_AND_PTR(table_name));
-            PRINT_QUOT;
-            DATA_PRINTF(".");
-            PRINT_QUOT;
-            DATA_PRINTF("%.*s", LEN_AND_PTR(ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME)));
-            PRINT_QUOT;
-          }
+          // Mock a rowid ColumnRefExpr temporarily
+          ObColumnRefRawExpr tmp_rowid_expr;
+          tmp_rowid_expr.set_expr_type(sub_pk_expr->get_expr_type());
+          tmp_rowid_expr.assign(*sub_pk_expr);
+          tmp_rowid_expr.set_column_name(ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME));
+          PRINT_EXPR(&tmp_rowid_expr);
         }
         break;
       }
@@ -3153,9 +3161,7 @@ int ObRawExprPrinter::print(ObSysFunRawExpr *expr)
         break;
       }
       case T_FUN_UDF: {
-        PRINT_QUOT;
-        DATA_PRINTF("%.*s", LEN_AND_PTR(func_name));
-        PRINT_QUOT;
+        PRINT_IDENT_WITH_QUOT(func_name);
         OZ(inner_print_fun_params(*expr));
         break;
       }
@@ -3219,21 +3225,15 @@ int ObRawExprPrinter::print(ObUDFRawExpr *expr)
     if (!print_params_.for_dblink_ &&
         !expr->get_database_name().empty() &&
          expr->get_database_name().case_compare("oceanbase") != 0) {
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_database_name()));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(expr->get_database_name());
       DATA_PRINTF(".");
     }
     if (!expr->get_package_name().empty() &&
         !expr->get_is_udt_cons()) {
-      PRINT_QUOT;
-      DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_package_name()));
-      PRINT_QUOT;
+      PRINT_IDENT_WITH_QUOT(expr->get_package_name());
       DATA_PRINTF(".");
     }
-    PRINT_QUOT;
-    DATA_PRINTF("%.*s", LEN_AND_PTR(expr->get_func_name()));
-    PRINT_QUOT;
+    PRINT_IDENT_WITH_QUOT(expr->get_func_name());
     DATA_PRINTF("(");
 
     ObIArray<ObExprResType> &params_type = expr->get_params_type();
@@ -3248,9 +3248,7 @@ int ObRawExprPrinter::print(ObUDFRawExpr *expr)
         // do not print construnct null self argument
       } else {
         if (!params_name.at(i).empty()) {
-          PRINT_QUOT;
-          DATA_PRINTF("%.*s", LEN_AND_PTR(params_name.at(i)));
-          PRINT_QUOT;
+          PRINT_IDENT_WITH_QUOT(params_name.at(i));
           DATA_PRINTF("=>");
         }
         PRINT_EXPR(expr->get_param_expr(i));
@@ -3361,6 +3359,7 @@ int ObRawExprPrinter::print(ObWinFunRawExpr *expr)
       case T_FUN_JSON_OBJECTAGG:
         SET_SYMBOL_IF_EMPTY("json_objectagg");
       case T_FUN_PL_AGG_UDF: {
+        ObString database;
         if (OB_ISNULL(expr->get_agg_expr())) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get unexpected null", K(ret), KPC(expr));
@@ -3371,11 +3370,22 @@ int ObRawExprPrinter::print(ObWinFunRawExpr *expr)
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("get unexpected null", K(ret), KPC(expr));
           } else {
-            symbol = static_cast<ObUDFRawExpr*>(udf_expr)->get_func_name();
+            ObUDFRawExpr* udf = static_cast<ObUDFRawExpr*>(udf_expr);
+            database = udf->get_database_name();
+            symbol = udf->get_func_name();
           }
         }
         if (OB_SUCC(ret)) {
-          DATA_PRINTF("%.*s(", LEN_AND_PTR(symbol));
+          if(!database.empty()){
+            PRINT_IDENT_WITH_QUOT(database);
+            DATA_PRINTF(".");
+          }
+          if (T_FUN_PL_AGG_UDF == type) {
+            PRINT_IDENT_WITH_QUOT(symbol);
+          } else {
+            DATA_PRINTF("%.*s", LEN_AND_PTR(symbol));
+          }
+          DATA_PRINTF("(");
         }
         // distinct, default 'all', not print
         if (OB_SUCC(ret)) {
@@ -3843,7 +3853,14 @@ int ObRawExprPrinter::print_window_clause(ObWinFunRawExpr *expr)
       } else if (BoundType::BOUND_CURRENT_ROW == expr->get_upper().type_) {
         DATA_PRINTF(" CURRENT ROW ");
       } else if (BoundType::BOUND_INTERVAL == expr->get_upper().type_) {
+        if (!expr->get_upper().is_nmb_literal_) {
+          DATA_PRINTF(" INTERVAL ");
+        }
         PRINT_EXPR(expr->get_upper().interval_expr_);
+        if (!expr->get_upper().is_nmb_literal_) {
+          DATA_PRINTF(" ");
+          PRINT_EXPR(expr->get_upper().date_unit_expr_);
+        }
         if (expr->get_upper().is_preceding_) {
           DATA_PRINTF(" PRECEDING ");
         } else {
@@ -3861,7 +3878,14 @@ int ObRawExprPrinter::print_window_clause(ObWinFunRawExpr *expr)
       } else if (BoundType::BOUND_CURRENT_ROW == expr->get_lower().type_) {
         DATA_PRINTF(" CURRENT ROW ");
       } else if (BoundType::BOUND_INTERVAL == expr->get_lower().type_) {
+        if (!expr->get_lower().is_nmb_literal_) {
+          DATA_PRINTF(" INTERVAL ");
+        }
         PRINT_EXPR(expr->get_lower().interval_expr_);
+        if (!expr->get_lower().is_nmb_literal_) {
+          DATA_PRINTF(" ");
+          PRINT_EXPR(expr->get_lower().date_unit_expr_);
+        }
         if (expr->get_lower().is_preceding_) {
           DATA_PRINTF(" PRECEDING ");
         } else {
@@ -3999,7 +4023,7 @@ int ObRawExprPrinter::print_cast_type(ObRawExpr *expr)
         if (lib::is_oracle_mode()) {
           DATA_PRINTF("char(%d %s)", len, get_length_semantics_str(length_semantics));
         } else {
-          if (len > 0) {
+          if (len >= 0) {
             DATA_PRINTF("char(%d) charset %s", len, ObCharset::charset_name(
                         static_cast<ObCollationType>(collation)));
           } else {
@@ -4260,9 +4284,7 @@ int ObRawExprPrinter::print_cast_type(ObRawExpr *expr)
         } else if (OB_FAIL(schema_guard_->get_udt_info(dest_tenant_id, udt_id, dest_info))) {
           LOG_WARN("failed to get udt info", K(ret));
         } else {
-          PRINT_QUOT;
-          DATA_PRINTF("%.*s", LEN_AND_PTR(dest_info->get_type_name()));
-          PRINT_QUOT;
+          PRINT_IDENT_WITH_QUOT(dest_info->get_type_name());
         }
         break;
       }
@@ -4505,10 +4527,10 @@ int ObRawExprPrinter::print_xml_element_expr(ObSysFunRawExpr *expr)
 
         if (OB_SUCC(ret) && format_type == 0) {
           if (buf_[cur_pos] == '\'') {
-             buf_[cur_pos] = ' ';
+             buf_[cur_pos] = '"';
           }
           if (buf_[new_pos - 1] == '\'') {
-             buf_[new_pos - 1] = ' ';
+             buf_[new_pos - 1] = '"';
           }
         }
 
@@ -4621,7 +4643,9 @@ int ObRawExprPrinter::print_xml_attributes_expr(ObSysFunRawExpr *expr)
           }
           PRINT_EXPR(expr->get_param_expr(i));
           ObObj attr_key_obj = static_cast<ObConstRawExpr*>(expr->get_param_expr(i + 1))->get_value();
-          if (attr_key_obj.get_type() == ObObjType::ObUnknownType) {
+          ObItemType expr_type = expr->get_param_expr(i + 1)->get_expr_type();
+          if ((T_VARCHAR != expr_type && T_CHAR != expr_type) ||
+              attr_key_obj.get_type() == ObObjType::ObUnknownType) {
             DATA_PRINTF(" as evalname ");
             PRINT_EXPR(expr->get_param_expr(i + 1));
           } else if (!attr_key_obj.get_string().empty()) {

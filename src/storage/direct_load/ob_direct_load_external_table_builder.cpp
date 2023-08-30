@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_external_table_builder.h"
@@ -79,6 +86,7 @@ int ObDirectLoadExternalTableBuilder::init(const ObDirectLoadExternalTableBuildP
 }
 
 int ObDirectLoadExternalTableBuilder::append_row(const ObTabletID &tablet_id,
+                                                 const table::ObTableLoadSequenceNo &seq_no,
                                                  const ObDatumRow &datum_row)
 {
   int ret = OB_SUCCESS;
@@ -94,9 +102,9 @@ int ObDirectLoadExternalTableBuilder::append_row(const ObTabletID &tablet_id,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(build_param_), K(tablet_id), K(datum_row));
   } else {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(external_append_row_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_append_row_time_us);
     if (OB_FAIL(external_row_.from_datums(datum_row.storage_datums_, datum_row.count_,
-                                          build_param_.table_data_desc_.rowkey_column_num_))) {
+                                          build_param_.table_data_desc_.rowkey_column_num_, seq_no))) {
       LOG_WARN("fail to from datums", KR(ret));
     } else if (OB_FAIL(external_writer_.write_item(external_row_))) {
       LOG_WARN("fail to write item", KR(ret));
@@ -117,7 +125,7 @@ int ObDirectLoadExternalTableBuilder::close()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("direct load external table is closed", KR(ret));
   } else {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(external_append_row_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_append_row_time_us);
     if (OB_FAIL(external_writer_.close())) {
       LOG_WARN("fail to close external writer", KR(ret));
     } else {

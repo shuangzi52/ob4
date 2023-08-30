@@ -58,7 +58,7 @@ public:
   int64_t get_accepted_mode_pid() const { return accepted_mode_pid_; }
   FetchLogTask& operator=(const FetchLogTask &task);
 
-  TO_STRING_KV(K_(timestamp_us), K_(id), K_(server), K_(fetch_type), K_(proposal_id),
+  TO_STRING_KV(K_(timestamp_us), K_(id), K_(server), "fetch_type", fetch_type_2_str(fetch_type_), K_(proposal_id),
                K_(prev_lsn), K_(start_lsn), K_(log_size), K_(log_count), K_(accepted_mode_pid));
 private:
   int64_t timestamp_us_;
@@ -99,7 +99,6 @@ public:
   void free_fetch_log_task(FetchLogTask *task);
   int update_replayable_point(const share::SCN &replayable_scn);
 private:
-  bool is_task_queue_timeout_(FetchLogTask *fetch_log_task) const;
   int try_remove_task_from_cache_(FetchLogTask *fetch_log_task);
   int push_task_into_cache_(FetchLogTask *fetch_log_task);
 private:
@@ -113,6 +112,8 @@ private:
   share::SCN replayable_point_;
   mutable SpinLock cache_lock_;
   ObSEArray<FetchLogTask, DEFAULT_CACHED_FETCH_TASK_NUM> fetch_task_cache_;
+  ObMiniStat::ObStatItem fetch_wait_cost_stat_;
+  ObMiniStat::ObStatItem fetch_log_cost_stat_;
   DISALLOW_COPY_AND_ASSIGN(FetchLogEngine);
 };
 } // namespace logservice

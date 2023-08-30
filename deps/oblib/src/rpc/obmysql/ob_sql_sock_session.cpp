@@ -28,7 +28,8 @@ ObSqlSockSession::ObSqlSockSession(ObISMConnectionCallback& conn_cb, ObSqlNio* n
     sql_req_(ObRequest::OB_MYSQL, 1),
     last_pkt_sz_(0),
     pending_write_buf_(NULL),
-    pending_write_sz_(0)
+    pending_write_sz_(0),
+    sql_session_id_(0)
 {
   sql_req_.set_server_handle_context(this);
   is_inited_ = true;
@@ -175,6 +176,11 @@ SSL* ObSqlSockSession::get_ssl_st()
 int ObSqlSockSession::write_hanshake_packet(const char *buf, int64_t sz)
 {
   return nio_->write_handshake_packet((void *)this, buf, sz);
+}
+
+void ObSqlSockSession::set_tls_version_option(uint64_t tls_option)
+{
+  nio_->set_tls_version_option((void *)this, tls_option);
 }
 
 }; // end namespace obmysql

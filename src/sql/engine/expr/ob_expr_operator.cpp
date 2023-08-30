@@ -804,7 +804,12 @@ int ObExprOperator::aggregate_charsets(
     ObObjMeta coll;
     for (int i = 0; OB_SUCC(ret) && i < param_num; ++i) {
       coll.reset();
-      coll.set_collation_type(types[i].get_collation_type());
+      // issue:49962420 The xml type calls get_collation_type() to return the result of binary, here is set to utf8
+      if (type.is_string_type() && types[i].is_xml_sql_type()) {
+        coll.set_collation_type(ObCollationType::CS_TYPE_UTF8MB4_BIN);
+      } else {
+        coll.set_collation_type(types[i].get_collation_type());
+      }
       coll.set_collation_level(types[i].get_collation_level());
       ret = coll_types.push_back(coll);
     } // end for
@@ -1024,7 +1029,7 @@ int ObExprOperator::is_same_kind_type_for_case(const ObExprResType &type1, const
   return ret;
 }
 
-// coaesce expr, case when expr
+// coalesce expr, case when expr
 int ObExprOperator::aggregate_result_type_for_case(
   ObExprResType &type,
   const ObExprResType *types,
@@ -1052,12 +1057,14 @@ int ObExprOperator::aggregate_result_type_for_case(
     }
     nth = OB_INVALID_ID == nth ? 0 : nth;
     const ObExprResType &res_type = types[nth];
-    if (need_merge_type && lib::is_oracle_mode() && ObTinyIntType == types[0].get_type()) {
+    if (need_merge_type && lib::is_oracle_mode() && is_called_in_sql
+        && ObTinyIntType == types[0].get_type()) {
       ret = OB_ERR_CALL_WRONG_ARG;
       LOG_WARN("PLS-00306: wrong number or types of arguments in call", K(ret));
     }
     for (int64_t i = 1; OB_SUCC(ret) && i < param_num; ++i) {
-      if (need_merge_type && lib::is_oracle_mode() && ObTinyIntType == types[i].get_type()) {
+      if (need_merge_type && lib::is_oracle_mode() && is_called_in_sql
+          && ObTinyIntType == types[i].get_type()) {
         ret = OB_ERR_CALL_WRONG_ARG;
         LOG_WARN("PLS-00306: wrong number or types of arguments in call", K(ret));
       } else if (OB_FAIL(ObExprOperator::is_same_kind_type_for_case(res_type,
@@ -1070,7 +1077,15 @@ int ObExprOperator::aggregate_result_type_for_case(
     }
   }
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(aggregate_result_type_for_merge(type, types, param_num, conn_coll_type,
+    if (need_merge_type && lib::is_oracle_mode() && ObTinyIntType == types[0].get_type()) {
+      // bypass `aggregate_result_type_for_merge()` when oracle `case expression` returns boolean,
+      // also known as ObTinyIntType. `aggregate_result_type_for_merge()` would merge
+      // ObTinyIntType into ObInt32Type.
+      type.set_type(ObTinyIntType);
+      if (OB_FAIL(aggregate_numeric_accuracy_for_merge(type, types, param_num, is_oracle_mode))) {
+        LOG_WARN("fail to aggregate numeric accuracy", K(ret));
+      }
+    } else if (OB_FAIL(aggregate_result_type_for_merge(type, types, param_num, conn_coll_type,
         is_oracle_mode, default_length_semantics, session, need_merge_type, skip_null,
         is_called_in_sql))) {
       LOG_WARN("fail to aggregate result type", K(ret));
@@ -1506,6 +1521,9 @@ int ObExprDFMConvertCtx::parse_format(const ObString &format_str,
   OZ (dfm_elems_.assign(dfm_elems));
   OZ (elem_flags_.add_members(elem_flags));
   return ret;
+}
+
+ObExprFindIntCachedValue::~ObExprFindIntCachedValue() {
 }
 
 ObObjType ObExprOperator::enumset_calc_types_[ObMaxTC] =
@@ -4903,6 +4921,7 @@ int ObMinMaxExprOperator::calc_result_meta_for_comparison(
         max_length = MAX(max_length, types_stack[i].get_length());
       }
       type.set_length(static_cast<ObLength>(max_length));
+      type.set_scale(SCALE_UNKNOWN_YET);
     } else {
       int64_t max_scale = 0;
       int64_t max_precision = 0;

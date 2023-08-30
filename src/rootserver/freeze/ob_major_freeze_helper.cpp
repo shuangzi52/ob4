@@ -95,14 +95,29 @@ int ObMajorFreezeHelper::get_freeze_info(
         LOG_WARN("fail to check tenant is restore", KR(ret), K(i), "freeze_info", tmp_info_array.at(i));
       } else if (is_restore) {
         LOG_INFO("skip restoring tenant to do major freeze", K(tenant_id));
+        const char *warn_buf = "tenant is in restore, major freeze is not allowed now";
+        int tmp_ret = OB_SUCCESS;
+        if (OB_TMP_FAIL(add_user_warning(tenant_id, warn_buf))) {
+          LOG_WARN("fail to add user warning", KR(tmp_ret), K(tenant_id));
+        }
       } else if (OB_FAIL(share::ObAllTenantInfoProxy::load_tenant_info(tenant_id, GCTX.sql_proxy_,
                                                                 false, tenant_info))) {
-        LOG_WARN("fail to load tenant info", KR(ret), K(tenant_id));
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS; // ignore ret, so as to process the next tenant
+          LOG_WARN("tenant may be deleted, skip major freeze for this tenant", K(tenant_id));
+        } else {
+          LOG_WARN("fail to load tenant info", KR(ret), K(tenant_id));
+        }
       }
       // Skip major freeze for standby tenants and thus avoid OB_MAJOR_FREEZE_NOT_ALLOW incurred by
       // standby tenants, only when launching major freeze on more than one tenant.
       else if (tenant_info.is_standby() && (info_cnt > 1)) {
         LOG_INFO("skip major freeze for standby tenant", K(tenant_info));
+        const char *warn_buf = "standby tenant sync freeze info from primary tenant, not allowed to launch major freeze";
+        int tmp_ret = OB_SUCCESS;
+        if (OB_TMP_FAIL(add_user_warning(tenant_id, warn_buf))) {
+          LOG_WARN("fail to add user warning", KR(tmp_ret), K(tenant_id));
+        }
       } else if (OB_FAIL(freeze_info_array.push_back(tmp_info_array.at(i)))) {
         LOG_WARN("fail to push back freeze info", KR(ret), K(i), "freeze_info", tmp_info_array.at(i));
       }
@@ -143,9 +158,22 @@ int ObMajorFreezeHelper::get_all_tenant_freeze_info(
     LOG_WARN("fail to get tenant ids", KR(ret));
   } else {
     for (int64_t i = 0; (i < tenant_ids.count()) && OB_SUCC(ret); ++i) {
-      obrpc::ObSimpleFreezeInfo info(tenant_ids[i]);
-      if(OB_FAIL(freeze_info_array.push_back(info))) {
-        LOG_WARN("fail to push back", KR(ret), "tenant_id", tenant_ids[i]);
+      // only launch major freeze for tenant whose status is normal, and skip major freeze for
+      // tenant whose status is not normal.
+      const ObSimpleTenantSchema *tenant_schema = nullptr;
+      if (OB_FAIL(schema_guard.get_tenant_info(tenant_ids[i], tenant_schema))) {
+        LOG_WARN("fail to get simple tenant schema", KR(ret), "tenant_id", tenant_ids[i]);
+      } else if (OB_ISNULL(tenant_schema)) {
+        ret = OB_INNER_STAT_ERROR;
+        LOG_WARN("tenant schema is null", KR(ret), "tenant_id", tenant_ids[i]);
+      } else if (OB_UNLIKELY(!tenant_schema->is_normal())) {
+        LOG_WARN("tenant status is not normal, skip major freeze for this tenant", "tenant_id",
+                 tenant_ids[i], "status", tenant_schema->get_status());
+      } else { // tenant_schema->is_normal()
+        obrpc::ObSimpleFreezeInfo info(tenant_ids[i]);
+        if(OB_FAIL(freeze_info_array.push_back(info))) {
+          LOG_WARN("fail to push back", KR(ret), "tenant_id", tenant_ids[i]);
+        }
       }
     }
   }
@@ -433,6 +461,27 @@ int ObMajorFreezeHelper::get_frozen_scn(
     frozen_scn = frozen_status.frozen_scn_;
   }
 
+  return ret;
+}
+
+int ObMajorFreezeHelper::add_user_warning(
+    const uint64_t tenant_id,
+    const char *buf)
+{
+  int ret = OB_SUCCESS;
+  const int64_t MAX_WARNING_LEN = 1000;
+  char warn_buf[1024] = { 0 };
+  if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id)) || OB_ISNULL(buf)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), KP(buf));
+  } else if (STRLEN(buf) > MAX_WARNING_LEN) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("buf is too long", KR(ret), "buf_len", STRLEN(buf), K(MAX_WARNING_LEN));
+  } else if (OB_FAIL(databuff_printf(warn_buf, 1024, "[T%lu]%s", tenant_id, buf))) {
+    LOG_WARN("fail to construct warn buf", KR(ret));
+  } else {
+    LOG_USER_WARN(OB_MAJOR_FREEZE_NOT_ALLOW, warn_buf);
+  }
   return ret;
 }
 

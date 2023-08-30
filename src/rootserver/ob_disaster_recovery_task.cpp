@@ -291,7 +291,7 @@ int ObDRTask::build_execute_result(
                           : (now - get_schedule_time());
   execute_result.reset();
   if (OB_FAIL(execute_result.append_fmt(
-              "ret:%d; elapsed:%ld;", ret_code, elapsed))) {
+              "ret:%d, %s; elapsed:%ld;", ret_code, common::ob_error_name(ret_code), elapsed))) {
     LOG_WARN("fail to append to execute_result", KR(ret), K(ret_code), K(elapsed));
   } else if (OB_SUCCESS != ret_code
              && OB_FAIL(execute_result.append_fmt(" ret_comment:%s;",
@@ -1016,6 +1016,7 @@ int ObAddLSReplicaTask::check_before_execute(
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_EXECUTE_ADD_REPLICA_ERROR);
 int ObAddLSReplicaTask::execute(
     obrpc::ObSrvRpcProxy &rpc_proxy,
     int &ret_code,
@@ -1023,8 +1024,11 @@ int ObAddLSReplicaTask::execute(
 {
   int ret = OB_SUCCESS;
 
+  DEBUG_SYNC(BEFORE_SEND_ADD_REPLICA_DRTASK);
   ObLSAddReplicaArg arg;
-  if (OB_FAIL(arg.init(
+  if (OB_UNLIKELY(ERRSIM_EXECUTE_ADD_REPLICA_ERROR)) {
+    ret = ERRSIM_EXECUTE_ADD_REPLICA_ERROR;
+  } else if (OB_FAIL(arg.init(
           get_task_id(),
           get_tenant_id(),
           get_ls_id(),
@@ -1621,29 +1625,9 @@ int ObLSTypeTransformTask::check_paxos_member(
     ObDRTaskRetComment &ret_comment) const
 {
   int ret = OB_SUCCESS;
-  if (!ObReplicaTypeCheck::is_paxos_replica_V2(dst_replica_.get_replica_type())) {
-    // no need to check non paxos replica
-  } else {
-    const ObZone &dst_zone = dst_replica_.get_zone();
-    FOREACH_CNT_X(r, ls_info.get_replicas(), OB_SUCC(ret)) {
-      if (OB_UNLIKELY(nullptr == r)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get invalid replica", K(ret), K(ls_info));
-      } else if (r->get_server() == dst_replica_.get_server()) {
-        // already check in check online
-      } else if (r->get_zone() == dst_zone
-                 && r->is_in_service()
-                 && ObReplicaTypeCheck::is_paxos_replica_V2(r->get_replica_type())
-                 && r->get_replica_type() == dst_replica_.get_replica_type()) {
-        ret = OB_REBALANCE_TASK_CANT_EXEC;
-        LOG_WARN("only one paxos member allowed in a single zone", K(ret),
-                 "zone", dst_zone, "task", *this);
-      } else {} // no more to do
-    }
-  }
-  if (OB_FAIL(ret)) {
-    ret_comment = ObDRTaskRetComment::CANNOT_EXECUTE_DUE_TO_PAXOS_REPLICA_NUMBER;
-  }
+  // no need to make sure only one F-replica in one zone.
+  // Because shrink unit number may shrink unit with F-replica on it,
+  // thus making another R type transform to F, then 2F in one zone is expected
   return ret;
 }
 
@@ -1818,24 +1802,16 @@ int ObLSTypeTransformTask::build_task_from_sql_result(
     LOG_WARN("invalid server address", K(dest_ip), K(dest_port));
   } else {
     //transform replica_type(string) -> src_type_to_set(ObReplicaType)
-    if (src_type == common::ObString("REPLICA_TYPE_FULL")) {
+    if (src_type == common::ObString("FULL")) {
       src_type_to_set = REPLICA_TYPE_FULL;
-    } else if (src_type == common::ObString("REPLICA_TYPE_LOGONLY")) {
-      src_type_to_set = REPLICA_TYPE_LOGONLY;
-    } else if (src_type == common::ObString("REPLICA_TYPE_READONLY")) {
+    } else if (src_type == common::ObString("READONLY")) {
       src_type_to_set = REPLICA_TYPE_READONLY;
-    } else if (src_type == common::ObString("REPLICA_TYPE_ENCRYPTION_LOGONLY")) {
-      src_type_to_set = REPLICA_TYPE_ENCRYPTION_LOGONLY;
     }
     //transform replica_type(string) -> dest_type_to_set(ObReplicaType)
-    if (dest_type == common::ObString("REPLICA_TYPE_FULL")) {
+    if (dest_type == common::ObString("FULL")) {
       dest_type_to_set = REPLICA_TYPE_FULL;
-    } else if (dest_type == common::ObString("REPLICA_TYPE_LOGONLY")) {
-      dest_type_to_set = REPLICA_TYPE_LOGONLY;
-    } else if (dest_type == common::ObString("REPLICA_TYPE_READONLY")) {
+    } else if (dest_type == common::ObString("READONLY")) {
       dest_type_to_set = REPLICA_TYPE_READONLY;
-    } else if (dest_type == common::ObString("REPLICA_TYPE_ENCRYPTION_LOGONLY")) {
-      dest_type_to_set = REPLICA_TYPE_ENCRYPTION_LOGONLY;
     }
     //transform priority(int) -> priority_to_set(ObDRTaskPriority)
     if (priority == 0) {
@@ -1848,15 +1824,15 @@ int ObLSTypeTransformTask::build_task_from_sql_result(
     ObReplicaMember src_member(src_server, 0);
     ObReplicaMember dest_member(dest_server, 0);
     if (OB_FAIL(src_member.set_replica_type(src_type_to_set))) {
-      LOG_WARN("fail to set src replica type", KR(ret));
+      LOG_WARN("fail to set src replica type", KR(ret), K(src_type_to_set));
     } else if (OB_FAIL(dest_member.set_replica_type(dest_type_to_set))) {
-      LOG_WARN("fail to set dest replica type", KR(ret));
+      LOG_WARN("fail to set dest replica type", KR(ret), K(dest_type_to_set));
     } else if (OB_FAIL(dst_replica.assign(
                     0/*unit id*/,
                     0/*unit group id*/,
                     zone,
                     dest_member))) {
-      LOG_WARN("fail to init a ObDstReplica", KR(ret));
+      LOG_WARN("fail to init a ObDstReplica", KR(ret), K(zone), K(dest_member));
     }
     //STEP3_0: to build a task
     if (OB_FAIL(ret)) {
@@ -1875,10 +1851,13 @@ int ObLSTypeTransformTask::build_task_from_sql_result(
                     comment_to_set.ptr(),        //comment
                     dst_replica,                 //(in used)dest_server
                     src_member,                  //(in used)src_server
-                    src_member,                  //(not used)data_src_server             
+                    src_member,                  //(not used)data_src_server
                     src_paxos_replica_number,                  //(in used)
                     dest_paxos_replica_number))) {             //(in used)
-      LOG_WARN("fail to build a ObLSTypeTransformTask", KR(ret));
+      LOG_WARN("fail to build a ObLSTypeTransformTask", KR(ret), K(task_key), K(tenant_id), K(ls_id),
+               K(task_id_to_set), K(schedule_time_us), K(generate_time_us), K(transmit_data_size),
+               K(priority_to_set), K(dst_replica), K(src_member), K(comment_to_set), K(src_paxos_replica_number),
+               K(dest_paxos_replica_number));
     } else {
       LOG_INFO("success to build a ObLSTypeTransformTask", KPC(this));
     }

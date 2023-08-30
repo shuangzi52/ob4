@@ -400,6 +400,11 @@ public:
                               const ObString &nlf_format,
                               const bool is_oracle_mode,
                               uint64_t &scn_value);
+  //convert a scn to timestamp str with ns
+  //invoker need to gurantee scn_val is valid
+  static int scn_to_str(const uint64_t scn_val,
+                        const ObTimeZoneInfo *sys_tz_info,
+                        char *buf, int64_t buf_len, int64_t &pos);
   //ob_time store local time
   static int str_to_tz_offset(const ObTimeConvertCtx &cvrt_ctx, ObTime &ob_time);
   //ob_time store local time
@@ -471,7 +476,7 @@ public:
   static int calc_last_date_of_the_month(const int64_t ori_date_value, int64_t &result_date_value,
                                          const ObObjType dest_type,  const bool is_dayofmonth,
                                          const ObDateSqlMode date_sql_mode);
-  static int calc_next_date_of_the_wday(const int64_t ori_date_value, const ObString &wday_name, int64_t &result_date_value);
+  static int calc_next_date_of_the_wday(const int64_t ori_date_value, const ObString &wday_name, const int64_t week_count, int64_t &result_date_value);
   static int calc_days_and_months_between_dates(const int64_t date_value1, const int64_t date_value2, int64_t &months_diff, int64_t &rest_utc_diff);
 
 public:
@@ -563,7 +568,7 @@ public:
   static int decode_interval_ds(const char *data, const int64_t len, ObIntervalDSValue &value, ObScale &scale);
   static int encode_interval_ds(char *buf, const int64_t len, int64_t &pos,
                                 const ObIntervalDSValue &value, const ObScale scale);
-  static int data_fmt_nd(char *buffer, int64_t buf_len, int64_t &pos, const int64_t n, int64_t target);
+  static int data_fmt_nd(char *buffer, int64_t buf_len, int64_t &pos, const int64_t n, int64_t target, bool has_fm_flag = false);
   static int data_fmt_d(char *buffer, int64_t buf_len, int64_t &pos, int64_t target);
   static int data_fmt_s(char *buffer, int64_t buf_len, int64_t &pos, const char *ptr);
 

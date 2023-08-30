@@ -1,7 +1,14 @@
-// Copyright (c) 2018-present Alibaba Inc. All Rights Reserved.
-// Author:
-//   Junquan Chen <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_multiple_heap_table_sorter.h"
@@ -21,6 +28,7 @@ using namespace blocksstable;
 ObDirectLoadMultipleHeapTableSorter::ObDirectLoadMultipleHeapTableSorter(
   ObDirectLoadMemContext *mem_ctx)
   : mem_ctx_(mem_ctx),
+    allocator_("TLD_Sorter"),
     extra_buf_(nullptr),
     index_dir_id_(-1),
     data_dir_id_(-1),
@@ -36,6 +44,7 @@ ObDirectLoadMultipleHeapTableSorter::~ObDirectLoadMultipleHeapTableSorter()
 int ObDirectLoadMultipleHeapTableSorter::init()
 {
   int ret = OB_SUCCESS;
+  allocator_.set_tenant_id(MTL_ID());
   if (OB_ISNULL(extra_buf_ = static_cast<char *>(allocator_.alloc(mem_ctx_->table_data_desc_.extra_buf_size_)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to allocate extra buf", KR(ret));
@@ -54,9 +63,6 @@ int ObDirectLoadMultipleHeapTableSorter::add_table(ObIDirectLoadPartitionTable *
     if (OB_ISNULL(external_table = dynamic_cast<ObDirectLoadExternalTable *>(table))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected table", KR(ret), KPC(table));
-    } else if (OB_UNLIKELY(external_table->get_fragments().count() != 1)) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("files handle should only have one handle", KR(ret));
     } else if (OB_FAIL(fragments_.push_back(external_table->get_fragments()))) {
       LOG_WARN("fail to push back", KR(ret));
     }
@@ -103,7 +109,7 @@ int ObDirectLoadMultipleHeapTableSorter::close_chunk(ObDirectLoadMultipleHeapTab
     for (int64_t j = 0; OB_SUCC(ret) && j < bag.count(); j ++) {
       if (OB_FAIL(bag.at(j)->to_datums(datum_row.storage_datums_, datum_row.count_))) {
         LOG_WARN("fail to transfer dataum row", KR(ret));
-      } else if (OB_FAIL(table_builder.append_row(keys.at(i), datum_row))) {
+      } else if (OB_FAIL(table_builder.append_row(keys.at(i), bag.at(j)->seq_no_, datum_row))) {
         LOG_WARN("fail to append row", KR(ret));
       }
     }

@@ -81,10 +81,13 @@ int ObFifoArena::ObWriteThrottleInfo::check_and_calc_decay_factor(int64_t memsto
     alloc_duration_ = alloc_duration;
     int64_t available_mem = (100 - trigger_percentage_) * memstore_threshold_ / 100;
     double N =  static_cast<double>(available_mem) / static_cast<double>(MEM_SLICE_SIZE);
-    decay_factor_ = (static_cast<double>(alloc_duration) - N * static_cast<double>(MIN_INTERVAL))/ static_cast<double>((((N*(N+1)*N*(N+1)))/4));
-    decay_factor_ = decay_factor_ < 0 ? 0 : decay_factor_;
+    double decay_factor = (static_cast<double>(alloc_duration) - N * static_cast<double>(MIN_INTERVAL))/ static_cast<double>((((N*(N+1)*N*(N+1)))/4));
+    decay_factor_ = decay_factor < 0 ? 0 : decay_factor;
     COMMON_LOG(INFO, "recalculate decay factor", K(memstore_threshold_), K(trigger_percentage_),
                K(decay_factor_), K(alloc_duration), K(available_mem), K(N));
+    if (decay_factor < 0) {
+      LOG_ERROR("decay factor is smaller than 0", K(decay_factor), K(alloc_duration), K(N));
+    }
   }
   return ret;
 }
@@ -328,18 +331,25 @@ bool ObFifoArena::check_clock_over_seq(const int64_t req)
   return req <= clock;
 }
 
+int64_t ObFifoArena::get_clock()
+{
+  advance_clock();
+  return clock_;
+}
+
 void ObFifoArena::advance_clock()
 {
   int64_t cur_ts = ObTimeUtility::current_time();
   int64_t old_ts = last_update_ts_;
-  if ((cur_ts - last_update_ts_ > ADVANCE_CLOCK_INTERVAL) &&
+  const int64_t advance_us = cur_ts - old_ts;
+  if ((advance_us > ADVANCE_CLOCK_INTERVAL) &&
        old_ts == ATOMIC_CAS(&last_update_ts_, old_ts, cur_ts)) {
-    int64_t trigger_percentage = get_writing_throttling_trigger_percentage_();
-    int64_t trigger_mem_limit = lastest_memstore_threshold_ * trigger_percentage / 100;
-    int64_t cur_mem_hold = ATOMIC_LOAD(&hold_);
-    int64_t mem_limit = calc_mem_limit(cur_mem_hold, trigger_mem_limit, ADVANCE_CLOCK_INTERVAL);
-    int64_t clock = ATOMIC_LOAD(&clock_);
-    int64_t max_seq = ATOMIC_LOAD(&max_seq_);
+    const int64_t trigger_percentage = get_writing_throttling_trigger_percentage_();
+    const int64_t trigger_mem_limit = lastest_memstore_threshold_ * trigger_percentage / 100;
+    const int64_t cur_mem_hold = ATOMIC_LOAD(&hold_);
+    const int64_t mem_limit = calc_mem_limit(cur_mem_hold, trigger_mem_limit, advance_us);
+    const int64_t clock = ATOMIC_LOAD(&clock_);
+    const int64_t max_seq = ATOMIC_LOAD(&max_seq_);
     ATOMIC_SET(&clock_, min(max_seq, clock + mem_limit));
     if (REACH_TIME_INTERVAL(100 * 1000L)) {
       COMMON_LOG(INFO, "current clock is ",
@@ -371,6 +381,7 @@ int64_t ObFifoArena::calc_mem_limit(const int64_t cur_mem_hold, const int64_t tr
   int ret = OB_SUCCESS;
   int64_t mem_can_be_assigned = 0;
 
+  const double decay_factor = throttle_info_.decay_factor_;
   int64_t init_seq = 0;
   int64_t init_page_left_size = 0;
   double init_page_left_interval = 0;
@@ -384,21 +395,21 @@ int64_t ObFifoArena::calc_mem_limit(const int64_t cur_mem_hold, const int64_t tr
     // there is no speed limit now
     // we can get all the memory before speed limit
     mem_can_be_assigned = trigger_mem_limit - cur_mem_hold;
-  } else if (throttle_info_.decay_factor_ <= 0) {
+  } else if (decay_factor <= 0) {
     mem_can_be_assigned = 0;
     LOG_WARN("we should limit speed, but the decay factor not calculate now", K(cur_mem_hold), K(trigger_mem_limit), K(dt));
   } else {
     init_seq = ((cur_mem_hold - trigger_mem_limit) + MEM_SLICE_SIZE - 1) / (MEM_SLICE_SIZE);
     init_page_left_size = MEM_SLICE_SIZE - (cur_mem_hold - trigger_mem_limit) % MEM_SLICE_SIZE;
-    init_page_left_interval =  (1.0 * throttle_info_.decay_factor_ * pow(init_seq, 3) *
+    init_page_left_interval =  (1.0 * decay_factor * pow(init_seq, 3) *
                                 init_page_left_size / MEM_SLICE_SIZE);
-    past_interval = throttle_info_.decay_factor_ * pow(init_seq, 2) * pow(init_seq + 1, 2) / 4;
+    past_interval = decay_factor * pow(init_seq, 2) * pow(init_seq + 1, 2) / 4;
     // there is speed limit
     if (init_page_left_interval > dt) {
-      last_page_interval = throttle_info_.decay_factor_ * pow(init_seq, 3);
+      last_page_interval = decay_factor * pow(init_seq, 3);
       mem_can_be_assigned = dt / last_page_interval * MEM_SLICE_SIZE;
     } else {
-      mid_result = 4.0 * (dt + past_interval - init_page_left_interval) / throttle_info_.decay_factor_;
+      mid_result = 4.0 * (dt + past_interval - init_page_left_interval) / decay_factor;
       approx_max_chunk_seq = pow(mid_result, 0.25);
       max_seq = floor(approx_max_chunk_seq);
       for (int i = 0; i < 2; i++) {
@@ -406,10 +417,10 @@ int64_t ObFifoArena::calc_mem_limit(const int64_t cur_mem_hold, const int64_t tr
           max_seq = max_seq + 1;
         }
       }
-      accumulate_interval = pow(max_seq, 2) * pow(max_seq + 1, 2) * throttle_info_.decay_factor_ / 4 - past_interval + init_page_left_interval;
+      accumulate_interval = pow(max_seq, 2) * pow(max_seq + 1, 2) * decay_factor / 4 - past_interval + init_page_left_interval;
       mem_can_be_assigned = init_page_left_size + (max_seq - init_seq) * MEM_SLICE_SIZE;
       if (accumulate_interval > dt) {
-        last_page_interval = throttle_info_.decay_factor_ * pow(max_seq, 3);
+        last_page_interval = decay_factor * pow(max_seq, 3);
         mem_can_be_assigned -= (accumulate_interval - dt) / last_page_interval * MEM_SLICE_SIZE;
       }
     }
@@ -419,8 +430,9 @@ int64_t ObFifoArena::calc_mem_limit(const int64_t cur_mem_hold, const int64_t tr
       LOG_ERROR("unexpected result", K(max_seq), K(mid_result));
     }
   }
-  if (mem_can_be_assigned == 0) {
-    LOG_WARN("we can not get memory now", K(mem_can_be_assigned), K(throttle_info_.decay_factor_), K(cur_mem_hold), K(trigger_mem_limit), K(dt));
+  // defensive code
+  if (mem_can_be_assigned <= 0) {
+    LOG_WARN("we can not get memory now", K(mem_can_be_assigned), K(decay_factor), K(cur_mem_hold), K(trigger_mem_limit), K(dt));
   }
   return mem_can_be_assigned;
 }
@@ -449,39 +461,44 @@ void ObFifoArena::set_memstore_threshold(int64_t memstore_threshold)
 template<int64_t N>
 struct INTEGER_WRAPPER
 {
-  INTEGER_WRAPPER() : v_(N) {}
+  INTEGER_WRAPPER() : v_(N), tenant_id_(0) {}
   int64_t v_;
+  uint64_t tenant_id_;
 };
 
 int64_t ObFifoArena::get_writing_throttling_trigger_percentage_() const
 {
   RLOCAL(INTEGER_WRAPPER<DEFAULT_TRIGGER_PERCENTAGE>, wrapper);
-  int64_t &trigger_percentage = (&wrapper)->v_;
-  if (TC_REACH_TIME_INTERVAL(5 * 1000 * 1000)) { // 5s
+  int64_t &trigger_v = (&wrapper)->v_;
+  uint64_t &tenant_id = (&wrapper)->tenant_id_;
+  if (tenant_id != attr_.tenant_id_ || TC_REACH_TIME_INTERVAL(5 * 1000 * 1000)) { // 5s
     omt::ObTenantConfigGuard tenant_config(TENANT_CONF(attr_.tenant_id_));
     if (!tenant_config.is_valid()) {
       COMMON_LOG(INFO, "failed to get tenant config", K(attr_));
     } else {
-      trigger_percentage = tenant_config->writing_throttling_trigger_percentage;
+      trigger_v = tenant_config->writing_throttling_trigger_percentage;
+      tenant_id = attr_.tenant_id_;
     }
   }
-  return trigger_percentage;
+  return trigger_v;
 }
 
 int64_t ObFifoArena::get_writing_throttling_maximum_duration_() const
 {
   RLOCAL(INTEGER_WRAPPER<DEFAULT_DURATION>, wrapper);
-  int64_t &duration = (&wrapper)->v_;
-  if (TC_REACH_TIME_INTERVAL(1 * 1000 * 1000)) { // 1s
+  int64_t &duration_v = (&wrapper)->v_;
+  uint64_t &tenant_id = (&wrapper)->tenant_id_;
+  if (tenant_id != attr_.tenant_id_ || TC_REACH_TIME_INTERVAL(1 * 1000 * 1000)) { // 1s
     omt::ObTenantConfigGuard tenant_config(TENANT_CONF(attr_.tenant_id_));
     if (!tenant_config.is_valid()) {
       //keep default
       COMMON_LOG(INFO, "failed to get tenant config", K(attr_));
     } else {
-      duration = tenant_config->writing_throttling_maximum_duration;
+      duration_v = tenant_config->writing_throttling_maximum_duration;
+      tenant_id = attr_.tenant_id_;
     }
   }
-  return duration;
+  return duration_v;
 }
 
 }; // end namespace allocator

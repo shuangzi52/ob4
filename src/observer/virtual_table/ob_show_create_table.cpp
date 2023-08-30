@@ -159,6 +159,8 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
 
   bool strict_mode = false;
   bool is_oracle_mode = false;
+  bool sql_quote_show_create = true;
+  bool ansi_quotes = false;
   if (OB_UNLIKELY(NULL == schema_guard_
                   || NULL == session_
                   || NULL == allocator_
@@ -185,9 +187,12 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
     SERVER_LOG(WARN, "failed to check if oracle mode", K(ret));
   } else if (OB_FAIL(session_->get_show_ddl_in_compat_mode(strict_mode))) {
     SERVER_LOG(WARN, "failed to get _show_ddl_in_compat_mode", K(ret));
+  } else if (OB_FAIL(session_->get_sql_quote_show_create(sql_quote_show_create))) {
+    SERVER_LOG(WARN, "failed to get sql quote show create", K(ret));
   } else {
     //_show_ddl_in_compat_mode do not support oracle mode now
     strict_mode &= !is_oracle_mode;
+    IS_ANSI_QUOTES(session_->get_sql_mode(), ansi_quotes);
     for (int64_t i = 0; OB_SUCC(ret) && i < output_column_ids_.count(); ++i) {
       uint64_t col_id = output_column_ids_.at(i);
       switch(col_id) {
@@ -205,7 +210,7 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
         }
         case OB_APP_MIN_COLUMN_ID + 2: {
           // create_table
-          ObSchemaPrinter schema_printer(*schema_guard_, strict_mode);
+          ObSchemaPrinter schema_printer(*schema_guard_, strict_mode, sql_quote_show_create, ansi_quotes);
           int64_t pos = 0;
           if (table_schema.is_view_table()) {
             if (OB_FAIL(schema_printer.print_view_definiton(effective_tenant_id_,
@@ -230,7 +235,10 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
           } else {
             const ObLengthSemantics default_length_semantics = session_->get_local_nls_length_semantics();
             // get auto_increment from auto_increment service, not from table option
-            if (OB_FAIL(schema_printer.print_table_definition(effective_tenant_id_,
+            ObCharsetType charset_type = CHARSET_INVALID;
+            if (OB_FAIL(session_->get_character_set_results(charset_type))) {
+              LOG_WARN("get character set results failed", K(ret));
+            } else if (OB_FAIL(schema_printer.print_table_definition(effective_tenant_id_,
                                                               show_table_id,
                                                               table_def_buf,
                                                               table_def_buf_size,
@@ -238,7 +246,8 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
                                                               TZ_INFO(session_),
                                                               default_length_semantics,
                                                               false,
-                                                              session_->get_sql_mode()))) {
+                                                              session_->get_sql_mode(),
+                                                              charset_type))) {
               SERVER_LOG(WARN, "Generate table definition failed",
                         KR(ret), K(effective_tenant_id_), K(show_table_id));
             }

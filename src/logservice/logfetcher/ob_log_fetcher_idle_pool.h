@@ -59,6 +59,7 @@ public:
       const LogFetcherUser &log_fetcher_user,
       const int64_t thread_num,
       const ObLogFetcherConfig &cfg,
+      void *fetcher_host,
       IObLogErrHandler &err_handler,
       IObLSWorker &stream_worker,
       IObLogStartLSNLocator &start_lsn_locator);
@@ -79,12 +80,14 @@ public:
 
 private:
   static const int64_t IDLE_WAIT_TIME = 100 * 1000;
+  static const int64_t IDLE_HANDLE_COUNT = 10;
   int do_request_(const int64_t thread_index, LSFetchCtx &ls_fetch_ctx);
   int handle_task_(LSFetchCtx *task, bool &need_dispatch);
 
 private:
   bool                      inited_;
   int                       tg_id_;
+  void                      *fetcher_host_;
   LogFetcherUser            log_fetcher_user_;
   const ObLogFetcherConfig  *cfg_;
   IObLogErrHandler          *err_handler_;

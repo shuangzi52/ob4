@@ -448,7 +448,8 @@ public:
     is_invoker_right_(false),
     is_pipelined_(false),
     name_debuginfo_(),
-    function_name_() { }
+    function_name_(),
+    has_parallel_affect_factor_(false) { }
   virtual ~ObPLFunction();
 
   inline const common::ObIArray<ObPLDataType> &get_variables() const { return variables_; }
@@ -489,6 +490,9 @@ public:
 
   inline bool is_pipelined() const { return is_pipelined_; }
   inline void set_pipelined(bool is_pipelined) { is_pipelined_ = is_pipelined; }
+
+  inline bool get_has_parallel_affect_factor() const { return has_parallel_affect_factor_; }
+  inline void set_has_parallel_affect_factor(bool value) { has_parallel_affect_factor_ = value; }
 
   inline const PLCacheObjStat get_stat() const { return stat_; }
   inline PLCacheObjStat &get_stat_for_update() { return stat_; }
@@ -576,6 +580,7 @@ private:
   common::ObString package_name_;
   common::ObString database_name_;
   common::ObString priv_user_;
+  bool has_parallel_affect_factor_;
 
   DISALLOW_COPY_AND_ASSIGN(ObPLFunction);
 };
@@ -862,6 +867,9 @@ public:
     old_priv_user_id_ = OB_INVALID_ID;
     old_in_definer_ = false;
     has_output_arguments_ = false;
+#ifdef OB_BUILD_ORACLE_PL
+    call_trace_.reset();
+#endif
     old_worker_timeout_ts_ = 0;
     old_phy_plan_timeout_ts_ = 0;
     parent_stack_ctx_ = nullptr;
@@ -875,7 +883,7 @@ public:
   int is_inited() { return session_info_ != NULL; }
 
   int init(sql::ObSQLSessionInfo &session_info, sql::ObExecContext &ctx,
-           bool is_autonomous, bool is_function_or_trigger, ObIAllocator *allocator = NULL);
+           ObPLFunction *routine, bool is_function_or_trigger, ObIAllocator *allocator = NULL);
   void destory(sql::ObSQLSessionInfo &session_info, sql::ObExecContext &ctx, int &ret);
 
   inline ObPLCursorInfo& get_cursor_info() { return cursor_info_; }
@@ -937,6 +945,12 @@ public:
   void reset_role_id_array(int &ret);
 
   ObIArray<ObPLExecState *> &get_exec_stack() { return exec_stack_; }
+#ifdef OB_BUILD_ORACLE_PL
+  ObIArray<DbmsUtilityHelper::BtInfo*> &get_error_trace() { return call_trace_.error_trace; }
+  ObIArray<DbmsUtilityHelper::BtInfo*> &get_call_stack() { return call_trace_.call_stack; }
+  void set_call_trace_error_code(int errcode) { call_trace_.err_code = errcode; }
+  int get_call_trace_error_code() const { return call_trace_.err_code; }
+#endif
   ObPLExecState *get_current_state()
   {
     return exec_stack_.empty() ? NULL : exec_stack_.at(exec_stack_.count() - 1);
@@ -949,6 +963,11 @@ public:
   {
     return NULL == get_current_state() ? NULL : &get_current_state()->get_exec_ctx();
   }
+#ifdef OB_BUILD_ORACLE_PL
+  static int get_exact_error_msg(ObIArray<DbmsUtilityHelper::BtInfo*> &error_trace,
+                                   ObIArray<DbmsUtilityHelper::BtInfo*> &call_stack,
+                                   common::ObSqlString &err_msg);
+#endif
   bool has_output_arguments() { return has_output_arguments_; }
   void set_has_output_arguments(bool has_output_arguments)
   {
@@ -1017,6 +1036,9 @@ private:
   common::ObString cur_query_;
 
   common::ObSEArray<ObPLExecState*, 4> exec_stack_;
+#ifdef OB_BUILD_ORACLE_PL
+  DbmsUtilityHelper::BackTrace call_trace_;
+#endif
   ObPLContext *parent_stack_ctx_;
   ObPLContext *top_stack_ctx_;
   sql::ObExecContext *my_exec_ctx_; //my exec context
@@ -1083,6 +1105,7 @@ public:
   int trans_sql(PlTransformTreeCtx &trans_ctx, ParseNode *root, ObExecContext &ctx);
   // for anonymous
   int execute(sql::ObExecContext &ctx,
+              ParamStore &params,
               const ObStmtNodeTree *block);
 
   // for normal routine or package routine
@@ -1159,7 +1182,8 @@ public:
                           uint64_t line_num, /* call position line number, for call_stack info*/
                           int64_t argc,
                           common::ObObjParam **argv,
-                          int64_t *nocopy_argv);
+                          int64_t *nocopy_argv,
+                          uint64_t dblink_id);
 
   static int set_user_type_var(ObPLExecCtx *ctx,
                                int64_t var_index,
@@ -1175,6 +1199,8 @@ public:
   static int insert_error_msg(int errcode);
 
   static int simple_execute(ObPLExecCtx *ctx, int64_t argc, int64_t *argv);
+
+  static int check_trigger_arg(const ParamStore &params, const ObPLFunction &func);
 
 private:
   common::ObMySQLProxy *sql_proxy_;

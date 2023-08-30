@@ -52,24 +52,27 @@ public:
   }
 
   int init(ObTxTable *tx_table);
-  bool is_valid() const { return nullptr != tx_table_ ? true : false; }
+  bool is_valid() const { return nullptr != tx_table_; }
 
   ObTxTable *get_tx_table() const { return tx_table_; }
 
 public: // dalegate functions
   int check_row_locked(const transaction::ObTransID &read_tx_id,
                        const transaction::ObTransID data_tx_id,
-                       const int64_t sql_sequence,
+                       const transaction::ObTxSEQ &sql_sequence,
                        storage::ObStoreRowLockState &lock_state);
 
-  int check_sql_sequence_can_read(const transaction::ObTransID tx_id, const int64_t sql_sequence, bool &can_read);
+  int check_sql_sequence_can_read(const transaction::ObTransID tx_id, const transaction::ObTxSEQ &sql_sequence, bool &can_read);
 
   int get_tx_state_with_scn(const transaction::ObTransID tx_id,
                             const share::SCN scn,
                             int64_t &state,
                             share::SCN &trans_version);
 
-  int try_get_tx_state(const transaction::ObTransID tx_id, int64_t &state, share::SCN &trans_version);
+  int try_get_tx_state(const transaction::ObTransID tx_id,
+                       int64_t &state,
+                       share::SCN &trans_version,
+                       share::SCN &recycled_scn);
 
   int lock_for_read(const transaction::ObLockForReadArg &lock_for_read_arg,
                     bool &can_read,
@@ -91,6 +94,8 @@ public: // dalegate functions
   int get_recycle_scn(share::SCN &recycle_scn);
 
   int self_freeze_task();
+
+  bool check_ls_offline();
 
   void reuse() { mini_cache_.reset(); }
 

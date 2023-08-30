@@ -475,7 +475,7 @@ int ObJsonNode::get_object_value(const ObString &key, ObIJsonBase *&value) const
     const ObJsonObject *j_obj = static_cast<const ObJsonObject *>(this);
     if (OB_ISNULL(value = j_obj->get_value(key))) { // maybe not found.
       ret = OB_SEARCH_NOT_FOUND;
-      LOG_INFO("not found value by key", K(ret), K(key));
+      LOG_DEBUG("not found value by key", K(ret), K(key));
     }
   }
 
@@ -669,7 +669,7 @@ int ObJsonObject::replace(const ObJsonNode *old_node, ObJsonNode *new_node)
 
 // When constructing a JSON tree, if two keys have the same value, 
 // the latter one will overwrite the former one
-int ObJsonObject::add(const common::ObString &key, ObJsonNode *value, bool with_unique_key)
+int ObJsonObject::add(const common::ObString &key, ObJsonNode *value, bool with_unique_key, bool is_lazy_sort, bool need_overwrite)
 {
   INIT_SUCC(ret);
 
@@ -680,20 +680,28 @@ int ObJsonObject::add(const common::ObString &key, ObJsonNode *value, bool with_
     value->set_parent(this);
     ObJsonObjectPair pair(key, value);
 
-    ObJsonKeyCompare cmp;
-    ObJsonObjectArray::iterator low_iter = std::lower_bound(object_array_.begin(),
-                                                            object_array_.end(), pair, cmp);
-    if (low_iter != object_array_.end() && low_iter->get_key() == key) { // Found and covered
-      if (with_unique_key) {
-        ret = OB_ERR_DUPLICATE_KEY;
-        LOG_WARN("Found duplicate key inserted before!", K(key), K(ret));
-      } else {
-        low_iter->set_value(value);
+    if (need_overwrite) {
+      ObJsonKeyCompare cmp;
+      ObJsonObjectArray::iterator low_iter = std::lower_bound(object_array_.begin(),
+                                                              object_array_.end(), pair, cmp);
+      if (low_iter != object_array_.end() && low_iter->get_key() == key) { // Found and covered
+        if (with_unique_key) {
+          ret = OB_ERR_DUPLICATE_KEY;
+          LOG_WARN("Found duplicate key inserted before!", K(key), K(ret));
+        } else {
+          low_iter->set_value(value);
+        }
+      } else if (OB_FAIL(object_array_.push_back(pair))) {
+        LOG_WARN("failed to store in object array.", K(ret));
+      } else if (!is_lazy_sort) {
+        sort();
       }
-    } else { // not found, push back, sort
-      object_array_.push_back(pair);
-      // sort again.
-      sort();
+    } else {
+      if (OB_FAIL(object_array_.push_back(pair))) {
+        LOG_WARN("failed to store in object array.", K(ret));
+      } else if (!is_lazy_sort) {
+        sort();
+      }
     }
     set_serialize_delta_size(value->get_serialize_size());
   }
@@ -713,8 +721,13 @@ int ObJsonObject::rename_key(const common::ObString &old_key, const common::ObSt
     ObJsonObjectArray::iterator low_iter = std::lower_bound(object_array_.begin(),
                                                             object_array_.end(), pair, cmp);
     if (low_iter != object_array_.end() && low_iter->get_key() == old_key) { // Found and covered
-      low_iter->set_key(new_key);
-      sort();
+      if (OB_ISNULL(get_value(new_key))) {
+        low_iter->set_key(new_key);
+        sort();
+      } else {
+        ret = OB_ERR_DUPLICATE_KEY;
+        LOG_WARN("duplicated key in object array.", K(ret), K(old_key), K(new_key));
+      }
     } else {
       ret = OB_ERR_JSON_KEY_NOT_FOUND;
       LOG_WARN("JSON key name not found.", K(ret), K(old_key));
@@ -728,6 +741,41 @@ void ObJsonObject::sort()
 {
   ObJsonKeyCompare cmp;
   std::sort(object_array_.begin(), object_array_.end(), cmp);
+}
+
+void ObJsonObject::stable_sort()
+{
+  ObJsonKeyCompare cmp;
+  std::stable_sort(object_array_.begin(), object_array_.end(), cmp);
+}
+
+void ObJsonObject::unique()
+{
+  int64_t pos = 1;
+  int64_t cur = 0;
+  int64_t last = object_array_.count();
+
+  for (; pos < last; pos++) {
+    ObJsonObjectPair& cur_ref = object_array_[cur];
+    ObJsonObjectPair& pos_ref = object_array_[pos];
+
+    common::ObString cur_key = cur_ref.get_key();
+    common::ObString pos_key = pos_ref.get_key();
+
+    if (cur_key.length() == pos_key.length() && cur_key.compare(pos_key) == 0) {
+      cur_ref = pos_ref;
+    } else {
+      cur++;
+      if (cur != pos) {
+        object_array_[cur] = pos_ref;
+      }
+    }
+  }
+
+  while (++cur < last) {
+    object_array_.pop_back();
+  }
+
 }
 
 void ObJsonObject::clear()
@@ -1074,7 +1122,7 @@ int ObJsonOInterval::parse()
   int ret = OB_SUCCESS;
   if (field_type_ == ObIntervalYMType) {
     ObIntervalYMValue value;
-    ObScale scale = ObAccuracy::MAX_ACCURACY2[ORACLE_MODE][ObIntervalYMType].get_scale();;
+    ObScale scale = ObAccuracy::MAX_ACCURACY2[ORACLE_MODE][ObIntervalYMType].get_scale();
     if ((NULL == str_val_.find('P')) ? //有P的是ISO格式
             OB_FAIL(ObTimeConverter::str_to_interval_ym(str_val_, value, scale))
           : OB_FAIL(ObTimeConverter::iso_str_to_interval_ym(str_val_, value))) {
@@ -1084,7 +1132,7 @@ int ObJsonOInterval::parse()
     }
   } else {
     ObIntervalDSValue value;
-    ObScale scale = ObAccuracy::MAX_ACCURACY2[ORACLE_MODE][ObIntervalDSType].get_scale();;
+    ObScale scale = ObAccuracy::MAX_ACCURACY2[ORACLE_MODE][ObIntervalDSType].get_scale();
     if ((NULL == str_val_.find('P')) ? //有P的是ISO格式
             OB_FAIL(ObTimeConverter::str_to_interval_ds(str_val_, value, scale))
           : OB_FAIL(ObTimeConverter::iso_str_to_interval_ds(str_val_, value))) {

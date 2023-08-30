@@ -100,8 +100,7 @@ namespace sql
 
     common::ObIArray<ObRawExpr *> &get_join_filters() { return join_filters_; }
 
-    virtual int inner_replace_op_exprs(
-        const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr *> >&to_replace_exprs) override;
+    virtual int inner_replace_op_exprs(ObRawExprReplacer &replacer) override;
     const common::ObIArray<ObOrderDirection> &get_merge_directions() const { return merge_directions_; }
     int set_merge_directions(const common::ObIArray<ObOrderDirection> &merge_directions)
     {
@@ -154,6 +153,7 @@ namespace sql
     inline bool can_use_batch_nlj() const { return can_use_batch_nlj_; }
     void set_can_use_batch_nlj(bool can_use) { can_use_batch_nlj_ = can_use; }
     int check_and_set_use_batch();
+    int check_if_disable_batch(ObLogicalOperator* root);
     void set_join_path(JoinPath *path) { join_path_ = path; }
     JoinPath *get_join_path() { return join_path_; }
     bool is_my_exec_expr(const ObRawExpr *expr);

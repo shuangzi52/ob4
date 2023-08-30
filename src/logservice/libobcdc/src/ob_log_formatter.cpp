@@ -35,7 +35,8 @@
 #include "ob_cdc_lob_data_merger.h"     // IObCDCLobDataMerger
 #include "ob_cdc_lob_aux_meta_storager.h"    // ObCDCLobAuxMetaStorager
 #include "ob_cdc_lob_aux_table_parse.h"    // ObCDCLobAuxMetaStorager
-#include "ob_cdc_udt.h"                  // ObCDCUdtValueBuilder
+#include "ob_cdc_udt.h"                 // ObCDCUdtValueBuilder
+#include "ob_log_trace_id.h"            // ObLogTraceIdGuard
 
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
@@ -60,6 +61,7 @@ void ObLogFormatter::RowValue::reset()
   (void)memset(orig_default_value_, 0, sizeof(orig_default_value_));
   (void)memset(is_rowkey_, 0, sizeof(is_rowkey_));
   (void)memset(is_changed_, 0, sizeof(is_changed_));
+  (void)memset(is_null_lob_old_columns_, 0, sizeof(is_null_lob_old_columns_));
 }
 
 int ObLogFormatter::RowValue::init(const int64_t column_num, const bool contain_old_column)
@@ -75,6 +77,7 @@ int ObLogFormatter::RowValue::init(const int64_t column_num, const bool contain_
     (void)memset(orig_default_value_, 0, column_num * sizeof(orig_default_value_[0]));
     (void)memset(is_rowkey_, 0, column_num * sizeof(is_rowkey_[0]));
     (void)memset(is_changed_, 0, column_num * sizeof(is_changed_[0]));
+    (void)memset(is_null_lob_old_columns_, 0, column_num * sizeof(is_null_lob_old_columns_[0]));
   }
 
   return OB_SUCCESS;
@@ -309,6 +312,8 @@ int ObLogFormatter::get_task_count(
 int ObLogFormatter::handle(void *data, const int64_t thread_index, volatile bool &stop_flag)
 {
   int ret = OB_SUCCESS;
+  set_cdc_thread_name("Formatter", thread_index);
+  ObLogTraceIdGuard trace_guard;
   bool cur_stmt_need_callback = false;
   IStmtTask *stmt_task = static_cast<IStmtTask *>(data);
   DmlStmtTask *dml_stmt_task = dynamic_cast<DmlStmtTask *>(stmt_task);
@@ -1211,12 +1216,11 @@ int ObLogFormatter::group_udt_column_values_(
       column_schema_info,
       tz_info_wrap,
       is_new_value,
-      allocator_,
       stmt_task,
       *obj2str_helper_,
       ob_ctx_cols,
       cv))) {
-    LOG_ERROR("build udt value failed", KR(ret), K(column_id), K(column_schema_info));
+    LOG_ERROR("build udt value failed", KR(ret), K(column_schema_info.get_column_id()), K(column_schema_info));
   }
   return ret;
 }
@@ -1302,7 +1306,6 @@ int ObLogFormatter::fill_normal_cols_(
               } else {
                 rv->new_columns_[usr_column_idx] = new_col_str;
               }
-              // TODO remove
               LOG_DEBUG("fill_normal_cols_", K(is_new_value), K(column_id), KPC(cv), K(lob_ctx_cols),
                   "md5", calc_md5_cstr(new_col_str->ptr(), new_col_str->length()),
                   "buf_len", new_col_str->length());
@@ -1345,7 +1348,8 @@ int ObLogFormatter::fill_normal_cols_(
             } else if (OB_ENTRY_NOT_EXIST == ret) {
               ret = OB_SUCCESS;
               rv->old_columns_[usr_column_idx] = nullptr;
-              LOG_INFO("fill_normal_cols_ nullptr", K(is_new_value), KPC(cv), K(lob_ctx_cols));
+              rv->is_null_lob_old_columns_[usr_column_idx] = true;
+              LOG_INFO("fill_normal_cols_ nullptr", K(usr_column_idx), K(is_new_value), KPC(cv), K(lob_ctx_cols));
             }
           }
         }
@@ -1478,10 +1482,10 @@ int ObLogFormatter::fill_orig_default_value_(
             LOG_ERROR("allocate memory for ObString fail", K(sizeof(ObString)));
             ret = OB_ALLOCATE_MEMORY_FAILED;
           } else if (OB_ISNULL(orig_default_value_str)) {
-            LOG_ERROR("orig_default_value_str is null", K(usr_column_index),
+            ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("orig_default_value_str is null", KR(ret), K(usr_column_index),
                 K(table_id), "table_name", simple_table_schema->get_table_name(),
                 KPC(column_schema_info));
-            ret = OB_ERR_UNEXPECTED;
           // For varchar:
           // 1. the default value is NULL, which should be set to NULL
           // 2. The default value is an empty string, which should be set to ''
@@ -1726,9 +1730,9 @@ int ObLogFormatter::format_dml_delete_(IBinlogRecord *br_data, const RowValue *r
           }
 
           if (OB_ISNULL(str)) {
-            LOG_ERROR("old column value and original default value are all invalid",
-                K(i), "column_num", row_value->column_num_);
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("old column value and original default value are all invalid", KR(ret),
+                K(i), "column_num", row_value->column_num_);
           } else {
             br_data->putOld(str->ptr(), str->length());
           }
@@ -1770,9 +1774,9 @@ int ObLogFormatter::format_dml_insert_(IBinlogRecord *br_data, const RowValue *r
         ObString *str_val = row_value->new_columns_[i];
 
         if (OB_ISNULL(str_val)) {
-          LOG_ERROR("changed column new value is NULL", K(i),
-              "column_num", row_value->column_num_);
           ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR("changed column new value is NULL", KR(ret), K(i),
+              "column_num", row_value->column_num_);
         } else {
           br_data->putNew(str_val->ptr(), str_val->length());
         }
@@ -1805,10 +1809,10 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
           }
 
           if (OB_ISNULL(str_val)) {
-            LOG_ERROR("new column value, old column value and original default value "
-                "are all invalid",
-                K(i), "column_num", row_value->column_num_);
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("new column value, old column value and original default value "
+                "are all invalid", KR(ret),
+                K(i), "column_num", row_value->column_num_);
           } else {
             br_data->putNew(str_val->ptr(), str_val->length());
           }
@@ -1820,15 +1824,16 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
         ObString *str_val = row_value->new_columns_[i];
 
         if (OB_ISNULL(str_val)) {
-          LOG_ERROR("changed column new value is NULL", K(i),
-              "column_num", row_value->column_num_);
           ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR("changed column new value is NULL", KR(ret), K(i),
+              "column_num", row_value->column_num_);
         } else {
           br_data->putNew(str_val->ptr(), str_val->length());
         }
       }
 
       if (OB_SUCCESS == ret) {
+        bool is_changed = row_value->is_changed_[i];
         if (row_value->contain_old_column_) {
           // For full column logging, the old value is always filled with the value in old_column for updates
           // If there is no valid value in the old column, the original default value is filled
@@ -1839,15 +1844,21 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
           }
 
           if (OB_ISNULL(str_val)) {
-            LOG_ERROR("old column value and original default value are all invalid",
-                K(i), "column_num", row_value->column_num_);
-            ret = OB_ERR_UNEXPECTED;
+            if (row_value->is_null_lob_old_columns_[i]) {
+              br_data->putOld(NULL, 0);
+              // NOTICE: LOB column doesn't have default value.
+              LOG_DEBUG("old_column is invalid, may outrow lob updated to inrow", K(i), K(row_value));
+            } else {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_ERROR("old column value and original default value are all invalid", KR(ret),
+                  K(i), "column_num", row_value->column_num_,
+                  "is_changed", row_value->is_changed_[i]);
+            }
           } else {
             br_data->putOld(str_val->ptr(), str_val->length());
           }
         } else {
           // When not full column logging, for update, the old value is filled with whether the corresponding column has been modified
-          bool is_changed = row_value->is_changed_[i];
           if (row_value->is_rowkey_[i]) {
             is_changed = true;
           }
@@ -2098,7 +2109,7 @@ int ObLogFormatter::parse_aux_lob_meta_table_insert_(
     const transaction::ObTransID &trans_id = log_entry_task.get_trans_id();
     const uint64_t aux_lob_meta_table_id = stmt_task.get_table_id();
     ObLobId lob_id;
-    int64_t row_seq_no = stmt_task.get_row_seq_no();
+    const ObTxSEQ &row_seq_no = stmt_task.get_row_seq_no();
     const char *lob_data = nullptr;
     int64_t lob_data_len = 0;
     ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
@@ -2132,7 +2143,7 @@ int ObLogFormatter::parse_aux_lob_meta_table_delete_(
     const transaction::ObTransID &trans_id = log_entry_task.get_trans_id();
     const uint64_t aux_lob_meta_table_id = stmt_task.get_table_id();
     ObLobId lob_id;
-    int64_t row_seq_no = stmt_task.get_row_seq_no();
+    const transaction::ObTxSEQ &row_seq_no = stmt_task.get_row_seq_no();
     const char *lob_data = nullptr;
     int64_t lob_data_len = 0;
     ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;

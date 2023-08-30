@@ -1808,14 +1808,13 @@ int ObDDLOperator::drop_sequence_in_drop_column(const ObColumnSchemaV2 &column_s
 }
 
 int ObDDLOperator::reinit_autoinc_row(const ObTableSchema &table_schema,
-                                      common::ObMySQLTransaction &trans,
-                                      const ObArray<ObAddr>* alive_server_list)
+                                      common::ObMySQLTransaction &trans)
 {
   int ret = OB_SUCCESS;
   int64_t start_time = ObTimeUtility::current_time();
   uint64_t table_id = table_schema.get_table_id();
   ObString table_name = table_schema.get_table_name();
-  uint64_t schema_version = table_schema.get_schema_version();
+  int64_t truncate_version = table_schema.get_truncate_version();
   uint64_t column_id = table_schema.get_autoinc_column_id();
   ObAutoincrementService &autoinc_service = share::ObAutoincrementService::get_instance();
 
@@ -1823,24 +1822,18 @@ int ObDDLOperator::reinit_autoinc_row(const ObTableSchema &table_schema,
     bool is_oracle_mode = false;
     if (OB_FAIL(table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
       LOG_WARN("fail to check is oracle mode",
-                KR(ret), K(table_id), K(table_name), K(schema_version), K(column_id));
+                KR(ret), K(table_id), K(table_name), K(truncate_version), K(column_id));
     } else if (is_oracle_mode) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("in oracle mode, autoic_column_id must be illegal",
-              KR(ret), K(table_id), K(table_name), K(schema_version), K(column_id));
+              KR(ret), K(table_id), K(table_name), K(truncate_version), K(column_id));
     } else {
-      // 1、reinit auto_increment value
-      // 2、clear increment cache
+      // reinit auto_increment value
       uint64_t tenant_id = table_schema.get_tenant_id();
       if (OB_FAIL(autoinc_service.reinit_autoinc_row(tenant_id, table_id,
-                                                     column_id, trans))) {
+                                                     column_id, truncate_version, trans))) {
         LOG_WARN("failed to reint auto_increment",
-                KR(ret), K(tenant_id), K(table_id), K(table_name), K(schema_version), K(column_id));
-        // to do
-        // Cache can't be cleaned totally when RS change leader in autoinc_in_order mode
-      } else if (OB_FAIL(cleanup_autoinc_cache(table_schema, alive_server_list))) {
-        LOG_WARN("failed to cleanup_autoinc_caceh",
-                KR(ret), K(tenant_id), K(table_id), K(table_name), K(schema_version), K(column_id));
+                KR(ret), K(tenant_id), K(table_id), K(table_name), K(truncate_version), K(column_id));
       }
     }
   }
@@ -2435,45 +2428,6 @@ int ObDDLOperator::add_table_partitions(const ObTableSchema &orig_table_schema,
   return ret;
 }
 
-int ObDDLOperator::add_tablegroup_partitions(const ObTablegroupSchema &orig_tablegroup_schema,
-                                             const ObTablegroupSchema &inc_tablegroup_schema,
-                                             const int64_t new_schema_version,
-                                             ObTablegroupSchema &new_tablegroup_schema,
-                                             ObMySQLTransaction &trans,
-                                             const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  ObSchemaService *schema_service = schema_service_.get_schema_service();
-  if (OB_ISNULL(schema_service)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema_service is NULL", K(ret));
-  } else if (new_schema_version <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("schema_version is invalid", K(ret), K(new_schema_version));
-  } else {
-    const int64_t inc_part_num = inc_tablegroup_schema.get_part_option().get_part_num();
-    if (OB_FAIL(schema_service->get_tablegroup_sql_service().add_inc_part_info(trans,
-                                                                               orig_tablegroup_schema,
-                                                                               inc_tablegroup_schema,
-                                                                               new_schema_version))) {
-      LOG_WARN("add inc part info failed", K(ret));
-    } else if (OB_FAIL(new_tablegroup_schema.assign(orig_tablegroup_schema))) {
-      LOG_WARN("failed to assign schema", K(ret), K(orig_tablegroup_schema));
-    } else {
-      const int64_t part_num = orig_tablegroup_schema.get_part_option().get_part_num();
-      const int64_t all_part_num = part_num + inc_part_num;
-      new_tablegroup_schema.get_part_option().set_part_num(all_part_num);
-      new_tablegroup_schema.set_schema_version(new_schema_version);
-      ObSchemaOperationType opt_type = OB_DDL_ALTER_TABLEGROUP_PARTITION;
-      if (OB_FAIL(schema_service->get_tablegroup_sql_service()
-                  .update_partition_option(trans, new_tablegroup_schema, opt_type, ddl_stmt_str))) {
-        LOG_WARN("update partition option failed", K(ret), K(part_num), K(inc_part_num));
-      }
-    }
-  }
-  return ret;
-}
-
 int ObDDLOperator::get_part_array_from_table(const ObTableSchema &new_table_schema,
                                              const ObTableSchema &inc_table_schema,
                                              ObIArray<ObPartition*> &out_part_array)
@@ -2734,48 +2688,6 @@ int ObDDLOperator::drop_table_partitions(const ObTableSchema &orig_table_schema,
                               .update_partition_option(trans, new_table_schema, schema_version))) {
         LOG_WARN("update partition option failed", K(ret), K(part_num), K(inc_part_num));
       }
-    }
-  }
-  return ret;
-}
-
-int ObDDLOperator::drop_tablegroup_partitions(const ObTablegroupSchema &orig_tablegroup_schema,
-                                              ObTablegroupSchema &inc_tablegroup_schema,
-                                              const int64_t new_schema_version,
-                                              ObTablegroupSchema &new_tablegroup_schema,
-                                              ObMySQLTransaction &trans,
-                                              const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  ObSchemaService *schema_service = schema_service_.get_schema_service();
-  if (OB_ISNULL(schema_service)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema_service is NULL", K(ret));
-  } else if (new_schema_version <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("schema_version is invalid", K(ret), K(new_schema_version));
-  } else if (OB_INVALID_ID == orig_tablegroup_schema.get_tablegroup_id()
-             || is_sys_tablegroup_id(orig_tablegroup_schema.get_tablegroup_id())) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("can't drop partition while tablegroup is created before ver 2.0",
-             K(ret), K(orig_tablegroup_schema));
-  } else if (OB_FAIL(schema_service->get_tablegroup_sql_service().drop_inc_part_info(
-                     trans,
-                     orig_tablegroup_schema,
-                     inc_tablegroup_schema,
-                     new_schema_version))) {
-    LOG_WARN("delete inc part info failed", K(ret));
-  } else {
-    new_tablegroup_schema = orig_tablegroup_schema;
-    const int64_t part_num = orig_tablegroup_schema.get_part_option().get_part_num();
-    const int64_t inc_part_num = inc_tablegroup_schema.get_part_option().get_part_num();
-    const int64_t all_part_num = part_num - inc_part_num;
-    new_tablegroup_schema.get_part_option().set_part_num(all_part_num);
-    new_tablegroup_schema.set_schema_version(new_schema_version);
-    ObSchemaOperationType opt_type = OB_DDL_ALTER_TABLEGROUP_PARTITION;
-    if (OB_FAIL(schema_service->get_tablegroup_sql_service()
-                .update_partition_option(trans, new_tablegroup_schema, opt_type, ddl_stmt_str))) {
-      LOG_WARN("update partition option failed", K(ret), K(part_num), K(inc_part_num));
     }
   }
   return ret;
@@ -3751,6 +3663,7 @@ int ObDDLOperator::update_aux_table(
 int ObDDLOperator::rename_table(const ObTableSchema &table_schema,
                                 const ObString &new_table_name,
                                 const uint64_t new_db_id,
+                                const bool need_reset_object_status,
                                 ObMySQLTransaction &trans,
                                 const ObString *ddl_stmt_str)
 {
@@ -3777,6 +3690,9 @@ int ObDDLOperator::rename_table(const ObTableSchema &table_schema,
       LOG_WARN("fail to assign schema", K(ret));
     } else {
       new_table_schema.set_schema_version(new_schema_version);
+    }
+    if (need_reset_object_status) {
+      new_table_schema.set_object_status(ObObjectStatus::INVALID);
     }
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(new_table_schema.set_table_name(new_table_name))) {
@@ -3880,7 +3796,8 @@ int ObDDLOperator::update_index_status(
     const uint64_t index_table_id,
     const share::schema::ObIndexStatus status,
     const bool in_offline_ddl_white_list,
-    common::ObMySQLTransaction &trans)
+    common::ObMySQLTransaction &trans,
+    const common::ObString *ddl_stmt_str)
 {
   int ret = OB_SUCCESS;
   int64_t new_schema_version = OB_INVALID_VERSION;
@@ -3909,7 +3826,7 @@ int ObDDLOperator::update_index_status(
     LOG_WARN("fail to gen new schema_version", K(ret), K(tenant_id));
   } else if (FALSE_IT(copy_data_table_schema.set_in_offline_ddl_white_list(in_offline_ddl_white_list))) {
   } else if (OB_FAIL(schema_service->get_table_sql_service().update_index_status(
-      copy_data_table_schema, index_table_id, status, new_schema_version, trans))) {
+      copy_data_table_schema, index_table_id, status, new_schema_version, trans, ddl_stmt_str))) {
     LOG_WARN("update index status failed",
         K(ret), K(data_table_id), K(index_table_id), K(status));
   }
@@ -4322,8 +4239,7 @@ int ObDDLOperator::drop_table_for_not_dropped_schema(
 // ref
 // When tables with auto-increment columns are frequently created or deleted, if the auto-increment column cache is not cleared, the memory will grow slowly.
 // so every time when you drop table, if you bring auto-increment columns, clean up the corresponding cache.
-int ObDDLOperator::cleanup_autoinc_cache(const ObTableSchema &table_schema,
-                                         const common::ObArray<ObAddr> *alive_server_list/*nullptr*/)
+int ObDDLOperator::cleanup_autoinc_cache(const ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
   ObAutoincrementService &autoinc_service = share::ObAutoincrementService::get_instance();
@@ -4342,8 +4258,7 @@ int ObDDLOperator::cleanup_autoinc_cache(const ObTableSchema &table_schema,
     if (OB_FAIL(autoinc_service.clear_autoinc_cache_all(tenant_id,
                                                         table_id,
                                                         autoinc_column_id,
-                                                        table_schema.is_order_auto_increment_mode(),
-                                                        alive_server_list))) {
+                                                        table_schema.is_order_auto_increment_mode()))) {
       LOG_WARN("failed to clear auto-increment cache",
                K(tenant_id), K(table_id));
     }
@@ -5232,7 +5147,9 @@ int ObDDLOperator::init_tenant_tablegroup(const uint64_t tenant_id,
     tg_schema.set_schema_version(OB_CORE_SCHEMA_VERSION);
     tg_schema.set_part_level(PARTITION_LEVEL_ZERO);
     tg_schema.set_schema_version(new_schema_version);
-    if (OB_FAIL(schema_service->get_tablegroup_sql_service().insert_tablegroup(tg_schema, trans))) {
+    if (OB_FAIL(tg_schema.set_sharding(OB_PARTITION_SHARDING_ADAPTIVE))) {
+      LOG_WARN("set sharding failed", K(ret), K(tg_schema));
+    } else if (OB_FAIL(schema_service->get_tablegroup_sql_service().insert_tablegroup(tg_schema, trans))) {
       LOG_WARN("insert_tablegroup failed", K(tg_schema), K(ret));
     }
   }
@@ -5689,6 +5606,18 @@ int ObDDLOperator::init_tenant_users(const ObTenantSchema &tenant_schema,
         "system administrator", trans))) {
       RS_LOG(WARN, "failed to init sys user", K(ret), K(tenant_id));
     }
+#ifdef OB_BUILD_TDE_SECURITY
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(share::ObKeyGenerator::generate_encrypt_key(ora_auditor_password,
+                                                              ENCRYPT_KEY_LENGTH))) {
+        RS_LOG(WARN, "failed to generate auditor's password", K(ret), K(tenant_id));
+      } else if (OB_FAIL(init_tenant_user(tenant_id, ora_auditor_user_name,
+                                    ObString(ENCRYPT_KEY_LENGTH, ora_auditor_password),
+                                    OB_ORA_AUDITOR_USER_ID, "system administrator", trans, true))) {
+        RS_LOG(WARN, "failed to init mysql audit user", K(ret), K(tenant_id));
+      }
+    }
+#endif
   }
 
   //TODO in standby cluster, temp logical, will be deleted after inner sql ready
@@ -10285,9 +10214,12 @@ int ObDDLOperator::drop_all_label_se_table_column(uint64_t tenant_id,
   }
   for (int64_t t_i = 0; OB_SUCC(ret) && t_i < tables.count(); ++t_i) {
     const ObTableSchema *table = NULL;
+    ObTableSchema new_table_schema;
     if (OB_ISNULL(table = tables.at(t_i))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("table is NULL", K(ret));
+    } else if (OB_FAIL(new_table_schema.assign(*table))) {
+      LOG_WARN("fail to assign table schema", K(ret));
     }
     for (int64_t c_j = 0; OB_SUCC(ret) && c_j < table->get_label_se_column_ids().count(); ++c_j) {
       const ObColumnSchemaV2 *column = NULL;
@@ -10298,8 +10230,19 @@ int ObDDLOperator::drop_all_label_se_table_column(uint64_t tenant_id,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("fail to get column schema", K(ret));
       } else if (0 == column->get_column_name_str().compare(policy_column_name)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("drop policy with table column", K(ret), K(table->get_table_name_str()));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "drop policy with table column");
+        /*
         int64_t new_schema_version = OB_INVALID_SCHEMA_VERSION;
-        if (OB_FAIL(schema_service_.gen_new_schema_version(tenant_id, new_schema_version))) {
+        if (table->is_index_table()) {
+          ret = OB_ERR_ALTER_INDEX_COLUMN;
+          LOG_WARN("can't not drop index column", K(ret));
+        } else if (OB_FAIL(update_prev_id_for_delete_column(*table, new_table_schema, *column, trans))) {
+          LOG_WARN("fail to update prev id for delete column", K(ret));
+        } else if (OB_FAIL(new_table_schema.delete_column(column->get_column_name_str()))) {
+          LOG_WARN("fail to delete column", K(ret));
+        } else if (OB_FAIL(schema_service_.gen_new_schema_version(tenant_id, new_schema_version))) {
           LOG_WARN("fail to gen new schema_version", K(ret), K(tenant_id));
         } else if (OB_FAIL(schema_service->get_table_sql_service().delete_single_column(
                              new_schema_version, trans, *table, *column))) {
@@ -10311,6 +10254,7 @@ int ObDDLOperator::drop_all_label_se_table_column(uint64_t tenant_id,
                              trans, *table, new_schema_version ))) {
           LOG_WARN("fail to sync aux schema version column", K(ret));
         }
+        */
       }
     }
   }

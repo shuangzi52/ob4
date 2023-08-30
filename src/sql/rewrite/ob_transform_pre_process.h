@@ -282,7 +282,15 @@ struct DistinctObjMeta
 	 */
 	int transform_for_temporary_table(ObDMLStmt *&stmt, bool &trans_happened);
 	int add_filter_for_temporary_table(ObDMLStmt &stmt,
-	                                   const TableItem &table_item);
+	                                   const TableItem &table_item,
+                                     bool is_trans_scope_temp_table);
+#ifdef OB_BUILD_LABEL_SECURITY
+	int transform_for_label_se_table(ObDMLStmt *stmt, bool &trans_happened);
+  int add_filter_for_label_se_table(ObDMLStmt &stmt,
+                                    const TableItem &table_item,
+                                    const common::ObString &policy_name,
+                                    const share::schema::ObColumnSchemaV2 &column_schema);
+#endif
 	int collect_all_tableitem(ObDMLStmt *stmt,
                             TableItem *table_item,
                             common::ObArray<TableItem*> &table_item_list);
@@ -448,7 +456,6 @@ struct DistinctObjMeta
   int transform_xml_binary(ObRawExpr *hidden_blob_expr, ObRawExpr *&new_expr);
   int transform_udt_column_value_expr(ObDMLStmt *stmt, ObDmlTableInfo &table_info, ObRawExpr *old_expr, ObRawExpr *&new_expr, ObRawExpr *hidd_expr = NULL);
   int transform_udt_column_conv_param_expr(ObDmlTableInfo &table_info, ObRawExpr *old_expr, ObRawExpr *&new_expr);
-  int transform_udt_column_value_xml_parse(ObDmlTableInfo &table_info, ObRawExpr *old_expr, ObRawExpr *&new_expr);
   int replace_udt_assignment_exprs(ObDMLStmt *stmt, ObDmlTableInfo &table_info, ObIArray<ObAssignment> &assignments, bool &trans_happened);
   int set_hidd_col_not_null_attr(const ObColumnRefRawExpr &udt_col, ObIArray<ObColumnRefRawExpr *> &column_exprs);
   int check_skip_child_select_view(const ObIArray<ObParentDMLStmt> &parent_stmts, ObDMLStmt *stmt, bool &skip_for_view_table);
@@ -492,6 +499,8 @@ struct DistinctObjMeta
 
   int transform_for_ins_batch_stmt(ObDMLStmt *batch_stmt, bool &trans_happened);
   int transform_for_batch_stmt(ObDMLStmt *batch_stmt, bool &trans_happened);
+
+  int check_insert_can_batch(ObInsertStmt *insert_stmt, bool &can_batch);
 
   int formalize_batch_stmt(ObDMLStmt *batch_stmt,
                           ObSelectStmt* inner_view_stmt,
@@ -586,13 +595,25 @@ struct DistinctObjMeta
                                 ObIArray<ObRawExpr*> &column_ref_remove_const_exprs);
 
   int transform_cast_multiset_for_stmt(ObDMLStmt *&stmt, bool &is_happened);
-  int transform_cast_multiset_for_expr(ObRawExpr *&expr, bool &trans_happened);
-  int add_constructor_to_multiset(ObQueryRefRawExpr *multiset_expr,
+  int transform_cast_multiset_for_expr(ObDMLStmt &stmt, ObRawExpr *&expr, bool &trans_happened);
+  int add_constructor_to_multiset(ObDMLStmt &stmt,
+                                  ObQueryRefRawExpr *multiset_expr,
                                   const pl::ObPLDataType &elem_type,
                                   bool& trans_happened);
   int add_column_conv_to_multiset(ObQueryRefRawExpr *multiset_expr,
                                   const pl::ObPLDataType &elem_type,
                                   bool& trans_happened);
+
+  int transform_for_last_insert_id(ObDMLStmt *stmt, bool &trans_happened);
+  int expand_for_last_insert_id(ObDMLStmt &stmt, ObIArray<ObRawExpr*> &exprs, bool &is_happended);
+  int expand_last_insert_id_for_join(ObDMLStmt &stmt, JoinedTable *join_table, bool &is_happened);
+  int remove_last_insert_id(ObRawExpr *&expr);
+  int check_last_insert_id_removable(const ObRawExpr *expr, bool &is_removable);
+
+  int expand_correlated_cte(ObDMLStmt *stmt, bool& trans_happened);
+  int check_exec_param_correlated(const ObRawExpr *expr, bool &is_correlated);
+  int check_is_correlated_cte(ObSelectStmt *stmt, ObIArray<ObSelectStmt *> &visited_cte, bool &is_correlated);
+  int convert_join_preds_vector_to_scalar(JoinedTable &joined_table, bool &trans_happened);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTransformPreProcess);
 };

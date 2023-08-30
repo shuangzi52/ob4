@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -10,52 +18,34 @@
 #include "share/ob_ls_id.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_print_utils.h"
-#include "share/stat/ob_opt_table_stat.h"
-#include "share/stat/ob_opt_column_stat.h"
-#include "share/stat/ob_opt_osg_column_stat.h"
+#include "share/rc/ob_tenant_base.h"
+#include "sql/resolver/cmd/ob_load_data_stmt.h"
 
 namespace oceanbase
 {
 namespace table
 {
 
-static const int64_t TABLE_LOAD_CTX_ID = common::ObCtxIds::WORK_AREA;
-
-struct ObTableLoadFlag
-{
-  OB_UNIS_VERSION(1);
-public:
-  static const uint64_t BIT_IS_NEED_SORT = 1;
-  static const uint64_t BIT_DATA_TYPE = 2;
-  static const uint64_t BIT_DUP_ACTION_TYPE = 2;
-  static const uint64_t BIT_RESERVED = 59;
-
-  union {
-    uint64_t flag_;
-    struct {
-      uint64_t is_need_sort_   : BIT_IS_NEED_SORT;
-      uint64_t data_type_      : BIT_DATA_TYPE;
-      uint64_t dup_action_     : BIT_DUP_ACTION_TYPE;
-      uint64_t reserved_       : BIT_RESERVED;
-    };
-  };
-
-  ObTableLoadFlag() : flag_(0) {}
-  void reset() { flag_ = 0; }
-  TO_STRING_KV(K_(is_need_sort), K_(data_type), K_(dup_action));
-};
-
 struct ObTableLoadConfig final
 {
   OB_UNIS_VERSION(1);
 public:
-  ObTableLoadConfig() : session_count_(0), batch_size_(0), max_error_row_count_(0) {}
-  int32_t session_count_;
+  ObTableLoadConfig()
+    : parallel_(0),
+      batch_size_(0),
+      max_error_row_count_(0),
+      dup_action_(sql::ObLoadDupActionType::LOAD_INVALID_MODE),
+      is_need_sort_(false)
+  {
+  }
+  TO_STRING_KV(K_(parallel), K_(batch_size), K_(max_error_row_count), K_(dup_action),
+               K_(is_need_sort));
+public:
+  int32_t parallel_;
   int32_t batch_size_;
   uint64_t max_error_row_count_;
-  ObTableLoadFlag flag_;
-
-  TO_STRING_KV(K_(session_count), K_(batch_size), K_(max_error_row_count), K_(flag));
+  sql::ObLoadDupActionType dup_action_;
+  bool is_need_sort_;
 };
 
 struct ObTableLoadPartitionId
@@ -393,6 +383,44 @@ static int table_load_trans_status_to_string(ObTableLoadTransStatusType trans_st
   return ret;
 }
 
+enum class ObTableLoadClientStatus : int64_t
+{
+  RUNNING = 0,
+  COMMITTING = 1,
+  COMMIT = 2,
+  ERROR = 3,
+  ABORT = 4,
+  MAX_STATUS
+};
+
+static int table_load_client_status_to_string(ObTableLoadClientStatus client_status,
+                                              common::ObString &status_str)
+{
+  int ret = OB_SUCCESS;
+  switch (client_status) {
+    case ObTableLoadClientStatus::RUNNING:
+      status_str = "RUNNING";
+      break;
+    case ObTableLoadClientStatus::COMMITTING:
+      status_str = "COMMITTING";
+      break;
+    case ObTableLoadClientStatus::COMMIT:
+      status_str = "COMMIT";
+      break;
+    case ObTableLoadClientStatus::ERROR:
+      status_str = "ERROR";
+      break;
+    case ObTableLoadClientStatus::ABORT:
+      status_str = "ABORT";
+      break;
+    default:
+      ret = OB_ERR_UNEXPECTED;
+      OB_LOG(WARN, "unexpected client status", KR(ret), K(client_status));
+      break;
+  }
+  return ret;
+}
+
 struct ObTableLoadResultInfo
 {
   OB_UNIS_VERSION(1);
@@ -408,165 +436,66 @@ public:
   uint64_t warnings_ CACHE_ALIGNED;
 };
 
-struct ObTableLoadSqlStatistics
+struct ObTableLoadSequenceNo
 {
-  OB_UNIS_VERSION(1);
+ OB_UNIS_VERSION(1);
 public:
-  ObTableLoadSqlStatistics() : allocator_("TLD_Opstat") {}
-  ~ObTableLoadSqlStatistics() { reset();}
-  void reset() {
-    for (int64_t i = 0; i < col_stat_array_.count(); ++i) {
-      ObOptOSGColumnStat *col_stat = col_stat_array_.at(i);
-      if (col_stat != nullptr) {
-        col_stat->~ObOptOSGColumnStat();
-      }
-    }
-    col_stat_array_.reset();
-    for (int64_t i = 0; i < table_stat_array_.count(); ++i) {
-      ObOptTableStat *table_stat = table_stat_array_.at(i);
-      if (table_stat != nullptr) {
-        table_stat->~ObOptTableStat();
-      }
-    }
-    table_stat_array_.reset();
-    allocator_.reset();
+  static const uint64_t MAX_DATA_ID  = (1LL << 16) - 1;
+  static const uint64_t MAX_CHUNK_ID  = (1LL << 32) - 1;
+  static const uint64_t MAX_BATCH_ID  = (1LL << 48) - 1;
+  static const uint64_t MAX_DATA_SEQ_NO  = (1LL << 48) - 1;
+  static const uint64_t MAX_CHUNK_SEQ_NO  = (1LL << 32) - 1;
+  static const uint64_t MAX_BATCH_SEQ_NO  = (1LL << 16) - 1;
+  union {
+    // multi file
+    struct {
+      uint64_t data_id_ : 16;
+      uint64_t data_seq_no_ : 48;
+    };
+    // single file
+    struct {
+      uint64_t chunk_id_ : 32;
+      uint64_t chunk_seq_no_ : 32;
+    };
+    // client
+    struct {
+      uint64_t batch_id_ : 48;
+      uint64_t batch_seq_no_ : 16;
+    };
+    uint64_t sequence_no_;
   };
-  bool is_empty() const
+  ObTableLoadSequenceNo() : sequence_no_(OB_INVALID_ID) {}
+  ObTableLoadSequenceNo(uint64_t sequence_no) { sequence_no_ = sequence_no; }
+  void reset() { sequence_no_ = OB_INVALID_ID; }
+  bool is_valid () const {return sequence_no_ != OB_INVALID_ID; }
+  bool operator == (const ObTableLoadSequenceNo &other) const { return sequence_no_ == other.sequence_no_; }
+  bool operator < (const ObTableLoadSequenceNo &other) const { return sequence_no_ < other.sequence_no_; }
+  bool operator > (const ObTableLoadSequenceNo &other) const { return sequence_no_ > other.sequence_no_; }
+  ObTableLoadSequenceNo &operator=(const ObTableLoadSequenceNo &other) { sequence_no_ = other.sequence_no_; return *this; }
+  ObTableLoadSequenceNo &operator++()
   {
-    return table_stat_array_.count() == 0 || col_stat_array_.count() == 0;
+    sequence_no_++;
+    return *this;
   }
-  int allocate_table_stat(ObOptTableStat *&table_stat)
+  ObTableLoadSequenceNo operator++(int)
   {
-    int ret = OB_SUCCESS;
-    ObOptTableStat *new_table_stat = OB_NEWx(ObOptTableStat, (&allocator_));
-    if (OB_ISNULL(new_table_stat)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      OB_LOG(WARN, "fail to allocate buffer", KR(ret));
-    } else if (OB_FAIL(table_stat_array_.push_back(new_table_stat))) {
-      OB_LOG(WARN, "fail to push back", KR(ret));
-    } else {
-      table_stat = new_table_stat;
-    }
-    if (OB_FAIL(ret)) {
-      if (new_table_stat != nullptr) {
-        new_table_stat->~ObOptTableStat();
-        allocator_.free(new_table_stat);
-        new_table_stat = nullptr;
-      }
-    }
-    return ret;
+    ObTableLoadSequenceNo tmp = *this;
+    sequence_no_++;
+    return tmp;
   }
-  int allocate_col_stat(ObOptOSGColumnStat *&col_stat)
+  ObTableLoadSequenceNo &operator--()
   {
-    int ret = OB_SUCCESS;
-    ObOptOSGColumnStat *new_osg_col_stat = ObOptOSGColumnStat::create_new_osg_col_stat(allocator_);
-    if (OB_ISNULL(new_osg_col_stat) || OB_ISNULL(new_osg_col_stat->col_stat_)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      OB_LOG(WARN, "fail to allocate buffer", KR(ret));
-    } else if (OB_FAIL(col_stat_array_.push_back(new_osg_col_stat))) {
-      OB_LOG(WARN, "fail to push back", KR(ret));
-    } else {
-      col_stat = new_osg_col_stat;
-    }
-    if (OB_FAIL(ret)) {
-      if (new_osg_col_stat != nullptr) {
-        new_osg_col_stat->~ObOptOSGColumnStat();
-        allocator_.free(new_osg_col_stat);
-        new_osg_col_stat = nullptr;
-      }
-    }
-    return ret;
+    sequence_no_--;
+    return *this;
   }
-  int add(const ObTableLoadSqlStatistics& other)
+  ObTableLoadSequenceNo operator--(int)
   {
-    int ret = OB_SUCCESS;
-    for (int64_t i = 0; OB_SUCC(ret)&& i < other.table_stat_array_.count(); ++i) {
-      ObOptTableStat *table_stat = other.table_stat_array_.at(i);
-      if (table_stat != nullptr) {
-        ObOptTableStat *copied_table_stat = nullptr;
-        int64_t size = table_stat->size();
-        char *new_buf = nullptr;
-        if (OB_ISNULL(new_buf = static_cast<char *>(allocator_.alloc(size)))) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          OB_LOG(WARN, "fail to allocate buffer", KR(ret), K(size));
-        } else if (OB_FAIL(table_stat->deep_copy(new_buf, size, copied_table_stat))) {
-          OB_LOG(WARN, "fail to copy table stat", KR(ret));
-        } else if (OB_FAIL(table_stat_array_.push_back(copied_table_stat))) {
-          OB_LOG(WARN, "fail to add table stat", KR(ret));
-        }
-        if (OB_FAIL(ret)) {
-          if (copied_table_stat != nullptr) {
-            copied_table_stat->~ObOptTableStat();
-            copied_table_stat = nullptr;
-          }
-          if(new_buf != nullptr) {
-            allocator_.free(new_buf);
-            new_buf = nullptr;
-          }
-        }
-      }
-    }
-    for (int64_t i = 0; OB_SUCC(ret)&& i < other.col_stat_array_.count(); ++i) {
-      ObOptOSGColumnStat *col_stat = other.col_stat_array_.at(i);
-      ObOptOSGColumnStat *copied_col_stat = nullptr;
-      if (OB_ISNULL(col_stat)) {
-        ret = OB_ERR_UNEXPECTED;
-        OB_LOG(WARN, "get unexpected null");
-      } else if (OB_ISNULL(copied_col_stat = ObOptOSGColumnStat::create_new_osg_col_stat(allocator_))) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        OB_LOG(WARN, "failed to create new col stat");
-      } else if (OB_FAIL(copied_col_stat->deep_copy(*col_stat))) {
-        OB_LOG(WARN, "fail to copy col stat", KR(ret));
-      } else if (OB_FAIL(col_stat_array_.push_back(copied_col_stat))) {
-        OB_LOG(WARN, "fail to add col stat", KR(ret));
-      }
-      if (OB_FAIL(ret)) {
-        if (copied_col_stat != nullptr) {
-          copied_col_stat->~ObOptOSGColumnStat();
-          copied_col_stat = nullptr;
-        }
-      }
-    }
-    return ret;
+    ObTableLoadSequenceNo tmp = *this;
+    sequence_no_--;
+    return tmp;
   }
-
-  int get_col_stat_array(ObIArray<ObOptColumnStat*> &col_stat_array)
-  {
-    int ret = OB_SUCCESS;
-    for (int64_t i = 0; OB_SUCC(ret) && i < col_stat_array_.count(); ++i) {
-      if (OB_ISNULL(col_stat_array_.at(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        OB_LOG(WARN, "get unexpected null");
-      } else if (OB_FAIL(col_stat_array_.at(i)->set_min_max_datum_to_obj())) {
-        OB_LOG(WARN, "failed to persistence min max");
-      } else if (OB_FAIL(col_stat_array.push_back(col_stat_array_.at(i)->col_stat_))) {
-        OB_LOG(WARN, "failed to push back col stat");
-      }
-    }
-    return ret;
-  }
-
-  int persistence_col_stats()
-  {
-    int ret = OB_SUCCESS;
-    for (int64_t i = 0; OB_SUCC(ret) && i < col_stat_array_.count(); ++i) {
-      if (OB_ISNULL(col_stat_array_.at(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        OB_LOG(WARN, "get unexpected null");
-      } else if (OB_FAIL(col_stat_array_.at(i)->set_min_max_datum_to_obj())) {
-        OB_LOG(WARN, "failed to persistence min max");
-      }
-    }
-    return ret;
-  }
-
-  TO_STRING_KV(K_(col_stat_array), K_(table_stat_array));
-public:
-  common::ObSEArray<ObOptTableStat *, 64> table_stat_array_;
-  common::ObSEArray<ObOptOSGColumnStat *, 64> col_stat_array_;
-  common::ObArenaAllocator allocator_;
+  TO_STRING_KV(K_(sequence_no), K_(data_id), K_(data_seq_no), K_(chunk_id), K_(chunk_seq_no), K_(batch_id), K_(batch_seq_no));
 };
-
 
 } // namespace table
 } // namespace oceanbase

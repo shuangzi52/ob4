@@ -29,6 +29,34 @@ bool vt_mapping_init()
    }
 
    {
+   int64_t idx = OB_ALL_VIRTUAL_BALANCE_JOB_HISTORY_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_BALANCE_JOB_HISTORY_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_BALANCE_JOB_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_BALANCE_JOB_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_BALANCE_TASK_HISTORY_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_BALANCE_TASK_HISTORY_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_BALANCE_TASK_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_BALANCE_TASK_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
    int64_t idx = OB_ALL_VIRTUAL_COLL_TYPE_REAL_AGENT_ORA_TID - start_idx;
    VTMapping &tmp_vt_mapping = vt_mappings[idx];
    tmp_vt_mapping.mapping_tid_ = OB_ALL_COLL_TYPE_TID;
@@ -291,6 +319,13 @@ bool vt_mapping_init()
    int64_t idx = OB_ALL_VIRTUAL_JOB_REAL_AGENT_ORA_IDX_JOB_POWNER_REAL_AGENT_TID - start_idx;
    VTMapping &tmp_vt_mapping = vt_mappings[idx];
    tmp_vt_mapping.mapping_tid_ = OB_ALL_JOB_IDX_JOB_POWNER_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_LS_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_LS_TID;
    tmp_vt_mapping.is_real_vt_ = true;
    }
 
@@ -1040,6 +1075,20 @@ bool vt_mapping_init()
    int64_t idx = OB_ALL_VIRTUAL_TENANT_TRIGGER_REAL_AGENT_ORA_IDX_TRIGGER_NAME_REAL_AGENT_TID - start_idx;
    VTMapping &tmp_vt_mapping = vt_mappings[idx];
    tmp_vt_mapping.mapping_tid_ = OB_ALL_TENANT_TRIGGER_IDX_TRIGGER_NAME_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_TRANSFER_TASK_HISTORY_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_TRANSFER_TASK_HISTORY_TID;
+   tmp_vt_mapping.is_real_vt_ = true;
+   }
+
+   {
+   int64_t idx = OB_ALL_VIRTUAL_TRANSFER_TASK_REAL_AGENT_ORA_TID - start_idx;
+   VTMapping &tmp_vt_mapping = vt_mappings[idx];
+   tmp_vt_mapping.mapping_tid_ = OB_ALL_TRANSFER_TASK_TID;
    tmp_vt_mapping.is_real_vt_ = true;
    }
 

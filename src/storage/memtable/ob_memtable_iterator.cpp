@@ -77,7 +77,7 @@ int ObMemtableGetIterator::init(
   if (is_inited_) {
     reset();
   }
-  const ObTableReadInfo *read_info = param.get_read_info(context.use_fuse_row_cache_);
+  const ObITableReadInfo *read_info = param.get_read_info(context.use_fuse_row_cache_);
   if (param.need_trans_info()) {
     int64_t length = concurrency_control::ObTransStatRow::MAX_TRANS_STRING_SIZE;
     if (OB_ISNULL(trans_info_ptr = static_cast<char *>(context.stmt_allocator_->alloc(length)))) {
@@ -352,13 +352,13 @@ int ObMemtableScanIterator::inner_get_next_row(const ObDatumRow *&row)
   int ret = OB_SUCCESS;
   const ObMemtableKey *key = NULL;
   ObMvccValueIterator *value_iter = NULL;
-  const bool skip_compact = false;
+
   if (IS_NOT_INIT) {
     TRANS_LOG(WARN, "not init", KP(this));
     ret = OB_NOT_INIT;
   } else if (OB_FAIL(prepare_scan())) {
     TRANS_LOG(WARN, "prepare scan fail", K(ret));
-  } else if (OB_FAIL(row_iter_.get_next_row(key, value_iter, iter_flag_, skip_compact))
+  } else if (OB_FAIL(row_iter_.get_next_row(key, value_iter, iter_flag_))
       || NULL == key || NULL == value_iter) {
     if (OB_ITER_END != ret) {
       TRANS_LOG(WARN, "row_iter_ get_next_row fail", K(ret), KP(key), KP(value_iter));
@@ -384,7 +384,8 @@ int ObMemtableScanIterator::inner_get_next_row(const ObDatumRow *&row)
                       context_->tablet_id_,
                       context_->ls_id_,
                       value_iter->get_mvcc_row()->get_last_compact_cnt(),
-                      value_iter->get_mvcc_row()->get_total_trans_node_cnt());
+                      value_iter->get_mvcc_row()->get_total_trans_node_cnt(),
+                      lock_state.trans_scn_);
       }
     } else if (OB_FAIL(ObReadRow::iterate_row(*read_info_, *rowkey, *(context_->allocator_), *value_iter, row_, bitmap_, row_scn))) {
       TRANS_LOG(WARN, "iterate_row fail", K(ret), K(*rowkey), KP(value_iter));
@@ -396,6 +397,11 @@ int ObMemtableScanIterator::inner_get_next_row(const ObDatumRow *&row)
           ret = OB_ERR_UNEXPECTED;
           TRANS_LOG(WARN, "Unexpected null columns desc", K(ret), K_(param));
         } else {
+          if (row_scn == share::SCN::max_scn().get_val_for_tx()) {
+            // TODO(handora.qc): remove it as if we confirmed no problem according to row_scn
+            TRANS_LOG(INFO, "use max row scn", KPC(value_iter->get_mvcc_acc_ctx()), K(trans_stat_row));
+          }
+
           for (int64_t i = 0; i < out_cols->count(); i++) {
             if (out_cols->at(i).col_id_ == OB_HIDDEN_TRANS_VERSION_COLUMN_ID) {
               row_.storage_datums_[i].reuse();
@@ -465,7 +471,7 @@ int ObMemtableMGetIterator::init(
   }
 
   char *trans_info_ptr = nullptr;
-  const ObTableReadInfo *read_info = param.get_read_info(context.use_fuse_row_cache_);
+  const ObITableReadInfo *read_info = param.get_read_info();
   if (param.need_trans_info()) {
     int64_t length = concurrency_control::ObTransStatRow::MAX_TRANS_STRING_SIZE;
     if (OB_ISNULL(trans_info_ptr = static_cast<char *>(context.stmt_allocator_->alloc(length)))) {
@@ -770,13 +776,13 @@ int ObMemtableMultiVersionScanIterator::init(
     reset();
   }
 
-  const ObColDescIArray *columns;
+  const ObColDescIArray *rowkey_columns;
   const ObDatumRange *range = static_cast<const ObDatumRange *>(query_range);
   ObMemtable *memtable = static_cast<ObMemtable *>(table);
   if (OB_ISNULL(table) || OB_ISNULL(query_range) || !context.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "table and query range can not be null", KP(table), KP(query_range), K(ret));
-  } else if (OB_ISNULL(columns = param.get_out_col_descs())) {
+  } else if (OB_ISNULL(rowkey_columns = param.get_out_col_descs())) {
     ret = OB_ERR_UNEXPECTED;
     TRANS_LOG(WARN, "Unexpected null col descs", K(ret), K(param));
   } else if (OB_ISNULL(read_info_ = param.get_read_info(true))) {
@@ -786,10 +792,10 @@ int ObMemtableMultiVersionScanIterator::init(
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected invalid datum range", K(ret), K(range));
   } else if (OB_FAIL(ObMemtableKey::build_without_hash(
-                  start_key_, *columns, &range->get_start_key().get_store_rowkey(), *context.get_range_allocator()))) {
+                  start_key_, *rowkey_columns, &range->get_start_key().get_store_rowkey(), *context.get_range_allocator()))) {
     TRANS_LOG(WARN, "start key build fail", K(param.table_id_), K(range->get_start_key()));
   } else if (OB_FAIL(ObMemtableKey::build_without_hash(
-                         end_key_, *columns, &range->get_end_key().get_store_rowkey(), *context.get_range_allocator()))) {
+                         end_key_, *rowkey_columns, &range->get_end_key().get_store_rowkey(), *context.get_range_allocator()))) {
     TRANS_LOG(WARN, "end key build fail", K(param.table_id_), K(range->get_end_key()));
   } else {
     TRANS_LOG(DEBUG, "init multi version scan iterator", K(param), K(*range));
@@ -807,7 +813,7 @@ int ObMemtableMultiVersionScanIterator::init(
     } else if (OB_FAIL(row_.init(*context.stmt_allocator_, read_info_->get_request_count()))) {
       TRANS_LOG(WARN, "Failed to init datum row", K(ret));
     } else {
-      TRANS_LOG(DEBUG, "multi version scan iterator init succ", K(param.table_id_), K(range));
+      TRANS_LOG(INFO, "multi version scan iterator init succ", K(param.table_id_), K(range), KPC(read_info_), K(row_));
       trans_version_col_idx_ = param.get_schema_rowkey_count();
       sql_sequence_col_idx_ = param.get_schema_rowkey_count() + 1;
       context_ = &context;
@@ -1202,8 +1208,8 @@ int ObMemtableMultiVersionScanIterator::iterate_uncommitted_row_value_(ObDatumRo
   ObRowReader row_reader;
   const void *tnode = NULL;
   const ObMemtableDataHeader *mtd = NULL;
-  int64_t sql_seq = -1;
-  int64_t first_sql_sequence = -1;
+  transaction::ObTxSEQ sql_seq;
+  transaction::ObTxSEQ first_sql_sequence;
   int64_t trans_version = INT64_MAX;
   SCN trans_scn;
   bool same_sql_sequence_flag = true;
@@ -1213,7 +1219,7 @@ int ObMemtableMultiVersionScanIterator::iterate_uncommitted_row_value_(ObDatumRo
   } else {
     bitmap_.reuse();
     while (OB_SUCC(ret)) {
-      if (first_sql_sequence > -1
+      if (first_sql_sequence.is_valid()
           && OB_FAIL(value_iter_->check_next_sql_sequence(row.trans_id_, first_sql_sequence, same_sql_sequence_flag))) {
         TRANS_LOG(WARN, "failed to check next sql sequence", K(ret), K(tnode));
       } else if (!same_sql_sequence_flag) { // different sql sequence need break
@@ -1240,12 +1246,12 @@ int ObMemtableMultiVersionScanIterator::iterate_uncommitted_row_value_(ObDatumRo
           bool read_finished = false;
           if (OB_FAIL(row_reader.read_memtable_row(mtd->buf_, mtd->buf_len_, *read_info_, row, bitmap_, read_finished))) {
             TRANS_LOG(WARN, "Failed to read memtable row", K(ret));
-          } else if (-1 == first_sql_sequence) { // record sql sequence
+          } else if (!first_sql_sequence.is_valid()) { // record sql sequence
             first_sql_sequence = sql_seq;
             row.storage_datums_[trans_version_col_idx_].reuse();
             row.storage_datums_[sql_sequence_col_idx_].reuse();
             row.storage_datums_[trans_version_col_idx_].set_int(-trans_version);
-            row.storage_datums_[sql_sequence_col_idx_].set_int(-sql_seq);
+            row.storage_datums_[sql_sequence_col_idx_].set_int(-sql_seq.cast_to_int());
             row.row_flag_.set_flag(mtd->dml_flag_);
           } else {
             row.row_flag_.fuse_flag(mtd->dml_flag_);
@@ -1288,12 +1294,8 @@ int ObMemtableMultiVersionScanIterator::iterate_compacted_row_value_(ObDatumRow 
       if (OB_FAIL(row_reader_.read_memtable_row(mtd->buf_, mtd->buf_len_, *read_info_, row, bitmap_, read_finished))) {
         TRANS_LOG(WARN, "Failed to read row without", K(ret));
       } else if (ObDmlFlag::DF_INSERT == mtd->dml_flag_ || ObDmlFlag::DF_DELETE == mtd->dml_flag_ || read_finished) {
-        row.set_compacted_multi_version_row();
-        // TODO: @dengzhi.ldz remove this
-        if (ObDmlFlag::DF_INSERT == mtd->dml_flag_ && !read_finished) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("Unexpected not compact insert row", K(ret), K(row), K(bitmap_.get_nop_cnt()),
-                   KPC(reinterpret_cast<const ObRowHeader*>(mtd->buf_)), KPC_(read_info));
+        if (bitmap_.is_empty() || ObDmlFlag::DF_DELETE == mtd->dml_flag_) {
+          row.set_compacted_multi_version_row();
         }
         break;
       }
@@ -1356,14 +1358,8 @@ int ObMemtableMultiVersionScanIterator::iterate_multi_version_row_value_(ObDatum
       if (row.row_flag_.is_lock()) {
         row.row_flag_ = mtd->dml_flag_;
       }
-      if (row.row_flag_.is_insert() || row.row_flag_.is_delete() || read_finished) {
+      if (bitmap_.is_empty() || row.row_flag_.is_delete()) {
         row.set_compacted_multi_version_row();
-        // TODO: @dengzhi.ldz remove this
-        if (row.row_flag_.is_insert() && !read_finished) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("Unexpected not compact insert row", K(ret), K(row), K(bitmap_.get_nop_cnt()),
-                   KPC(reinterpret_cast<const ObRowHeader*>(mtd->buf_)), KPC_(read_info));
-        }
       }
       if (trans_version > version_range.multi_version_start_
           && value_iter_->is_cur_multi_version_row_end()) {
@@ -1395,9 +1391,9 @@ OB_INLINE int ObReadRow::iterate_row_key(const ObStoreRowkey &rowkey, ObDatumRow
 }
 
 OB_INLINE int ObReadRow::iterate_row_value_(
-    const ObTableReadInfo &read_info,
+    const ObITableReadInfo &read_info,
     common::ObIAllocator &allocator,
-    ObIMvccValueIterator &value_iter,
+    ObMvccValueIterator &value_iter,
     ObDatumRow &row,
     ObNopBitMap &bitmap,
     int64_t &row_scn)
@@ -1436,7 +1432,17 @@ OB_INLINE int ObReadRow::iterate_row_value_(
       if (OB_FAIL(reader.read_memtable_row(mtd->buf_, mtd->buf_len_, read_info, row, bitmap, read_finished))) {
         TRANS_LOG(WARN, "Failed to read memtable row", K(ret));
       } else if (0 == row_scn) {
-        row_scn = reinterpret_cast<const ObMvccTransNode *>(tnode)->trans_version_.get_val_for_tx();
+        const ObMvccTransNode *tx_node = reinterpret_cast<const ObMvccTransNode *>(tnode);
+        const ObTransID snapshot_tx_id = value_iter.get_snapshot_tx_id();
+        const ObTransID reader_tx_id = value_iter.get_reader_tx_id();
+        share::SCN row_version = tx_node->trans_version_;
+        row_scn = row_version.get_val_for_tx();
+        if (!value_iter.get_mvcc_acc_ctx()->is_standby_read_
+            && !(snapshot_tx_id == tx_node->get_tx_id() || reader_tx_id == tx_node->get_tx_id())
+            && row_version.is_max()) {
+          TRANS_LOG(ERROR, "meet row scn with undecided value", KPC(tx_node),
+                    K(is_committed), K(trans_version), K(value_iter));
+        }
       }
       if (OB_SUCC(ret) &&(ObDmlFlag::DF_INSERT == mtd->dml_flag_ || read_finished)) {
         LOG_DEBUG("chaser debug iter memtable row", KPC(mtd), K(read_finished));
@@ -1450,10 +1456,10 @@ OB_INLINE int ObReadRow::iterate_row_value_(
 }
 
 int ObReadRow::iterate_row(
-    const ObTableReadInfo &read_info,
+    const ObITableReadInfo &read_info,
     const ObStoreRowkey &key,
     common::ObIAllocator &allocator,
-    ObIMvccValueIterator &value_iter,
+    ObMvccValueIterator &value_iter,
     ObDatumRow &row,
     ObNopBitMap &bitmap,
     int64_t &row_scn)

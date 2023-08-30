@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_mem_loader.h"
@@ -40,9 +47,10 @@ int ObDirectLoadMemLoader::add_table(ObIDirectLoadPartitionTable *table)
     if (OB_ISNULL(external_table = dynamic_cast<ObDirectLoadExternalTable *>(table))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected table", KR(ret), KPC(table));
-    } else if (OB_UNLIKELY(external_table->get_fragments().count() != 1)) {
+    } else if (OB_UNLIKELY(external_table->get_fragments().count() <= 0)) {
       ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("files handle should only have one handle", KR(ret));
+      LOG_WARN("files handle should have at least one handle",
+          KR(ret), K(external_table->get_fragments().count()));
     } else if (OB_FAIL(fragments_.push_back(external_table->get_fragments()))) {
       LOG_WARN("fail to push back", KR(ret));
     }
@@ -58,7 +66,7 @@ int ObDirectLoadMemLoader::work()
   ChunkType *chunk = nullptr;
   RowType row;
   for (int64_t i = 0; OB_SUCC(ret) && i < fragments_.count(); i++) {
-    const ObDirectLoadExternalFragment &fragment = fragments_.at(i);
+    ObDirectLoadExternalFragment &fragment = fragments_.at(i);
     ExternalReader external_reader;
     if (OB_FAIL(external_reader.init(mem_ctx_->table_data_desc_.external_data_block_size_,
                                      fragment.max_data_block_size_,
@@ -117,6 +125,9 @@ int ObDirectLoadMemLoader::work()
         }
       }
     }
+    if (OB_SUCC(ret)) {
+      fragment.reset();
+    }
   }
 
   if (OB_SUCC(ret)) {
@@ -138,7 +149,7 @@ int ObDirectLoadMemLoader::close_chunk(ChunkType *&chunk)
 {
   int ret = OB_SUCCESS;
   CompareType compare;
-  if (OB_FAIL(compare.init(*(mem_ctx_->datum_utils_)))) {
+  if (OB_FAIL(compare.init(*(mem_ctx_->datum_utils_), mem_ctx_->dup_action_))) {
     LOG_WARN("fail to init compare", KR(ret));
   } else if (OB_FAIL(chunk->sort(compare))) {
     LOG_WARN("fail to sort chunk", KR(ret));

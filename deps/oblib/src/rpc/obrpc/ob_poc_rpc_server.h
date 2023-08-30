@@ -28,7 +28,7 @@ public:
   enum {
     OBCG_ELECTION = 2
   }; // same as src/share/resource_manager/ob_group_list.h
-  ObPocServerHandleContext( ObRpcMemPool& pool, uint64_t resp_id, int64_t resp_expired_abs_us):
+  ObPocServerHandleContext(ObRpcMemPool& pool, uint64_t resp_id, int64_t resp_expired_abs_us):
       pool_(pool), resp_id_(resp_id), resp_expired_abs_us_(resp_expired_abs_us), peer_()
   {}
   ~ObPocServerHandleContext() {
@@ -37,6 +37,7 @@ public:
   static int create(int64_t resp_id, const char* buf, int64_t sz, rpc::ObRequest*& req);
   void destroy() { pool_.destroy(); }
   void resp(ObRpcPacket* pkt);
+  static int resp_error(uint64_t resp_id, int err_code, const char* b, const int64_t sz);
   ObAddr get_peer();
   void set_peer_unsafe(); // This function can only be called from the pnio thread.
   void* alloc(int64_t sz) { return pool_.alloc(sz); }
@@ -62,6 +63,7 @@ public:
   ObPocRpcServer() : has_start_(false){}
   ~ObPocRpcServer() {}
   int start(int port, int net_thread_count, rpc::frame::ObReqDeliver* deliver);
+  int start_net_client(int net_thread_count);
   void stop();
   void wait();
   bool has_start() {return has_start_;}
@@ -76,7 +78,11 @@ private:
 
 extern ObPocRpcServer global_poc_server;
 extern ObListener* global_ob_listener;
-extern "C" int dispatch_to_ob_listener(int accept_fd);
+int64_t get_max_rpc_packet_size();
+extern "C" {
+  int dispatch_to_ob_listener(int accept_fd);
+  int tranlate_to_ob_error(int err);
+}
 }; // end namespace obrpc
 }; // end namespace oceanbase
 

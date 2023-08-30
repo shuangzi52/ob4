@@ -39,12 +39,15 @@ ObLogFetcher::ObLogFetcher() :
     is_inited_(false),
     log_fetcher_user_(LogFetcherUser::UNKNOWN),
     cluster_id_(OB_INVALID_CLUSTER_ID),
-    tenant_id_(OB_INVALID_TENANT_ID),
+    source_tenant_id_(OB_INVALID_TENANT_ID),
+    self_tenant_id_(OB_INVALID_TENANT_ID),
     cfg_(nullptr),
     is_loading_data_dict_baseline_data_(false),
     fetching_mode_(ClientFetchingMode::FETCHING_MODE_UNKNOWN),
     archive_dest_(),
     large_buffer_pool_(),
+    log_ext_handler_concurrency_(0),
+    log_ext_handler_(),
     ls_ctx_add_info_factory_(NULL),
     err_handler_(NULL),
     ls_fetch_mgr_(),
@@ -71,7 +74,8 @@ ObLogFetcher::~ObLogFetcher()
 int ObLogFetcher::init(
     const LogFetcherUser &log_fetcher_user,
     const int64_t cluster_id,
-    const uint64_t tenant_id,
+    const uint64_t source_tenant_id,
+    const uint64_t self_tenant_id,
     const bool is_loading_data_dict_baseline_data,
     const ClientFetchingMode fetching_mode,
     const ObBackupPathString &archive_dest,
@@ -80,7 +84,7 @@ int ObLogFetcher::init(
     ObILogFetcherLSCtxAddInfoFactory &ls_ctx_add_info_factory,
     ILogFetcherHandler &log_handler,
     ObISQLClient *proxy,
-    IObLogErrHandler *err_handler)
+    logfetcher::IObLogErrHandler *err_handler)
 {
   int ret = OB_SUCCESS;
 
@@ -94,15 +98,24 @@ int ObLogFetcher::init(
     LOG_ERROR("invalid argument", KR(ret), K(err_handler), K(proxy));
   } else {
     cfg_ = &cfg;
+    // set self_tenant_id before suggest_cached_rpc_res_count
+    self_tenant_id_ = self_tenant_id;
     // Before the LogFetcher module is initialized, the following configuration items need to be loaded
     configure(cfg);
-    const common::ObRegion prefer_region(cfg.region.str());
+    int64_t cached_fetch_log_arpc_res_cnt = cfg.rpc_result_cached_count;
+    const int64_t MIN_FETCH_LOG_ARPC_RES_CNT = 4;
+    if (is_standby(log_fetcher_user)) {
+      cached_fetch_log_arpc_res_cnt =
+        suggest_cached_rpc_res_count_(MIN_FETCH_LOG_ARPC_RES_CNT, cached_fetch_log_arpc_res_cnt);
+    }
+    const common::ObRegion region(cfg.region.str());
 
     if (is_integrated_fetching_mode(fetching_mode) && OB_FAIL(log_route_service_.init(
         proxy,
-        prefer_region,
+        region,
         cluster_id,
         false/*is_across_cluster*/,
+        err_handler,
         cfg.server_blacklist.str(),
         cfg.log_router_background_refresh_interval_sec,
         cfg.all_server_cache_update_interval_sec,
@@ -112,12 +125,15 @@ int ObLogFetcher::init(
         cfg.blacklist_survival_time_penalty_period_min,
         cfg.blacklist_history_overdue_time_min,
         cfg.blacklist_history_clear_interval_min,
-        true/*is_tenant_mode*/))) {
-      LOG_ERROR("ObLogRouterService init failer", KR(ret), K(prefer_region), K(cluster_id));
+        true/*is_tenant_mode*/,
+        source_tenant_id))) {
+      LOG_ERROR("ObLogRouterService init failer", KR(ret), K(region), K(cluster_id), K(source_tenant_id));
     } else if (OB_FAIL(progress_controller_.init(cfg.ls_count_upper_limit))) {
       LOG_ERROR("init progress controller fail", KR(ret));
     } else if (OB_FAIL(large_buffer_pool_.init("ObLogFetcher", 1L * 1024 * 1024 * 1024))) {
       LOG_ERROR("init large buffer pool failed", KR(ret));
+    } else if (is_direct_fetching_mode(fetching_mode) && OB_FAIL(log_ext_handler_.init())) {
+      LOG_ERROR("init failed", KR(ret));
     } else if (OB_FAIL(ls_fetch_mgr_.init(
             progress_controller_,
             ls_ctx_factory,
@@ -126,7 +142,7 @@ int ObLogFetcher::init(
       LOG_ERROR("init part fetch mgr fail", KR(ret));
     } else if (OB_FAIL(init_self_addr_())) {
       LOG_ERROR("init_self_addr_ fail", KR(ret));
-    } else if (OB_FAIL(rpc_.init(cluster_id, cfg.io_thread_num, cfg))) {
+    } else if (OB_FAIL(rpc_.init(cluster_id, self_tenant_id, cfg.io_thread_num, cfg))) {
       LOG_ERROR("init rpc handler fail", KR(ret));
     } else if (is_cdc(log_fetcher_user) && OB_FAIL(start_lsn_locator_.init(
             cfg.start_lsn_locator_thread_num,
@@ -140,6 +156,7 @@ int ObLogFetcher::init(
             log_fetcher_user,
             cfg.idle_pool_thread_num,
             cfg,
+            static_cast<void *>(this),
             *err_handler,
             stream_worker_,
             start_lsn_locator_))) {
@@ -157,10 +174,11 @@ int ObLogFetcher::init(
             *err_handler))) {
       LOG_ERROR("init stream worker fail", KR(ret));
     } else if (OB_FAIL(fs_container_mgr_.init(
-            tenant_id,
+            source_tenant_id,
+            self_tenant_id,
             cfg.svr_stream_cached_count,
             cfg.fetch_stream_cached_count,
-            cfg.rpc_result_cached_count,
+            cached_fetch_log_arpc_res_cnt,
             rpc_,
             stream_worker_,
             progress_controller_,
@@ -168,7 +186,7 @@ int ObLogFetcher::init(
     } else {
       log_fetcher_user_ = log_fetcher_user;
       cluster_id_ = cluster_id;
-      tenant_id_ = tenant_id;
+      source_tenant_id_ = source_tenant_id;
       is_loading_data_dict_baseline_data_ = is_loading_data_dict_baseline_data;
       fetching_mode_ = fetching_mode;
       archive_dest_ = archive_dest;
@@ -176,10 +194,12 @@ int ObLogFetcher::init(
       paused_ = false;
       pause_time_ = OB_INVALID_TIMESTAMP;
       resume_time_ = OB_INVALID_TIMESTAMP;
+      log_ext_handler_concurrency_ = cfg.cdc_read_archive_log_concurrency;
       stop_flag_ = true;
       is_inited_ = true;
 
-      LOG_INFO("LogFetcher init succ", K_(cluster_id), K_(tenant_id), K_(is_loading_data_dict_baseline_data),
+      LOG_INFO("LogFetcher init succ", K_(cluster_id), K_(source_tenant_id),
+          K_(self_tenant_id), K_(is_loading_data_dict_baseline_data),
           "fetching_mode", print_fetching_mode(fetching_mode_), K(archive_dest_));
     }
   }
@@ -218,6 +238,11 @@ void ObLogFetcher::destroy()
     log_route_service_.wait();
     log_route_service_.destroy();
   }
+  log_ext_handler_concurrency_ = 0;
+  if (is_direct_fetching_mode(fetching_mode_)) {
+    log_ext_handler_.wait();
+    log_ext_handler_.destroy();
+  }
   // Finally reset fetching_mode_ because of some processing dependencies, such as ObLogRouteService
   fetching_mode_ = ClientFetchingMode::FETCHING_MODE_UNKNOWN;
   log_fetcher_user_ = LogFetcherUser::UNKNOWN;
@@ -233,7 +258,7 @@ int ObLogFetcher::start()
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_UNLIKELY(! stop_flag_)) {
     LOG_ERROR("fetcher has been started", K(stop_flag_));
     ret = OB_INIT_TWICE;
@@ -250,6 +275,10 @@ int ObLogFetcher::start()
       LOG_ERROR("start dead pool fail", KR(ret));
     } else if (OB_FAIL(stream_worker_.start())) {
       LOG_ERROR("start stream worker fail", KR(ret));
+      // TODO by wenyue.zxl: change the concurrency of 'log_ext_handler_'(see resize interface)
+    } else if (is_direct_fetching_mode(fetching_mode_) &&
+        OB_FAIL(log_ext_handler_.start(log_ext_handler_concurrency_))) {
+      LOG_ERROR("start log external handler failed", KR(ret));
     } else {
       LOG_INFO("LogFetcher start success");
     }
@@ -273,6 +302,9 @@ void ObLogFetcher::stop()
 
     if (is_integrated_fetching_mode(fetching_mode_)) {
       log_route_service_.stop();
+    }
+    if (is_direct_fetching_mode(fetching_mode_)) {
+      log_ext_handler_.stop();
     }
 
     LOG_INFO("LogFetcher stop success");
@@ -325,8 +357,39 @@ void ObLogFetcher::mark_stop_flag()
     if (is_cdc(log_fetcher_user_)) {
       start_lsn_locator_.mark_stop_flag();
     }
+    if (is_direct_fetching_mode(fetching_mode_)) {
+      log_ext_handler_.stop();
+    }
     LOG_INFO("LogFetcher mark stop succ");
   }
+}
+
+int ObLogFetcher::update_preferred_upstream_log_region(const common::ObRegion &region)
+{
+  int ret = OB_SUCCESS;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
+  } else if (OB_FAIL(log_route_service_.update_preferred_upstream_log_region(region))) {
+    LOG_WARN("ObLogRouteService update_preferred_upstream_log_region failed", KR(ret), K(region));
+  }
+
+  return ret;
+}
+
+int ObLogFetcher::get_preferred_upstream_log_region(common::ObRegion &region)
+{
+  int ret = OB_SUCCESS;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
+  } else if (OB_FAIL(log_route_service_.get_preferred_upstream_log_region(region))) {
+    LOG_WARN("ObLogRouteService get_preferred_upstream_log_region failed", KR(ret), K(region));
+  }
+
+  return ret;
 }
 
 int ObLogFetcher::add_ls(
@@ -334,7 +397,7 @@ int ObLogFetcher::add_ls(
     const ObLogFetcherStartParameters &start_parameters)
 {
   int ret = OB_SUCCESS;
-  logservice::TenantLSID tls_id(tenant_id_, ls_id);
+  logservice::TenantLSID tls_id(source_tenant_id_, ls_id);
   LSFetchCtx *ls_fetch_ctx = NULL;
   FetchStreamType type = FETCH_STREAM_TYPE_UNKNOWN;
   const int64_t start_tstamp_ns = start_parameters.get_start_tstamp_ns();
@@ -348,7 +411,7 @@ int ObLogFetcher::add_ls(
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   }
   // Requires a valid start-up timestamp
   else if (OB_UNLIKELY(start_tstamp_ns <= -1)) {
@@ -356,11 +419,11 @@ int ObLogFetcher::add_ls(
     LOG_ERROR("invalid start tstamp", KR(ret), K(start_tstamp_ns), K(tls_id), K(start_lsn));
   } else if (is_integrated_fetching_mode(fetching_mode_)
       && OB_FAIL(log_route_service_.registered(tls_id.get_tenant_id(), tls_id.get_ls_id()))) {
-    LOG_ERROR("ObLogRouteService registered fail", KR(ret), K(start_tstamp_ns), K(tls_id), K(start_lsn));
+    LOG_WARN("ObLogRouteService registered fail", KR(ret), K(start_tstamp_ns), K(tls_id), K(start_lsn));
   }
   // Push LS into ObLogLSFetchMgr
   else if (OB_FAIL(ls_fetch_mgr_.add_ls(tls_id, start_parameters, is_loading_data_dict_baseline_data_,
-      fetching_mode_, archive_dest_))) {
+      fetching_mode_, archive_dest_, *err_handler_))) {
     LOG_ERROR("add partition by part fetch mgr fail", KR(ret), K(tls_id), K(start_parameters),
         K(is_loading_data_dict_baseline_data_));
   } else if (OB_FAIL(ls_fetch_mgr_.get_ls_fetch_ctx(tls_id, ls_fetch_ctx))) {
@@ -385,11 +448,11 @@ int ObLogFetcher::add_ls(
 int ObLogFetcher::recycle_ls(const share::ObLSID &ls_id)
 {
   int ret = OB_SUCCESS;
-  logservice::TenantLSID tls_id(tenant_id_, ls_id);
+  logservice::TenantLSID tls_id(source_tenant_id_, ls_id);
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("Fetcher not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_FAIL(ls_fetch_mgr_.recycle_ls(tls_id))) {
     if (OB_ENTRY_NOT_EXIST == ret) {
       LOG_INFO("ls has been recycled in fetcher", K(tls_id));
@@ -408,11 +471,11 @@ int ObLogFetcher::remove_ls(const share::ObLSID &ls_id)
 {
   int ret = OB_SUCCESS;
   // Copy the logservice::TenantLSID to avoid recycle
-  const logservice::TenantLSID removed_tls_id(tenant_id_, ls_id);
+  const logservice::TenantLSID removed_tls_id(source_tenant_id_, ls_id);
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("Fetcher not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_FAIL(recycle_ls(ls_id))) {
     LOG_ERROR("recycle_ls failed", KR(ret), K(ls_id));
   } else {
@@ -442,11 +505,11 @@ int ObLogFetcher::remove_ls_physically(const share::ObLSID &ls_id)
 {
   int ret = OB_SUCCESS;
   // Copy the logservice::TenantLSID to avoid recycle
-  const logservice::TenantLSID removed_tls_id(tenant_id_, ls_id);
+  const logservice::TenantLSID removed_tls_id(source_tenant_id_, ls_id);
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("LogFetcher is not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_FAIL(fs_container_mgr_.remove_fsc(removed_tls_id))) {
     LOG_ERROR("fs_container_mgr_ remove_fsc failed", KR(ret), K(removed_tls_id));
   } else if (OB_FAIL(ls_fetch_mgr_.remove_ls(removed_tls_id))) {
@@ -464,7 +527,7 @@ int ObLogFetcher::get_all_ls(ObIArray<share::ObLSID> &ls_ids)
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("LogFetcher is not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else {
     FetchCtxMapLSGetter ls_getter(ls_ids);
 
@@ -478,18 +541,18 @@ int ObLogFetcher::get_all_ls(ObIArray<share::ObLSID> &ls_ids)
 
 bool ObLogFetcher::is_ls_exist(const share::ObLSID &ls_id) const
 {
-  logservice::TenantLSID tls_id(tenant_id_, ls_id);
+  logservice::TenantLSID tls_id(source_tenant_id_, ls_id);
   return ls_fetch_mgr_.is_tls_exist(tls_id);
 }
 
 int ObLogFetcher::get_ls_proposal_id(const share::ObLSID &ls_id, int64_t &proposal_id)
 {
   int ret = OB_SUCCESS;
-  const logservice::TenantLSID tls_id(tenant_id_, ls_id);
+  const logservice::TenantLSID tls_id(source_tenant_id_, ls_id);
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("LogFetcher is not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_UNLIKELY(!ls_id.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ls_id));
@@ -509,13 +572,27 @@ int ObLogFetcher::update_fetching_log_upper_limit(const share::SCN &upper_limit_
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("LogFetcher is not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else if (OB_UNLIKELY(!upper_limit_scn.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(upper_limit_scn));
-  } else if (FALSE_IT(upper_limit_ts_ns = upper_limit_scn.convert_to_ts() * 1000L)) {
+  } else if (FALSE_IT(upper_limit_ts_ns = static_cast<int64_t>(upper_limit_scn.get_val_for_logservice()))) {
   } else if (OB_FAIL(progress_controller_.set_global_upper_limit(upper_limit_ts_ns))) {
     LOG_WARN("set_global_upper_limit failed", K(upper_limit_scn), K(upper_limit_ts_ns));
+  }
+
+  return ret;
+}
+
+int ObLogFetcher::update_compressor_type(const common::ObCompressorType &compressor_type)
+{
+  int ret = OB_SUCCESS;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
+  } else if (OB_FAIL(rpc_.update_compressor_type(compressor_type))) {
+    LOG_WARN("ObLogRpc update_compressor_type failed", K(compressor_type));
   }
 
   return ret;
@@ -527,7 +604,7 @@ int ObLogFetcher::get_progress_info(ProgressInfo &progress_info)
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("LogFetcher is not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else {
     if (OB_FAIL(ls_fetch_mgr_.for_each_ls(progress_info))) {
       LOG_ERROR("for each part fetch ctx fail", KR(ret));
@@ -543,7 +620,7 @@ int ObLogFetcher::wait_for_all_ls_to_be_removed(const int64_t timeout)
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_ERROR("Fetcher not inited", KR(ret));
+    LOG_ERROR("ObLogFetcher has not been inited", KR(ret));
   } else {
     const int64_t start_time = get_timestamp();
 
@@ -575,6 +652,7 @@ void ObLogFetcher::configure(const ObLogFetcherConfig &cfg)
   const int64_t blacklist_survival_time_penalty_period_min = cfg.blacklist_survival_time_penalty_period_min;
   const int64_t blacklist_history_overdue_time_min = cfg.blacklist_history_overdue_time_min;
   const int64_t blacklist_history_clear_interval_min = cfg.blacklist_history_clear_interval_min;
+  const int64_t log_ext_handler_concurrency = cfg.cdc_read_archive_log_concurrency;
 
   ATOMIC_STORE(&g_print_ls_heartbeat_info, print_ls_heartbeat_info);
 
@@ -599,8 +677,8 @@ void ObLogFetcher::configure(const ObLogFetcherConfig &cfg)
         K(blacklist_survival_time_penalty_period_min),
         K(blacklist_history_overdue_time_min),
         K(blacklist_history_clear_interval_min));
-    } else if (OB_FAIL(log_route_service_.update_assign_region(cfg.region.str()))) {
-      LOG_ERROR("update_assign_region failed", KR(ret), "region", cfg.region);
+    } else if (OB_FAIL(log_route_service_.update_preferred_upstream_log_region(cfg.region.str()))) {
+      LOG_ERROR("update_preferred_upstream_log_region failed", KR(ret), "region", cfg.region);
     } else if (OB_FAIL(log_route_service_.update_cache_update_interval(
         all_server_cache_update_interval_sec,
         all_zone_cache_update_interval_sec))) {
@@ -609,6 +687,12 @@ void ObLogFetcher::configure(const ObLogFetcherConfig &cfg)
     } else if (OB_FAIL(log_route_service_.update_background_refresh_time(log_router_background_refresh_interval_sec))) {
       LOG_ERROR("update_background_refresh_time failed", KR(ret),
           "log_router_background_refresh_interval_sec", log_router_background_refresh_interval_sec);
+    }
+  } else if (IS_INIT && is_direct_fetching_mode(fetching_mode_)) {
+    if (OB_FAIL(log_ext_handler_.resize(log_ext_handler_concurrency))) {
+      LOG_ERROR("log_ext_handler failed to resize when reloading configure", K(log_ext_handler_concurrency));
+    } else {
+      log_ext_handler_concurrency_ = log_ext_handler_concurrency;
     }
   }
 }
@@ -650,6 +734,20 @@ int ObLogFetcher::get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_
     LOG_ERROR("LogFetcher is not inited, could not get large buffer pool", KR(ret), K_(is_inited));
   } else {
     large_buffer_pool = &large_buffer_pool_;
+  }
+
+  return ret;
+}
+
+int ObLogFetcher::get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_hander)
+{
+  int ret = OB_SUCCESS;
+
+  if(IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("LogFetcher is not inited, could not get log ext handler", KR(ret), K_(is_inited));
+  } else {
+    log_ext_hander = &log_ext_handler_;
   }
 
   return ret;
@@ -714,12 +812,32 @@ void ObLogFetcher::print_stat()
   }
 }
 
+int ObLogFetcher::suggest_cached_rpc_res_count_(const int64_t min_res_cnt,
+    const int64_t max_res_cnt)
+{
+  const int64_t memory_limit = get_tenant_memory_limit(self_tenant_id_);
+  // the maximum memory hold by rpc_result should be 1/32 of the memory limit.
+  const int64_t rpc_res_hold_max = (memory_limit >> 5);
+  int64_t rpc_res_cnt = rpc_res_hold_max / FetchLogARpcResultPool::DEFAULT_RESULT_POOL_BLOCK_SIZE;
+  if (rpc_res_cnt < min_res_cnt) {
+    rpc_res_cnt = min_res_cnt;
+  }
+  if (rpc_res_cnt > max_res_cnt) {
+    rpc_res_cnt = max_res_cnt;
+  }
+
+  LOG_INFO("suggest fetchlog arpc cached rpc result count", K(self_tenant_id_),
+      K(min_res_cnt), K(max_res_cnt), K(rpc_res_cnt), K(memory_limit));
+  return rpc_res_cnt;
+}
+
 void ObLogFetcher::print_fetcher_stat_()
 {
   int ret = OB_SUCCESS;
   int64_t min_progress = OB_INVALID_TIMESTAMP;
-  int64_t upper_limit_us = OB_INVALID_TIMESTAMP;
+  int64_t upper_limit_ns = OB_INVALID_TIMESTAMP;
   int64_t fetcher_delay = OB_INVALID_TIMESTAMP;
+  int64_t global_upper_limit = OB_INVALID_TIMESTAMP;
   int64_t dml_progress_limit = 0;
 
   // Get global minimum progress
@@ -730,13 +848,15 @@ void ObLogFetcher::print_fetcher_stat_()
     ret = OB_INVALID_ERROR;
   } else {
     dml_progress_limit = ATOMIC_LOAD(&FetchStream::g_dml_progress_limit);
-    upper_limit_us = min_progress + dml_progress_limit;
+    upper_limit_ns = min_progress + dml_progress_limit * NS_CONVERSION;
     fetcher_delay = get_timestamp() - min_progress / NS_CONVERSION;
+    global_upper_limit = progress_controller_.get_global_upper_limit();
   }
 
   if (OB_SUCC(ret)) {
-    LOG_INFO("[STAT] [LOG_FETCHER]", "upper_limit", NTS_TO_STR(upper_limit_us),
-        "dml_progress_limit_sec", dml_progress_limit / NS_CONVERSION,
+    LOG_INFO("[STAT] [LOG_FETCHER]", "upper_limit", NTS_TO_STR(upper_limit_ns),
+        "global_upper_limit", NTS_TO_STR(global_upper_limit),
+        "dml_progress_limit_sec", dml_progress_limit / _SEC_,
         "fetcher_delay", TVAL_TO_STR(fetcher_delay));
   }
 }

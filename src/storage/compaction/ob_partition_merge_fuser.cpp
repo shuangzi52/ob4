@@ -47,8 +47,7 @@ void ObIPartitionMergeFuser::reset()
 
 bool ObIPartitionMergeFuser::is_valid() const
 {
-  return (is_inited_ && schema_rowkey_column_cnt_ > 0 && column_cnt_ > 0
-          && multi_version_column_ids_.count() > 0);
+  return (is_inited_ && schema_rowkey_column_cnt_ > 0 && column_cnt_ > 0);
 }
 
 int ObIPartitionMergeFuser::calc_column_checksum(const bool rewrite)
@@ -67,8 +66,6 @@ int ObIPartitionMergeFuser::init(const ObMergeParameter &merge_param)
     STORAGE_LOG(WARN, "ObIPartitionMergeFuser init twice", K(ret));
   } else if (OB_FAIL(check_merge_param(merge_param))) {
     STORAGE_LOG(WARN, "Invalid argument to init ObIPartitionMergeFuser", K(merge_param), K(ret));
-  } else if (OB_FAIL(merge_param.merge_schema_->get_multi_version_column_descs(multi_version_column_ids_))) {
-    STORAGE_LOG(WARN, "Failed to get column ids", K(ret));
   } else if (OB_FAIL(inner_init(merge_param))) {
     STORAGE_LOG(WARN, "Failed to inner init", K(ret), K(*this));
   } else if (OB_FAIL(base_init(merge_param))) {
@@ -153,6 +150,11 @@ void ObMajorPartitionMergeFuser::reset()
   ObIPartitionMergeFuser::reset();
 }
 
+bool ObMajorPartitionMergeFuser::is_valid() const
+{
+  return ObIPartitionMergeFuser::is_valid() && multi_version_column_ids_.count() > 0;
+}
+
 int ObMajorPartitionMergeFuser::inner_check_merge_param(const ObMergeParameter &merge_param)
 {
   int ret = OB_SUCCESS;
@@ -181,6 +183,8 @@ int ObMajorPartitionMergeFuser::inner_init(const ObMergeParameter &merge_param)
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     STORAGE_LOG(WARN, "ObIPartitionMergeFuser init twice", K(ret));
+  } else if (OB_FAIL(merge_param.merge_schema_->get_multi_version_column_descs(multi_version_column_ids_))) {
+    STORAGE_LOG(WARN, "Failed to get column ids", K(ret));
   } else if (OB_FAIL(default_row_.init(allocator_, multi_version_column_ids_.count()))) {
     STORAGE_LOG(WARN, "Failed to init datum row", K(ret));
   } else if (OB_FAIL(merge_param.merge_schema_->get_orig_default_row(multi_version_column_ids_, default_row_))) {
@@ -290,7 +294,7 @@ int ObMajorPartitionMergeFuser::fuse_delete_row(
   if (OB_ISNULL(row_iter)) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid null argument", KP(row_iter), K(ret));
-  } else if (!row_iter->get_curr_row()->row_flag_.is_delete()) {
+  } else if (OB_UNLIKELY(!row_iter->get_curr_row()->row_flag_.is_delete())) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected row flag", K(ret));
   } else {
@@ -305,30 +309,6 @@ int ObMajorPartitionMergeFuser::fuse_delete_row(
       row.row_flag_.set_flag(ObDmlFlag::DF_DELETE);
       row.mvcc_row_flag_ = del_row->mvcc_row_flag_;
       STORAGE_LOG(DEBUG, "fuse delete row", K(ret), K(*del_row), K(row));
-    }
-  }
-
-  return ret;
-}
-
-int ObMajorPartitionMergeFuser::fuse_old_row(ObPartitionMergeIter *row_iter, blocksstable::ObDatumRow *row)
-{
-  int ret = OB_SUCCESS;
-
-  if (OB_ISNULL(row_iter) || OB_ISNULL(row)) {
-    ret = OB_INVALID_ARGUMENT;
-    STORAGE_LOG(WARN, "Invalid null argument", KP(row), KP(row_iter), K(ret));
-  } else {
-    bool final_result = false;
-    nop_pos_.reset();
-    if (row_iter->get_curr_row()->row_flag_.is_delete()) {
-      if (OB_FAIL(fuse_delete_row(row_iter, *row, schema_rowkey_column_cnt_))) {
-        STORAGE_LOG(WARN, "Failed to fuse delete row", K(ret));
-      }
-    } else if (OB_FAIL(storage::ObRowFuse::fuse_row(*row_iter->get_curr_row(), *row, nop_pos_, final_result))) {
-      STORAGE_LOG(WARN, "Failed to fuse old row", K(ret));
-    } else if (OB_FAIL(storage::ObRowFuse::fuse_row(default_row_, *row, nop_pos_, final_result))) {
-      STORAGE_LOG(WARN, "Failed to fuse default row for old row", K(ret));
     }
   }
 
@@ -367,7 +347,7 @@ void ObMinorPartitionMergeFuser::reset()
 
 bool ObMinorPartitionMergeFuser::is_valid() const
 {
-  return ObIPartitionMergeFuser::is_valid() && multi_version_rowkey_column_cnt_ > 0 && multi_version_column_ids_.count() > 0;
+  return ObIPartitionMergeFuser::is_valid() && multi_version_rowkey_column_cnt_ > 0 && multi_version_column_ids_.count() == multi_version_rowkey_column_cnt_;
 }
 
 int ObMinorPartitionMergeFuser::inner_check_merge_param(const ObMergeParameter &merge_param)
@@ -379,12 +359,9 @@ int ObMinorPartitionMergeFuser::inner_check_merge_param(const ObMergeParameter &
     STORAGE_LOG(WARN, "Unexpected merge param with major fuser", K(merge_param), K(ret));
   } else {
     ObITable *first_table = merge_param.tables_handle_->get_table(0);
-    if (NULL == first_table) {
-      ret =  OB_ERR_SYS;
-      LOG_ERROR("first table must not null", K(ret), K(merge_param));
-    } else if (!first_table->is_multi_version_table()) {
+    if (OB_UNLIKELY(NULL == first_table || !first_table->is_multi_version_table())) {
       ret = OB_ERR_SYS;
-      LOG_ERROR("invalid first table type", K(ret), K(*first_table));
+      LOG_ERROR("invalid first table", K(ret), KPC(first_table));
     }
   }
   return ret;
@@ -393,14 +370,17 @@ int ObMinorPartitionMergeFuser::inner_check_merge_param(const ObMergeParameter &
 int ObMinorPartitionMergeFuser::inner_init(const ObMergeParameter &merge_param)
 {
   int ret = OB_SUCCESS;
-
+  int64_t column_cnt = 0;
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     STORAGE_LOG(WARN, "ObIPartitionMergeFuser init twice", K(ret));
+  } else if (OB_FAIL(merge_param.merge_schema_->get_mulit_version_rowkey_column_ids(multi_version_column_ids_))) {
+    STORAGE_LOG(WARN, "Failed to get column ids", K(ret));
+  } else if (OB_FAIL(merge_param.merge_schema_->get_store_column_count(column_cnt, true/*full_col*/))) {
+    STORAGE_LOG(WARN, "failed to get store column count", K(ret), K(merge_param.merge_schema_));
   } else {
-    column_cnt_ = multi_version_column_ids_.count();
-    multi_version_rowkey_column_cnt_ = merge_param.merge_schema_->get_rowkey_column_num()
-        + ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt();
+    column_cnt_ = column_cnt + storage::ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt();
+    multi_version_rowkey_column_cnt_ = multi_version_column_ids_.count();
   }
 
   return ret;

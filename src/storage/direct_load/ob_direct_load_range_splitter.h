@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #pragma once
 
 #include "storage/blocksstable/ob_datum_range.h"
@@ -18,7 +25,7 @@ class ObSSTable;
 namespace storage
 {
 class ObDirectLoadTableDataDesc;
-class ObTableReadInfo;
+class ObITableReadInfo;
 class ObDirectLoadOriginTable;
 class ObDirectLoadSSTable;
 class ObDirectLoadMultipleSSTable;
@@ -30,7 +37,7 @@ public:
                                    ObIDirectLoadDatumRowkeyIterator *&rowkey_iter);
   static int construct_rowkey_iter(blocksstable::ObSSTable *sstable,
                                    const blocksstable::ObDatumRange &scan_range,
-                                   const ObTableReadInfo &index_read_info,
+                                   const storage::ObITableReadInfo &index_read_info,
                                    common::ObIAllocator &allocator,
                                    ObIDirectLoadDatumRowkeyIterator *&rowkey_iter);
   static int construct_rowkey_iter(ObDirectLoadMultipleSSTable *sstable,
@@ -43,6 +50,12 @@ public:
                                             const ObDirectLoadTableDataDesc &table_data_desc,
                                             common::ObIAllocator &allocator,
                                             ObIDirectLoadMultipleDatumRowkeyIterator *&rowkey_iter);
+  // append to rowkey_iters
+  static int construct_origin_table_rowkey_iters(ObDirectLoadOriginTable *origin_table,
+                                                 const blocksstable::ObDatumRange &scan_range,
+                                                 common::ObIAllocator &allocator,
+                                                 int64_t &total_block_count,
+                                                 common::ObIArray<ObIDirectLoadDatumRowkeyIterator *> &rowkey_iters);
 };
 
 class ObDirectLoadRowkeyMergeRangeSplitter
@@ -101,7 +114,6 @@ public:
   int split_range(common::ObIArray<blocksstable::ObDatumRange> &range_array,
                   int64_t max_range_count, common::ObIAllocator &allocator);
 private:
-  int construct_origin_table_rowkey_iter(ObDirectLoadOriginTable *origin_table);
   int construct_sstable_rowkey_iters(const common::ObIArray<ObDirectLoadSSTable *> &sstable_array);
 private:
   common::ObArenaAllocator allocator_;
@@ -125,7 +137,6 @@ public:
   int split_range(common::ObIArray<blocksstable::ObDatumRange> &range_array,
                   int64_t max_range_count, common::ObIAllocator &allocator);
 private:
-  int construct_origin_table_rowkey_iter(ObDirectLoadOriginTable *origin_table);
   int construct_sstable_rowkey_iters(
     const common::ObIArray<ObDirectLoadMultipleSSTable *> &sstable_array,
     const ObDirectLoadTableDataDesc &table_data_desc,

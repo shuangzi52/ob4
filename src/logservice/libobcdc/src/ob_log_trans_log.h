@@ -74,7 +74,10 @@ typedef SortedLightyList<LogEntryNode> SortedLogEntryArray;
 class SortedLogEntryInfo
 {
 public:
-  SortedLogEntryInfo() : last_fetched_redo_log_entry_(NULL), fetched_log_entry_arr_(true), recorded_lsn_arr_() {}
+  SortedLogEntryInfo() :
+      last_fetched_redo_log_entry_(NULL),
+      fetched_log_entry_arr_(true), /*is_unique*/
+      recorded_lsn_arr_() {}
   ~SortedLogEntryInfo() { reset(); }
   void reset()
   {
@@ -99,7 +102,11 @@ public:
 
   SortedLogEntryArray &get_fetched_log_entry_node_arr() { return fetched_log_entry_arr_; }
 
-  TO_STRING_KV(K_(fetched_log_entry_arr), K_(recorded_lsn_arr));
+  TO_STRING_KV(
+      "fetched_log_entry_count", fetched_log_entry_arr_.count(),
+      "recorded_lsn_count", recorded_lsn_arr_.count(),
+      K_(fetched_log_entry_arr),
+      K_(recorded_lsn_arr));
 private:
   LogEntryNode *last_fetched_redo_log_entry_;
   // hold all fetched log_entry_info.(include lsn of log_entry which contains redo_log and rollback_to log)
@@ -288,20 +295,20 @@ public:
   {
     ATOMIC_SET(&dispatched_redo_count_, 0);
     ATOMIC_SET(&sorted_redo_count_, 0);
-    ATOMIC_SET(&sorted_row_seq_no_, 0);
+    sorted_row_seq_no_.atomic_reset();
   }
   void reset_for_sys_ls_dml_trans(const int64_t redo_node_count)
   {
     ATOMIC_SET(&dispatched_redo_count_, redo_node_count);
     ATOMIC_SET(&sorted_redo_count_, redo_node_count);
-    ATOMIC_SET(&sorted_row_seq_no_, 0);
+    sorted_row_seq_no_.atomic_reset();
   }
   OB_INLINE int64_t get_dispatched_redo_count() const { return ATOMIC_LOAD(&dispatched_redo_count_); }
   OB_INLINE void inc_dispatched_redo_count() { ATOMIC_INC(&dispatched_redo_count_); }
   OB_INLINE int64_t get_sorted_redo_count() const { return ATOMIC_LOAD(&sorted_redo_count_); }
   OB_INLINE void inc_sorted_redo_count() { ATOMIC_INC(&sorted_redo_count_); }
-  OB_INLINE int64_t get_sorted_row_seq_no() const { return ATOMIC_LOAD(&sorted_row_seq_no_); }
-  void set_sorted_row_seq_no(const int64_t row_seq_no);
+  OB_INLINE transaction::ObTxSEQ get_sorted_row_seq_no() const { return sorted_row_seq_no_.atomic_load(); }
+  void set_sorted_row_seq_no(const transaction::ObTxSEQ &row_seq_no);
   OB_INLINE int64_t get_dispatched_not_sort_redo_count() const
   { return ATOMIC_LOAD(&dispatched_redo_count_) - ATOMIC_LOAD(&sorted_redo_count_); }
 public:
@@ -312,7 +319,7 @@ public:
 private:
   int64_t dispatched_redo_count_;
   int64_t sorted_redo_count_;
-  int64_t sorted_row_seq_no_;
+  transaction::ObTxSEQ sorted_row_seq_no_;
 };
 
 class IStmtTask;
@@ -385,7 +392,7 @@ struct SortedRedoLogList
   OB_INLINE bool has_dispatched_but_unsorted_redo() const
   { return sorted_progress_.get_dispatched_not_sort_redo_count() > 0; }
 
-  OB_INLINE void set_sorted_row_seq_no(const int64_t row_seq_no) { sorted_progress_.set_sorted_row_seq_no(row_seq_no); }
+  OB_INLINE void set_sorted_row_seq_no(const transaction::ObTxSEQ &row_seq_no) { sorted_progress_.set_sorted_row_seq_no(row_seq_no); }
 
   bool is_dml_stmt_iter_end() const { return is_dml_stmt_iter_end_; }
 

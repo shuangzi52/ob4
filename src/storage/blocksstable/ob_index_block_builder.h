@@ -126,12 +126,10 @@ public:
 
 struct ObIndexTreeRootBlockDesc final
 {
-  OB_UNIS_VERSION(1);
 public:
   ObIndexTreeRootBlockDesc()
     :addr_(),
      buf_(nullptr),
-     row_type_(common::ObRowStoreType::MAX_ROW_STORE),
      height_(0),
      is_meta_root_(false) {}
   ~ObIndexTreeRootBlockDesc() = default;
@@ -140,11 +138,10 @@ public:
   void set_empty();
   bool is_mem_type() const { return addr_.is_memory(); }
   bool is_file_type() const { return addr_.is_file(); }
-  TO_STRING_KV(K_(addr), KP_(buf), K_(row_type), K_(height));
+  TO_STRING_KV(K_(addr), KP_(buf), K_(height), K_(is_meta_root));
 public:
   storage::ObMetaDiskAddr addr_;
   char *buf_;
-  ObRowStoreType row_type_;
   int64_t height_;
   bool is_meta_root_;
 };
@@ -175,16 +172,7 @@ public:
   bool is_valid() const;
   void reset();
   int assign(const ObSSTableMergeRes &src);
-  int fill_column_checksum(
-      const ObStorageSchema *schema,
-      common::ObIArray<int64_t> &column_checksums) const;
-  int fill_column_checksum(
-      const common::ObIArray<int64_t> &column_default_checksum,
-      common::ObIArray<int64_t> &column_checksums) const;
   int prepare_column_checksum_array(const int64_t data_column_cnt);
-  static int fill_column_default_checksum_from_schema(
-      const ObStorageSchema *schema,
-      common::ObIArray<int64_t> &column_default_checksum);
   static int fill_column_checksum_for_empty_major(
       const int64_t column_count,
       common::ObIArray<int64_t> &column_checksums);
@@ -198,11 +186,11 @@ public:
   }
   TO_STRING_KV(K_(root_desc), K_(data_root_desc), K(data_block_ids_.count()), K(other_block_ids_.count()),
       K_(index_blocks_cnt), K_(data_blocks_cnt), K_(micro_block_cnt),
-      K_(data_column_cnt), K_(data_column_checksums), K_(data_default_column_rows_cnt),
+      K_(data_column_cnt), K_(data_column_checksums),
       K_(row_count), K_(max_merged_trans_version), K_(contain_uncommitted_row),
       K_(occupy_size), K_(original_size), K_(data_checksum), K_(use_old_macro_block_count),
-      K_(compressor_type), K_(encrypt_id),
-      K_(master_key_id), KPHEX_(encrypt_key, sizeof(encrypt_key_)));
+      K_(compressor_type), K_(root_row_store_type), K_(nested_offset), K_(nested_size),
+      K_(encrypt_id), K_(master_key_id), KPHEX_(encrypt_key, sizeof(encrypt_key_)));
 public:
   ObIndexTreeRootBlockDesc root_desc_;
   ObIndexTreeRootBlockDesc data_root_desc_;
@@ -220,12 +208,12 @@ public:
   int64_t data_checksum_;
   int64_t use_old_macro_block_count_;
   common::ObSEArray<int64_t, 1> data_column_checksums_;
-  common::ObSEArray<int64_t, 1> data_default_column_rows_cnt_;
   common::ObCompressorType compressor_type_;
   int64_t encrypt_id_;
   int64_t master_key_id_;
   int64_t nested_offset_;
   int64_t nested_size_;
+  ObRowStoreType root_row_store_type_;
   char encrypt_key_[share::OB_MAX_TABLESPACE_ENCRYPT_KEY_LENGTH];
   DISALLOW_COPY_AND_ASSIGN(ObSSTableMergeRes);
 };
@@ -269,10 +257,12 @@ private:
   int64_t calc_basic_micro_block_data_offset(const uint64_t column_cnt);
 
 protected:
+  static const int64_t ROOT_BLOCK_SIZE_LIMIT = 16 << 10; // 16KB
+
   bool is_inited_;
   bool is_closed_;
   ObDataStoreDesc *index_store_desc_;
-  ObTableReadInfo idx_read_info_;
+  ObRowkeyReadInfo idx_read_info_;
   ObIndexBlockRowBuilder row_builder_;
   ObDatumRowkey last_rowkey_;
   common::ObArenaAllocator rowkey_allocator_;
@@ -397,23 +387,17 @@ private:
       ObDataMacroBlockMeta *&macro_meta,
       int64_t &meta_block_offset,
       int64_t &meta_block_size);
-  static int get_meta_block_and_read_info(
+  static int get_meta_block(
       const char *buf,
       const int64_t buf_size,
       common::ObIAllocator &allocator,
       ObSSTableMacroBlockHeader &header,
-      ObMicroBlockData &meta_block,
-      ObTableReadInfo &read_info);
-  static int build_macro_meta_read_info(
-      const ObSSTableMacroBlockHeader &header,
-      common::ObIAllocator &allocator,
-      ObTableReadInfo &read_info);
+      ObMicroBlockData &meta_block);
 private:
   bool is_inited_;
   lib::ObMutex mutex_;
   ObDataStoreDesc *index_store_desc_;
   ObMacroBlocksWriteCtx block_write_ctx_;
-  common::hash::ObHashSet<MacroBlockId> macro_id_set_;
   ObIndexMicroBlockDesc *root_micro_block_desc_;
   ObMacroMetasArray *macro_meta_list_;
   ObIAllocator *sstable_allocator_;
@@ -450,16 +434,20 @@ public:
       ObIndexMicroBlockDesc *&root_micro_block_desc,
       ObMacroMetasArray *&macro_meta_list);
   int append_root(ObIndexMicroBlockDesc &root_micro_block_desc);
-  int close(const int64_t column_cnt, ObSSTableMergeRes &res);
+  int close(ObSSTableMergeRes &res);
   const ObDataStoreDesc &get_index_store_desc() const { return index_store_desc_; }
   TO_STRING_KV(K(roots_.count()));
 public:
   static bool check_version_for_small_sstable(const ObDataStoreDesc &index_desc);
+  static int load_single_macro_block(
+      const ObDataMacroBlockMeta &macro_meta,
+      ObMacroBlockHandle &read_handle,
+      ObSSTableMacroBlockHeader &macro_header);
 private:
   int check_and_rewrite_sstable(ObSSTableMergeRes &res);
   int check_and_rewrite_sstable_without_size(ObSSTableMergeRes &res);
   int do_check_and_rewrite_sstable(ObBlockInfo &block_info);
-  int parse_macro_header(
+  static int parse_macro_header(
       const char *buf,
       const int64_t buf_size,
       ObSSTableMacroBlockHeader &macro_header);

@@ -194,32 +194,14 @@ int ObIMemtableMgr::release_memtables()
           STORAGE_LOG(WARN, "fail to release memtable", K(ret), K(i));
           break;
         } else {
-          STORAGE_LOG(INFO, "succeed to release memtable", K(ret), K(i), K(*memtable), KP(this));
+          // NOTICE: the memtable may live longer than tablet.
+          // And the ref of memtable mgr may be the last one.
+          STORAGE_LOG(INFO, "succeed to release memtable", K(ret), K(i), KP(memtable), KP(this));
         }
       }
     }
   }
 
-  return ret;
-}
-
-int ObIMemtableMgr::get_multi_source_data_unit(
-    ObIMultiSourceDataUnit *const multi_source_data_unit,
-    ObIAllocator *allocator) const
-{
-  UNUSED(multi_source_data_unit);
-  UNUSED(allocator);
-  int ret = OB_NOT_SUPPORTED;
-  return ret;
-}
-
-int ObIMemtableMgr::get_memtable_for_multi_source_data_unit(
-    ObTableHandleV2 &handle,
-    const memtable::MultiSourceDataUnitType type) const
-{
-  UNUSED(handle);
-  UNUSED(type);
-  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -347,10 +329,6 @@ int ObIMemtableMgr::add_memtable_(ObTableHandleV2 &memtable_handle)
     } else {
       tables_[idx]->inc_ref();
       memtable_tail_++;
-      ObTaskController::get().allow_next_syslog();
-      // FIXME : delete lbt()
-      STORAGE_LOG(INFO, "succeed to add memtable", KP(this), K(get_memtable_count_()),
-          K(memtable_handle));
     }
   }
   return ret;
@@ -387,7 +365,8 @@ void ObMemtableMgrHandle::reset()
 {
   if (nullptr != memtable_mgr_) {
     if (nullptr == pool_) {
-      STORAGE_LOG(DEBUG, "this memory manager is a special handle", KPC(memtable_mgr_));
+      STORAGE_LOG(DEBUG, "this memory manager is a special handle", KP(memtable_mgr_), "ref_cnt",
+          memtable_mgr_->get_ref(), K(lbt()));
       // at present, inner tablet's memtable_mgr_ is not managed by pool,
       // just decrease ref and leave the release to the owner of memtable_mgr.
       memtable_mgr_->dec_ref();

@@ -432,14 +432,7 @@ int ObSelectStmtPrinter::print_select()
         }
         for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); ++i) {
           const SelectItem &select_item = select_stmt->get_select_item(i);
-          if (NULL != select_item.expr_ && select_item.expr_->is_column_ref_expr()) {
-            ObColumnRefRawExpr *column_expr = static_cast<ObColumnRefRawExpr *>(select_item.expr_);
-            const TableItem *table_item = stmt_->get_table_item_by_id(column_expr->get_table_id());
-            if (NULL != table_item && table_item->alias_name_.empty()) {
-              column_expr->set_synonym_name(table_item->synonym_name_);
-              column_expr->set_synonym_db_name(table_item->synonym_db_name_);
-            }
-          }
+          OZ (set_synonym_name_recursively(select_item.expr_, stmt_));
           if (select_item.is_implicit_added_ || select_item.implicit_filled_) {
             continue;
           }
@@ -488,9 +481,7 @@ int ObSelectStmtPrinter::print_select()
               LOG_WARN("failed to remove double quotation for string", K(ret));
             } else {
               DATA_PRINTF(" AS ");
-              PRINT_QUOT;
-              DATA_PRINTF("%.*s", LEN_AND_PTR(alias_string));
-              PRINT_QUOT;
+              PRINT_IDENT_WITH_QUOT(alias_string);
             }
           }
           DATA_PRINTF(",");
@@ -501,6 +492,27 @@ int ObSelectStmtPrinter::print_select()
       }
       // select_items
     }
+  }
+  return ret;
+}
+
+int ObSelectStmtPrinter::set_synonym_name_recursively(ObRawExpr *cur_expr, const ObDMLStmt *stmt) {
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(cur_expr) || OB_ISNULL(stmt)) {
+  } else if (cur_expr->is_column_ref_expr()) {
+    ObColumnRefRawExpr *column_expr = static_cast<ObColumnRefRawExpr *>(cur_expr);
+    const TableItem *table_item = stmt->get_table_item_by_id(column_expr->get_table_id());
+    if (NULL != table_item && table_item->alias_name_.empty()) {
+      column_expr->set_synonym_name(table_item->synonym_name_);
+      column_expr->set_synonym_db_name(table_item->synonym_db_name_);
+    }
+  } else if (cur_expr->get_param_count() > 0) {
+    for (int64_t param_idx = 0; param_idx < cur_expr->get_param_count(); ++param_idx) {
+      ObRawExpr * param_expr = cur_expr->get_param_expr(param_idx);
+      OZ (SMART_CALL(set_synonym_name_recursively(param_expr, stmt)));
+    }
+  } else {
+    //do nothing
   }
   return ret;
 }
@@ -780,7 +792,7 @@ int ObSelectStmtPrinter::print_having()
     if (having_exprs_size > 0) {
       DATA_PRINTF(" having ");
       for (int64_t i = 0; OB_SUCC(ret) && i < having_exprs_size; ++i) {
-        if (OB_FAIL(expr_printer_.do_print(having_exprs.at(i), T_NONE_SCOPE))) {
+        if (OB_FAIL(expr_printer_.do_print(having_exprs.at(i), T_HAVING_SCOPE))) {
           LOG_WARN("fail to print having expr", K(ret));
         }
         DATA_PRINTF(" and ");
@@ -889,6 +901,7 @@ int ObSelectStmtPrinter::print_for_update()
       const ObSelectStmt *select_stmt = static_cast<const ObSelectStmt*>(stmt_);
       bool has_for_update_ = false;
       int64_t wait_time = -1;
+      bool skip_locked = false;
       for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_table_size(); ++i) {
         const TableItem *table = NULL;
         if (OB_ISNULL(table = select_stmt->get_table_item(i))) {
@@ -897,6 +910,7 @@ int ObSelectStmtPrinter::print_for_update()
         } else if (table->for_update_) {
           has_for_update_ = true;
           wait_time = table->for_update_wait_us_;
+          skip_locked = table->skip_locked_;
           break;
         }
       }
@@ -920,6 +934,8 @@ int ObSelectStmtPrinter::print_for_update()
         if (OB_SUCC(ret) && wait_time >= 0) {
           if (wait_time > 0) {
             DATA_PRINTF(" wait %lld", wait_time / 1000000LL);
+          } else if (skip_locked) {
+            DATA_PRINTF(" skip locked");
           } else {
             DATA_PRINTF(" nowait");
           }

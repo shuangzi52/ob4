@@ -1,16 +1,25 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
 #include "lib/list/ob_dlink_node.h"
 #include "lib/utility/ob_print_utils.h"
+#include "observer/table_load/ob_table_load_exec_ctx.h"
+#include "observer/table_load/ob_table_load_object_allocator.h"
 #include "observer/table_load/ob_table_load_schema.h"
 #include "observer/table_load/ob_table_load_struct.h"
 #include "share/table/ob_table_load_define.h"
 #include "sql/engine/cmd/ob_load_data_utils.h"
-#include "observer/table_load/ob_table_load_object_allocator.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/session/ob_sql_session_mgr.h"
 
@@ -41,7 +50,8 @@ public:
   TO_STRING_KV(K_(param), KP_(coordinator_ctx), KP_(store_ctx), "ref_count", get_ref_count(),
                K_(is_dirty), K_(is_inited));
 public:
-  int init_coordinator_ctx(const common::ObIArray<int64_t> &idx_array, uint64_t user_id);
+  int init_coordinator_ctx(const common::ObIArray<int64_t> &idx_array,
+                           ObTableLoadExecCtx *exec_ctx);
   int init_store_ctx(
     const table::ObTableLoadArray<table::ObTableLoadLSIdAndPartitionId> &partition_id_array,
     const table::ObTableLoadArray<table::ObTableLoadLSIdAndPartitionId> &target_partition_id_array);

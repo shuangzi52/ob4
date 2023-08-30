@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include "ussl-loop.h"
 #include <errno.h>
 #include <netinet/in.h>
@@ -18,10 +30,10 @@ uloop_t global_ussl_loop_struct;
 static int ussl_has_listened = 0;
 static ussl_sf_t acceptfd_fty;
 static ussl_sf_t clientfd_fty;
-static pthread_t ussl_bg_thread_id;
+static void *ussl_bg_thread_id;
 
-int ob_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
-                      void *(*start_routine) (void *), void *arg);
+int ob_pthread_create(void **ptr, void *(*start_routine) (void *), void *arg);
+void ob_pthread_join(void *ptr);
 void ob_set_thread_name(const char* type);
 
 static int uloop_init(uloop_t *l)
@@ -76,7 +88,7 @@ static void *bg_thread_func(void *arg)
 #define F_SETPIPE_SZ 1031
 #endif
 
-int init_bg_thread()
+int ussl_init_bg_thread()
 {
   int ret = 0;
   static const int pipe_resize = 128 * 1024;
@@ -90,7 +102,7 @@ int init_bg_thread()
   if (0 == ret) {
     if (0 != uloop_init(&global_ussl_loop_struct)) {
       ussl_log_error("initialize uloop failed.")
-    } else if (0 != ob_pthread_create(&ussl_bg_thread_id, NULL, bg_thread_func, NULL)) {
+    } else if (0 != ob_pthread_create(&ussl_bg_thread_id, bg_thread_func, NULL)) {
       ret = EIO;
       ussl_log_error("create background thread failed, errno:%d", errno);
     } else {
@@ -98,6 +110,16 @@ int init_bg_thread()
     }
   }
   return ret;
+}
+
+extern int is_ussl_bg_thread_started;
+void ussl_wait_bg_thread()
+{
+  if (ATOMIC_LOAD(&is_ussl_bg_thread_started)) {
+    ob_pthread_join(ussl_bg_thread_id);
+    ussl_bg_thread_id = NULL;
+    ATOMIC_STORE(&is_ussl_bg_thread_started, 0);
+  }
 }
 
 void add_to_timeout_list(ussl_dlink_t *l)
@@ -145,26 +167,22 @@ void check_and_handle_timeout_event()
     if (CLIENT_SOCK == type) {
       clientfd_sk_t *client_sk = ussl_structof(p, clientfd_sk_t, timeout_link);
       if (cur_time - client_sk->start_time > TIMEOUT_THRESHOLD_SEC) {
-        ussl_log_warn("clientfd timeout, fd:%d", client_sk->fd);
+        char dst_addr[IP_STRING_MAX_LEN] = {0};
+        ussl_get_peer_addr(client_sk->fd, dst_addr, IP_STRING_MAX_LEN);
+        ussl_log_warn("clientfd timeout, fd:%d, dst_addr:%s", client_sk->fd, dst_addr);
         ussl_dlink_delete(&client_sk->ready_link);
         ussl_dlink_delete(p);
         handle_client_timeout_event(client_sk);
-      } else {
-        char src_addr[IP_STRING_MAX_LEN] = {0};
-        get_src_addr(client_sk->fd, src_addr, IP_STRING_MAX_LEN);
-        ussl_log_info("fd is in processing, fd:%d, type:clientfd, peer_addr:%s", client_sk->fd, src_addr);
       }
     } else {
       acceptfd_sk_t *accept_sk = ussl_structof(p, acceptfd_sk_t, timeout_link);
       if (cur_time - accept_sk->start_time > TIMEOUT_THRESHOLD_SEC) {
-        ussl_log_warn("acceptfd timeout, fd:%d", accept_sk->fd);
+        char src_addr[IP_STRING_MAX_LEN] = {0};
+        ussl_get_peer_addr(accept_sk->fd, src_addr, IP_STRING_MAX_LEN);
+        ussl_log_warn("acceptfd timeout, fd:%d, src_addr:%s", accept_sk->fd, src_addr);
         ussl_dlink_delete(&accept_sk->ready_link);
         ussl_dlink_delete(p);
         handle_server_timeout_event(accept_sk);
-      } else {
-        char src_addr[IP_STRING_MAX_LEN] = {0};
-        get_src_addr(accept_sk->fd, src_addr, IP_STRING_MAX_LEN);
-        ussl_log_info("fd is in processing, fd:%d, type:acceptfd, peer_addr:%s", accept_sk->fd, src_addr);
       }
     }
   }

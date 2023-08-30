@@ -62,8 +62,7 @@ OB_SERIALIZE_MEMBER((ObJoinFilterSpec, ObOpSpec),
                     filter_len_,
                     join_keys_,
                     hash_funcs_,
-                    null_first_cmp_funcs_,
-                    null_last_cmp_funcs_,
+                    cmp_funcs_,
                     filter_shared_type_,
                     calc_tablet_id_expr_,
                     rf_infos_,
@@ -179,7 +178,7 @@ int ObJoinFilterOpInput::init_shared_msgs(
           px_sequence_id_, 0/*task_id*/, tenant_id, timeout_ts, register_dm_info_))) {
         LOG_WARN("fail to init msg", K(ret));
       } else if (OB_FAIL(construct_msg_details(spec, sqc_proxy, config_, *msg_ptr, sqc_count))) {
-        LOG_WARN("fail to construct msg details", K(ret));
+        LOG_WARN("fail to construct msg details", K(ret), K(tenant_id));
       } else if (OB_FAIL(array_ptr->push_back(msg_ptr))) {
         LOG_WARN("fail to push back array ptr", K(ret));
       }
@@ -212,6 +211,7 @@ int ObJoinFilterOpInput::construct_msg_details(
       ObPxSQCProxy::SQCP2PDhMap &dh_map = sqc_proxy->get_p2p_dh_map();
       if (OB_FAIL(bf_msg.bloom_filter_.init(spec.filter_len_,
           bf_msg.get_allocator(),
+          bf_msg.get_tenant_id(),
           config.bloom_filter_ratio_))) {
         LOG_WARN("failed to init bloom filter", K(ret));
       } else if (!spec.is_shared_join_filter() || !spec.is_shuffle_) {
@@ -264,9 +264,7 @@ int ObJoinFilterOpInput::construct_msg_details(
         LOG_WARN("fail to prepare allocate col cnt", K(ret));
       } else if (OB_FAIL(range_msg.cells_size_.prepare_allocate(col_cnt))) {
         LOG_WARN("fail to prepare allocate col cnt", K(ret));
-      } else if (OB_FAIL(range_msg.null_first_cmp_funcs_.assign(spec.null_first_cmp_funcs_))) {
-        LOG_WARN("fail to init cmp funcs", K(ret));
-      } else if (OB_FAIL(range_msg.null_last_cmp_funcs_.assign(spec.null_last_cmp_funcs_))) {
+      } else if (OB_FAIL(range_msg.cmp_funcs_.assign(spec.cmp_funcs_))) {
         LOG_WARN("fail to init cmp funcs", K(ret));
       } else if (OB_FAIL(range_msg.need_null_cmp_flags_.assign(spec.need_null_cmp_flags_))) {
         LOG_WARN("fail to init cmp flags", K(ret));
@@ -285,9 +283,9 @@ int ObJoinFilterOpInput::construct_msg_details(
         LOG_WARN("fail to init in hash set", K(ret));
       } else if (OB_FAIL(in_msg.cur_row_.prepare_allocate(col_cnt))) {
         LOG_WARN("fail to prepare allocate col cnt", K(ret));
-      } else if (OB_FAIL(in_msg.cmp_funcs_.assign(spec.null_first_cmp_funcs_))) {
+      } else if (OB_FAIL(in_msg.cmp_funcs_.assign(spec.cmp_funcs_))) {
         LOG_WARN("fail to init cmp funcs", K(ret));
-      } else if (OB_FAIL(in_msg.hash_funcs_.assign(spec.hash_funcs_))) {
+      } else if (OB_FAIL(in_msg.hash_funcs_for_insert_.assign(spec.hash_funcs_))) {
         LOG_WARN("fail to init cmp funcs", K(ret));
       } else if (OB_FAIL(in_msg.need_null_cmp_flags_.assign(spec.need_null_cmp_flags_))) {
         LOG_WARN("fail to init cmp flags", K(ret));
@@ -314,8 +312,7 @@ ObJoinFilterSpec::ObJoinFilterSpec(common::ObIAllocator &alloc, const ObPhyOpera
     filter_len_(0),
     join_keys_(alloc),
     hash_funcs_(alloc),
-    null_first_cmp_funcs_(alloc),
-    null_last_cmp_funcs_(alloc),
+    cmp_funcs_(alloc),
     filter_shared_type_(JoinFilterSharedType::INVALID_TYPE),
     calc_tablet_id_expr_(NULL),
     rf_infos_(alloc),
@@ -347,6 +344,7 @@ int ObJoinFilterOp::link_ch_sets(ObPxBloomFilterChSets &ch_sets,
       } else if (OB_FAIL(dtl::ObDtlChannelGroup::link_channel(ci, ch, NULL))) {
         LOG_WARN("fail link channel", K(ci), K(ret));
       } else if (OB_ISNULL(ch)) {
+        ret = OB_ERR_UNEXPECTED;
         LOG_WARN("ch channel is null", K(ret));
       } else if (OB_FAIL(channels.push_back(ch))) {
         LOG_WARN("fail push back channel ptr", K(ci), K(ret));
@@ -412,12 +410,57 @@ int ObJoinFilterOp::do_use_filter_rescan()
 int ObJoinFilterOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
-  if (MY_SPEC.is_create_mode() && do_create_filter_rescan()) {
+  if (MY_SPEC.is_create_mode() && OB_FAIL(do_create_filter_rescan())) {
     LOG_WARN("fail to do create filter rescan", K(ret));
-  } else if (MY_SPEC.is_use_mode() && do_use_filter_rescan()) {
+  } else if (MY_SPEC.is_use_mode() && OB_FAIL(do_use_filter_rescan())) {
     LOG_WARN("fail to do use filter rescan", K(ret));
   } else if (OB_FAIL(ObOperator::inner_rescan())) {
     LOG_WARN("operator rescan failed", K(ret));
+  }
+  return ret;
+}
+
+// see issue:
+int ObJoinFilterOp::mark_not_need_send_bf_msg()
+{
+  int ret = OB_SUCCESS;
+  ObJoinFilterOpInput *filter_input = static_cast<ObJoinFilterOpInput*>(input_);
+  ObPxSQCProxy *sqc_proxy = reinterpret_cast<ObPxSQCProxy *>(
+      filter_input->share_info_.ch_provider_ptr_);
+  if (MY_SPEC.is_shared_join_filter() && MY_SPEC.is_shuffle_) {
+    for (int i = 0; i < local_rf_msgs_.count() && OB_SUCC(ret); ++i) {
+      if (local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_MSG) {
+        ObRFBloomFilterMsg *shared_bf_msg = static_cast<ObRFBloomFilterMsg *>(shared_rf_msgs_.at(i));
+        bool is_local_dh = false;
+        if (OB_FAIL(sqc_proxy->check_is_local_dh(local_rf_msgs_.at(i)->get_p2p_datahub_id(),
+            is_local_dh,
+            local_rf_msgs_.at(i)->get_msg_receive_expect_cnt()))) {
+          LOG_WARN("fail to check local dh", K(ret));
+        } else if (is_local_dh) {
+        } else {
+          // only the msg is a shared and shuffled BLOOM_FILTER_MSG
+          // let other worker threads stop trying send join_filter
+          if (!*shared_bf_msg->create_finish_) {
+            shared_bf_msg->need_send_msg_ = false;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+// for create mode, need add mark_not_need_send_bf_msg for shared shuffled bloom filter
+// for use mode, update_plan_monitor_info cause get_next_batch may not get iter end
+int ObJoinFilterOp::inner_drain_exch()
+{
+  int ret = OB_SUCCESS;
+  if (row_reach_end_ || batch_reach_end_) {
+  // already iter end, not need to mark not send or update_plan_monitor_info again (already done in get_next_row/batch)
+  } else if (MY_SPEC.is_create_mode()) {
+    ret = mark_not_need_send_bf_msg();
+  } else if (MY_SPEC.is_use_mode()) {
+    ret = update_plan_monitor_info();
   }
   return ret;
 }
@@ -571,6 +614,13 @@ int ObJoinFilterOp::inner_close()
 int ObJoinFilterOp::try_merge_join_filter()
 {
   int ret = OB_SUCCESS;
+#ifdef ERRSIM
+  if (OB_FAIL(OB_E(EventTable::EN_PX_JOIN_FILTER_NOT_MERGE_MSG) OB_SUCCESS))  {
+    LOG_WARN("ERRSIM match, don't merge_join_filter by desigin", K(ret));
+    return OB_SUCCESS;
+  }
+#endif
+
   ObJoinFilterOpInput *filter_input = static_cast<ObJoinFilterOpInput*>(input_);
   uint64_t *count_ptr = reinterpret_cast<uint64_t *>(
       filter_input->share_info_.unfinished_count_ptr_);
@@ -721,6 +771,8 @@ int ObJoinFilterOp::update_plan_monitor_info()
   op_monitor_info_.otherstat_5_value_ = MY_SPEC.filter_id_;
   op_monitor_info_.otherstat_6_id_ = ObSqlMonitorStatIds::JOIN_FILTER_LENGTH;
   op_monitor_info_.otherstat_6_value_ = MY_SPEC.filter_len_;
+  int64_t check_count = 0;
+  int64_t total_count = 0;
   for (int i = 0; i < MY_SPEC.rf_infos_.count() && OB_SUCC(ret); ++i) {
     if (OB_INVALID_ID != MY_SPEC.rf_infos_.at(i).filter_expr_id_) {
       ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx = NULL;
@@ -729,11 +781,15 @@ int ObJoinFilterOp::update_plan_monitor_info()
         LOG_TRACE("join filter expr ctx is null");
       } else {
         op_monitor_info_.otherstat_1_value_ += join_filter_ctx->filter_count_;
-        op_monitor_info_.otherstat_2_value_ += join_filter_ctx->total_count_;
-        op_monitor_info_.otherstat_3_value_ += join_filter_ctx->check_count_;
+        total_count = max(total_count, join_filter_ctx->total_count_);
+        check_count = max(check_count, join_filter_ctx->check_count_);
         op_monitor_info_.otherstat_4_value_ = max(join_filter_ctx->ready_ts_, op_monitor_info_.otherstat_4_value_);
       }
     }
+  }
+  if (OB_SUCC(ret)) {
+    op_monitor_info_.otherstat_2_value_ += total_count;
+    op_monitor_info_.otherstat_3_value_ += check_count;
   }
   return ret;
 }
@@ -793,7 +849,7 @@ int ObJoinFilterOp::open_join_filter_use()
       ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx = NULL;
       if (OB_ISNULL(join_filter_ctx = static_cast<ObExprJoinFilter::ObExprJoinFilterContext *>(
           ctx_.get_expr_op_ctx(MY_SPEC.rf_infos_.at(i).filter_expr_id_)))) {
-        if (OB_FAIL(ctx_.create_expr_op_ctx(MY_SPEC.rf_infos_.at(i).filter_expr_id_,join_filter_ctx))) {
+        if (OB_FAIL(ctx_.create_expr_op_ctx(MY_SPEC.rf_infos_.at(i).filter_expr_id_, join_filter_ctx))) {
           LOG_WARN("failed to create operator ctx", K(ret), K(MY_SPEC.rf_infos_.at(i).filter_expr_id_));
         } else {
           ObP2PDhKey dh_key(MY_SPEC.rf_infos_.at(i).p2p_datahub_id_, px_seq_id, task_id);
@@ -801,6 +857,19 @@ int ObJoinFilterOp::open_join_filter_use()
           int64_t tenant_id = ctx_.get_my_session()->get_effective_tenant_id();
           join_filter_ctx->window_size_ = ADAPTIVE_BF_WINDOW_ORG_SIZE;
           join_filter_ctx->max_wait_time_ms_ = filter_input->config_.runtime_filter_wait_time_ms_;
+          join_filter_ctx->hash_funcs_.set_allocator(&ctx_.get_allocator());
+          join_filter_ctx->cmp_funcs_.set_allocator(&ctx_.get_allocator());
+          if (OB_FAIL(join_filter_ctx->hash_funcs_.init(MY_SPEC.hash_funcs_.count()))) {
+            LOG_WARN("failed to assign hash_func");
+          } else if (OB_FAIL(join_filter_ctx->cmp_funcs_.init(MY_SPEC.cmp_funcs_.count()))) {
+            LOG_WARN("failed to assign cmp_funcs_");
+          } else if (OB_FAIL(join_filter_ctx->hash_funcs_.assign(MY_SPEC.hash_funcs_))) {
+            LOG_WARN("failed to assign hash_func");
+          } else if (OB_FAIL(join_filter_ctx->cmp_funcs_.assign(MY_SPEC.cmp_funcs_))) {
+            LOG_WARN("failed to assign cmp_funcs_");
+          } else if (OB_FAIL(join_filter_ctx->cur_row_.reserve(MY_SPEC.cmp_funcs_.count()))) {
+            LOG_WARN("failed to reserve cur_row_");
+          }
         }
       } else {
         ret = OB_ERR_UNEXPECTED;

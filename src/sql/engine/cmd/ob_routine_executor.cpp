@@ -129,7 +129,15 @@ int ObCallProcedureExecutor::execute(ObExecContext &ctx, ObCallProcedureStmt &st
             if (expr->get_is_pl_mock_default_expr()) {
               param.set_is_pl_mock_default_param(true);
             }
-            if (ob_is_xml_sql_type(param.get_type(), param.get_udt_subschema_id())) {
+            if (param.is_pl_extend() && !IS_CONST_TYPE(expr->get_expr_items().at(0).get_item_type())) {
+              const ObExprOperator *op = expr->get_expr_items().at(0).get_expr_operator();
+              if (OB_ISNULL(op)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("unexpected expr operator", K(ret));
+              } else {
+                param.set_udt_id(op->get_result_type().get_expr_udt_id());
+              }
+            } else if (ob_is_xml_sql_type(param.get_type(), param.get_udt_subschema_id())) {
               // convert call procedure input sql udt types to pl extend (only xmltype supported currently)
               bool is_strict = is_strict_mode(ctx.get_my_session()->get_sql_mode());
               const ObDataTypeCastParams dtc_params =
@@ -194,20 +202,30 @@ int ObCallProcedureExecutor::execute(ObExecContext &ctx, ObCallProcedureStmt &st
       ObObj result;
       int64_t pkg_id = call_proc_info->is_udt_routine()
                ? share::schema::ObUDTObjectType::mask_object_id(package_id) : package_id;
-      if (OB_FAIL(ctx.get_pl_engine()->execute(ctx,
-                                               ctx.get_allocator(),
-                                               pkg_id,
-                                               routine_id,
-                                               path,
-                                               params,
-                                               nocopy_params,
-                                               result))) {
-        LOG_WARN("failed to execute pl", K(package_id), K(routine_id), K(ret), K(pkg_id));
-        if (OB_READ_NOTHING == ret
-            && lib::is_oracle_mode()
-            && !ObTriggerInfo::is_trigger_package_id(package_id)) {
-          ret = OB_SUCCESS;
+      if (OB_ISNULL(stmt.get_dblink_routine_info())) {
+        if (OB_FAIL(ctx.get_pl_engine()->execute(ctx,
+                                                ctx.get_allocator(),
+                                                pkg_id,
+                                                routine_id,
+                                                path,
+                                                params,
+                                                nocopy_params,
+                                                result))) {
+          LOG_WARN("failed to execute pl", K(package_id), K(routine_id), K(ret), K(pkg_id));
         }
+#ifdef OB_BUILD_ORACLE_PL
+      } else if (OB_FAIL(ObSPIService::spi_execute_dblink(ctx,
+                                                          ctx.get_allocator(),
+                                                          NULL,
+                                                          stmt.get_dblink_routine_info(),
+                                                          params))) {
+        LOG_WARN("failed to execute dblink pl", K(ret), KP(stmt.get_dblink_routine_info()));
+#endif
+      }
+      if (OB_READ_NOTHING == ret
+          && lib::is_oracle_mode()
+          && !ObTriggerInfo::is_trigger_package_id(package_id)) {
+        ret = OB_SUCCESS;
       }
       if (OB_FAIL(ret)) {
       } else if (call_proc_info->get_output_count() > 0) {
@@ -429,7 +447,8 @@ int ObAnonymousBlockExecutor::execute(ObExecContext &ctx, ObAnonymousBlockStmt &
       }
     }
   } else {
-    OZ (ctx.get_pl_engine()->execute(ctx, stmt.get_body()));
+    CK (OB_NOT_NULL(stmt.get_params()));
+    OZ (ctx.get_pl_engine()->execute(ctx, *stmt.get_params(), stmt.get_body()));
   }
   return ret;
 }

@@ -478,9 +478,12 @@ int ObMergeResolver::resolve_generate_table(const ParseNode &table_node,
 int ObMergeResolver::resolve_match_condition(const ParseNode *condition_node)
 {
   int ret = OB_SUCCESS;
+  bool has_outer_join_symbol = false;
   ObMergeStmt *merge_stmt = get_merge_stmt();
   column_namespace_checker_.enable_check_unique();
   resolve_clause_ = MATCH_CLAUSE;
+  ObStmtScope old_scope = current_scope_;
+  current_scope_ = T_ON_SCOPE;
   if (OB_ISNULL(condition_node) || OB_ISNULL(merge_stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid arguement", K(condition_node), K(merge_stmt), K(ret));
@@ -488,6 +491,7 @@ int ObMergeResolver::resolve_match_condition(const ParseNode *condition_node)
                                                 merge_stmt->get_match_condition_exprs()))) {
     LOG_WARN("fail to resolve match condition expr", K(ret));
   }
+  current_scope_ = old_scope;
   resolve_clause_ = NONE_CLAUSE;
   column_namespace_checker_.disable_check_unique();
   return ret;
@@ -648,6 +652,10 @@ int ObMergeResolver::find_value_desc(ObInsertTableInfo &table_info,
     LOG_WARN("invalid index", K(idx), K(value_vector_cnt), K(value_desc.count()), K(ret));
   } else {
     column_ref = table_info.values_vector_.at(idx);
+    if (T_QUESTIONMARK == column_ref->get_expr_type()) {
+      OZ (column_ref->add_flag(IS_TABLE_ASSIGN));
+      OX (column_ref->set_result_type(value_desc.at(idx)->get_result_type()));
+    }
   }
   if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_SUCCESS;

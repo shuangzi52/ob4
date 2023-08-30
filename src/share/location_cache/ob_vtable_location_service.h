@@ -91,6 +91,10 @@ public:
       const common::ObIArray<ObVTableLocUpdateTask> &tasks,
       bool &stopped);
   int process_barrier(const ObVTableLocUpdateTask &task, bool &stopped);
+  void stop();
+  void wait();
+  int destroy();
+  int reload_config();
 private:
   int renew_vtable_location_(
       const uint64_t tenant_id,

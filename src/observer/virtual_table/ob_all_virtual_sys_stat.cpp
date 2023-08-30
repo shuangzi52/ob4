@@ -193,6 +193,12 @@ int ObAllVirtualSysStat::update_all_stats_(const int64_t tenant_id, ObStatEventS
         (OB_SYS_TENANT_ID == tenant_id) ? global_poc_server.get_ratelimit_rxbytes() : -1;
     stat_events.get(ObStatEventIds::STANDBY_FETCH_LOG_BANDWIDTH_LIMIT - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_ =
         (OB_SYS_TENANT_ID == tenant_id) ? global_poc_server.get_ratelimit() : -1;
+    stat_events.get(ObStatEventIds::MEMORY_LIMIT - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_ =
+        (OB_SYS_TENANT_ID == tenant_id) ? GMEMCONF.get_server_memory_limit() : 0;
+    stat_events.get(ObStatEventIds::SYSTEM_MEMORY - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_ =
+        (OB_SYS_TENANT_ID == tenant_id) ? GMEMCONF.get_reserved_server_memory() : 0;
+    stat_events.get(ObStatEventIds::HIDDEN_SYS_MEMORY - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_ =
+        (OB_SYS_TENANT_ID == tenant_id) ? GMEMCONF.get_hidden_sys_memory() : 0;
 
     int ret_bk = ret;
     if (NULL != GCTX.omt_) {
@@ -233,12 +239,13 @@ int ObAllVirtualSysStat::update_all_stats_(const int64_t tenant_id, ObStatEventS
       stat_events.get(ObStatEventIds::OBSERVER_PARTITION_TABLE_UPATER_CORE_QUEUE_SIZE - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_
           = 0;
     }
-    if (NULL != GCTX.cgroup_ctrl_) {
-      int64_t cpu_time = 0;
-      if (!OB_FAIL(GCTX.cgroup_ctrl_->get_cpu_time(tenant_id, cpu_time))) {
-        stat_events.get(ObStatEventIds::CPU_TIME - ObStatEventIds::STAT_EVENT_ADD_END -1)->stat_value_
-            = cpu_time;
-      }
+
+    int64_t cpu_time = 0;
+    if (OB_SUCC(GCTX.omt_->get_tenant_cpu_time(tenant_id, cpu_time))) {
+      stat_events.get(ObStatEventIds::CPU_TIME - ObStatEventIds::STAT_EVENT_ADD_END - 1)->stat_value_
+          = cpu_time;
+    } else {
+      // it is ok to not have any records
     }
     ret = ret_bk;
   }

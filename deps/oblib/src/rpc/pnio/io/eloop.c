@@ -63,13 +63,13 @@ static void sock_destroy(sock_t* s) {
   if (s->ep_fd >= 0) {
     err = epoll_ctl(s->ep_fd, EPOLL_CTL_DEL, s->fd, NULL);
     if (0 != err) {
-      rk_error("epoll_ctl delete fd faild, s=%p, s->fd=%d, errno=%d", s, s->fd, errno);
+      rk_warn("epoll_ctl delete fd faild, s=%p, s->fd=%d, errno=%d", s, s->fd, errno);
     }
   }
   if (s->fd >= 0) {
     err = ussl_close(s->fd);
     if (0 != err) {
-      rk_error("close sock fd faild, s=%p, s->fd=%d, errno=%d", s, s->fd, errno);
+      rk_warn("close sock fd faild, s=%p, s->fd=%d, errno=%d", s, s->fd, errno);
     }
   }
   if (s->fty) {
@@ -80,7 +80,7 @@ static void sock_destroy(sock_t* s) {
 static void eloop_handle_sock_event(sock_t* s) {
   int err = 0;
   if (skt(s, ERR) || skt(s, HUP)) {
-    rk_info("sock destroy: sock=%p, connection=%s, err=%d", s, T2S(sock_fd, s->fd), err);
+    rk_info("sock destroy: sock=%p, connection=%s, s->mask=0x%x", s, T2S(sock_fd, s->fd), s->mask);
     sock_destroy(s);
   } else if (0 == (err = s->handle_event(s))) {
     // yield
@@ -129,5 +129,6 @@ int eloop_run(eloop_t* ep) {
       last_time = cur_time_us;
     }
   }
+  pn_release(pn);
   return 0;
 }

@@ -53,7 +53,8 @@ public:
   enum TypeIndex
   {
     LEASE_INDEX = 0,
-    TABLET_INDEX,
+    TBALET_MEMBER_INDEX,
+    TABLET_SET_INDEX,
     TS_SYNC_INDEX,
     MAX_INDEX,
   };
@@ -87,6 +88,86 @@ struct DupTableInterfaceStat
                K(dup_table_redo_sync_succ_cnt_),
                K(dup_table_redo_sync_fail_cnt_));
 };
+
+/*******************************************************
+ *  Dup_Table LS Role State
+ *******************************************************/
+enum class ObDupTableLSRoleState : int64_t
+{
+  UNKNOWN = 0,
+
+  ROLE_STATE_CHANGING = 1, // Follower
+
+  LS_REVOKE_SUCC = 10,
+  LS_TAKEOVER_SUCC = 11,
+
+  LS_OFFLINE_SUCC = 20,
+  LS_ONLINE_SUCC = 21,
+
+  LS_STOP_SUCC = 30,
+  LS_START_SUCC = 31,
+};
+
+struct ObDupTableLSRoleStateContainer
+{
+  int64_t role_state_;
+  int64_t offline_state_;
+  int64_t stop_state_;
+
+  void reset()
+  {
+    role_state_ = static_cast<int64_t>(ObDupTableLSRoleState::UNKNOWN);
+    offline_state_ = static_cast<int64_t>(ObDupTableLSRoleState::UNKNOWN);
+    stop_state_ = static_cast<int64_t>(ObDupTableLSRoleState::UNKNOWN);
+  }
+
+  int64_t *get_target_state_ref(ObDupTableLSRoleState target_state);
+  bool check_target_state(ObDupTableLSRoleState target_state);
+
+  TO_STRING_KV(K(role_state_), K(offline_state_), K(stop_state_));
+};
+
+class ObDupTableLSRoleStateHelper
+{
+public:
+  ObDupTableLSRoleStateHelper(const char *module_name) : module_name_(module_name)
+  {
+    cur_state_.reset();
+  }
+
+  void reset()
+  {
+    cur_state_.role_state_ = static_cast<int64_t>(ObDupTableLSRoleState::LS_REVOKE_SUCC);
+    cur_state_.stop_state_ = static_cast<int64_t>(ObDupTableLSRoleState::LS_STOP_SUCC);
+    cur_state_.offline_state_ = static_cast<int64_t>(ObDupTableLSRoleState::LS_ONLINE_SUCC);
+  }
+
+  bool is_leader();
+  bool is_follower();
+  bool is_offline();
+  bool is_online();
+  bool is_stopped();
+  bool is_started();
+
+  bool is_leader_serving() { return is_leader() && is_online() && is_started(); }
+  bool is_follower_serving() { return is_follower() && is_online() && is_started(); }
+  bool is_active_ls() { return is_online() && is_started(); }
+
+  int prepare_state_change(const ObDupTableLSRoleState &target_state,
+                           ObDupTableLSRoleStateContainer &restore_state);
+  int restore_state(const ObDupTableLSRoleState &target_state,
+                           ObDupTableLSRoleStateContainer &restore_state);
+  int state_change_succ(const ObDupTableLSRoleState &target_state,
+                           ObDupTableLSRoleStateContainer &restore_state);
+
+  TO_STRING_KV("module_name", module_name_, K(cur_state_));
+
+private:
+  ObDupTableLSRoleStateContainer cur_state_;
+  const char *module_name_;
+};
+
+
 /*******************************************************
  *  HashMapTool (not thread safe)
  *******************************************************/
@@ -563,7 +644,7 @@ private:
  *  Dup_Table Tablets
  *******************************************************/
 
-class DupTabletCommonHeader
+class DupTabletSetCommonHeader
 {
   OB_UNIS_VERSION(1);
 
@@ -593,25 +674,22 @@ private:
   // static const uint64_t SPECIAL_OP_BIT_COUNT = 8;
   // static const uint64_t UNIQUE_ID_BIT = static_cast<uint64_t>(0xFFFFFFFFULL);
   // static const uint64_t TABLET_SET_BIT = static_cast<uint64_t>(0xFULL) << UNIQUE_ID_BIT_COUNT;
-  // static const uint64_t SPECIAL_OP_BIT = static_cast<uint64_t>(0xFFULL) << (UNIQUE_ID_BIT_COUNT + TABLET_SET_BIT_COUNT);
+  // static const uint64_t SPECIAL_OP_BIT = static_cast<uint64_t>(0xFFULL) << (UNIQUE_ID_BIT_COUNT +
+  // TABLET_SET_BIT_COUNT);
 
 public:
-  TO_STRING_KV(K(unique_id_),
-               K(tablet_set_type_),
-               K(sp_op_type_));
+  TO_STRING_KV(K(unique_id_), K(tablet_set_type_), K(sp_op_type_));
 
-  DupTabletCommonHeader(const uint64_t id) : unique_id_(id)
+  DupTabletSetCommonHeader(const uint64_t id) : unique_id_(id)
   {
     // set_free();
     // set_invalid_sp_op_type();
     reuse();
   }
-  DupTabletCommonHeader() { reset(); }
-  ~DupTabletCommonHeader() { reset(); }
+  DupTabletSetCommonHeader() { reset(); }
+  ~DupTabletSetCommonHeader() { reset(); }
 
-  bool is_valid() const {
-    return  unique_id_is_valid() && tablet_set_type_is_valid();
-  }
+  bool is_valid() const { return unique_id_is_valid() && tablet_set_type_is_valid(); }
   void reset()
   {
     set_invalid_unique_id();
@@ -647,7 +725,7 @@ public:
   {
     set_special_op_(DUP_SPECIAL_OP_CLEAN_ALL_READABLE_SET);
   }
-  bool need_clean_all_readable_set()
+  bool need_clean_all_readable_set() const
   {
     return DUP_SPECIAL_OP_CLEAN_ALL_READABLE_SET == sp_op_type_;
   }
@@ -659,22 +737,20 @@ public:
   {
     return DUP_SPECIAL_OP_CLEAN_DATA_CONFIRMING_SET == sp_op_type_;
   }
-  void set_op_of_block_confirming()
-  {
-    set_special_op_(DUP_SPECIAL_OP_BLOCK_CONFIRMING);
-  }
-  bool need_block_confirming() const
-  {
-    return DUP_SPECIAL_OP_BLOCK_CONFIRMING == sp_op_type_;
-  }
+  void set_op_of_block_confirming() { set_special_op_(DUP_SPECIAL_OP_BLOCK_CONFIRMING); }
+  bool need_block_confirming() const { return DUP_SPECIAL_OP_BLOCK_CONFIRMING == sp_op_type_; }
   // bool contain_special_op(uint64_t special_op) const { return get_special_op_() == special_op; }
   bool no_specail_op() const { return INVALID_SPECIAL_OP == sp_op_type_; }
-  void copy_tablet_set_type(const DupTabletCommonHeader &src_common_header)
+  void copy_tablet_set_common_header(const DupTabletSetCommonHeader &src_common_header)
   {
     set_unique_id_(src_common_header.get_unique_id());
     set_special_op_(src_common_header.get_special_op());
     change_tablet_set_type_(src_common_header.get_tablet_set_type());
   }
+
+public:
+  bool operator==(const DupTabletSetCommonHeader &dup_common_header) const;
+  bool operator!=(const DupTabletSetCommonHeader &dup_common_header) const;
 
 private:
   void set_unique_id_(const uint64_t id)
@@ -687,19 +763,10 @@ private:
     }
     unique_id_ = id;
   }
-  void change_tablet_set_type_(const int64_t set_type)
-  {
-    tablet_set_type_ = set_type;
-  }
-  int64_t get_tablet_set_type_() const
-  {
-    return tablet_set_type_;
-  }
+  void change_tablet_set_type_(const int64_t set_type) { tablet_set_type_ = set_type; }
+  int64_t get_tablet_set_type_() const { return tablet_set_type_; }
 
-  void set_special_op_(const int64_t special_op_type)
-  {
-    sp_op_type_ = special_op_type;
-  }
+  void set_special_op_(const int64_t special_op_type) { sp_op_type_ = special_op_type; }
   int64_t get_special_op_() const
   {
     // return (common_code_ & SPECIAL_OP_BIT) >> (UNIQUE_ID_BIT_COUNT + TABLET_SET_BIT_COUNT);
@@ -712,7 +779,7 @@ private:
   int64_t sp_op_type_;
 };
 
-typedef common::ObSEArray<DupTabletCommonHeader, 3> DupTabletSetIDArray;
+typedef common::ObSEArray<DupTabletSetCommonHeader, 3> DupTabletSetIDArray;
 
 /*******************************************************
  *  Dup_Table Checkpoint
@@ -742,7 +809,7 @@ public:
                  K(lease_log_applied_scn_),
                  K(readable_tablets_base_scn_),
                  K(readable_tablets_min_base_applied_scn_),
-                 K(lease_item_array_));
+                 K(lease_item_array_.count()));
 
     ObLSDupTableMeta() { reset(); }
 
@@ -762,11 +829,14 @@ public:
     OB_UNIS_VERSION(1);
   };
 
-  TO_STRING_KV(K(dup_ls_meta_), K(lease_log_rec_scn_), K(start_replay_scn_));
+  TO_STRING_KV(K(dup_ls_meta_), K(lease_log_rec_scn_), K(start_replay_scn_),
+               K(readable_ckpt_base_scn_is_accurate_));
 
 public:
   ObDupTableLSCheckpoint() { reset(); }
   void default_init(const share::ObLSID &ls_id) { dup_ls_meta_.ls_id_ = ls_id; }
+
+  bool is_useful_meta() const;
 
   int get_dup_ls_meta(ObLSDupTableMeta &dup_ls_meta) const;
   int set_dup_ls_meta(const ObLSDupTableMeta &dup_ls_meta);
@@ -781,11 +851,15 @@ public:
 
   int flush();
 
+  int offline();
+  int online();
+
   void reset()
   {
     dup_ls_meta_.reset();
     lease_log_rec_scn_.reset();
     start_replay_scn_.reset();
+    readable_ckpt_base_scn_is_accurate_ = true;
   }
 
 private:
@@ -793,6 +867,11 @@ private:
   ObLSDupTableMeta dup_ls_meta_;
   share::SCN lease_log_rec_scn_;
   share::SCN start_replay_scn_;
+  // ckpt_base_scn means, when replay dup log with base_scn,
+  // this node cotain all readable set the same with leader.
+  // but dup tale log can not write all readable set with the limit of size
+  // we use this bool value to check base scn hold correct messages
+  bool readable_ckpt_base_scn_is_accurate_;
 };
 
 /*******************************************************
@@ -824,16 +903,19 @@ struct DupTableStatLog
   int64_t lease_addr_cnt_;
   int64_t readable_cnt_;
   int64_t all_tablet_set_cnt_;
+  int64_t logging_readable_cnt_;
 
-  TO_STRING_KV(K(lease_addr_cnt_), K(readable_cnt_), K(all_tablet_set_cnt_));
+  TO_STRING_KV(K(lease_addr_cnt_), K(readable_cnt_), K(all_tablet_set_cnt_),
+               K(logging_readable_cnt_));
 
   DupTableStatLog() { reset(); }
 
   void reset()
   {
-    lease_addr_cnt_ = 0;
-    readable_cnt_ = 0;
-    all_tablet_set_cnt_ = 0;
+    lease_addr_cnt_ = -1;
+    readable_cnt_ = -1;
+    all_tablet_set_cnt_ = -1;
+    logging_readable_cnt_ = -1;
   }
 
   OB_UNIS_VERSION(1);
@@ -863,6 +945,11 @@ public:
 
   bool is_busy();
 
+  bool check_is_busy_without_lock();
+
+  void rlock_for_log() { log_lock_.rdlock(); }
+  void unlock_for_log() { log_lock_.unlock(); }
+
   int on_success();
   int on_failure();
 
@@ -879,8 +966,10 @@ public:
                K(logging_lease_addrs_),
                K(logging_scn_),
                K(logging_lsn_));
+
 private:
-  static const int64_t MAX_LOG_BLOCK_SIZE = common::OB_MAX_LOG_ALLOWED_SIZE;
+  static const int64_t MAX_LOG_BLOCK_SIZE ;
+  static const int64_t RESERVED_LOG_HEADER_SIZE ; //100 Byte
   int prepare_serialize_log_entry_(int64_t &max_ser_size, DupLogTypeArray &type_array);
   int serialize_log_entry_(const int64_t max_ser_size, const DupLogTypeArray &type_array);
   int deserialize_log_entry_();
@@ -888,7 +977,7 @@ private:
   int sync_log_succ_(const bool for_replay);
 
 private:
-  void after_submit_log(const bool for_replay);
+  void after_submit_log(const bool submit_result, const bool for_replay);
 
 #define LOG_OPERATOR_INIT_CHECK                                                                  \
   if (OB_SUCC(ret)) {                                                                            \

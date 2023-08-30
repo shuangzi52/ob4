@@ -240,10 +240,12 @@ public:
   static int parse_method_opt(sql::ObExecContext &ctx,
                               ObIAllocator *allocator,
                               ObIArray<ObColumnStatParam> &column_params,
-                              const ObString &method_opt);
+                              const ObString &method_opt,
+                              bool &use_size_auto);
 
   static int parser_for_all_clause(const ParseNode *for_all_node,
-                                   ObIArray<ObColumnStatParam> &column_params);
+                                   ObIArray<ObColumnStatParam> &column_params,
+                                   bool &use_size_auto);
 
   static int parser_for_columns_clause(const ParseNode *for_col_node,
                                        ObIArray<ObColumnStatParam> &column_params,
@@ -435,19 +437,32 @@ public:
                                             sql::ParamStore &params,
                                             common::ObObj &result);
 
-  static int get_need_statistics_tables(sql::ObExecContext &ctx,
-                                        ObGatherTableStatsHelper &helper);
+  static int gather_database_table_stats(sql::ObExecContext &ctx,
+                                         const int64_t duration_time,
+                                         int64_t &succeed_cnt,
+                                         ObOptStatTaskInfo &task_info);
+
+  static int do_gather_table_stats(sql::ObExecContext &ctx,
+                                   ObSchemaGetterGuard &schema_guard,
+                                   const int64_t table_id,
+                                   const uint64_t tenant_id,
+                                   const int64_t duration_time,
+                                   int64_t &succeed_cnt,
+                                   ObOptStatTaskInfo &task_info);
+
+  static int do_gather_tables_stats(sql::ObExecContext &ctx,
+                                    ObSchemaGetterGuard &schema_guard,
+                                    const uint64_t tenant_id,
+                                    const ObIArray<int64_t> &table_ids,
+                                    const int64_t duration_time,
+                                    int64_t &succeed_cnt,
+                                    ObOptStatTaskInfo &task_info);
 
   static int get_table_stale_percent(sql::ObExecContext &ctx,
                                      const uint64_t tenant_id,
                                      const share::schema::ObTableSchema &table_schema,
                                      const double stale_percent_threshold,
-                                     StatTable &stat_table,
-                                     bool &is_big_table);
-
-  static int gather_tables_stats_with_default_param(ObExecContext &ctx,
-                                                    ObGatherTableStatsHelper &helper,
-                                                    ObOptStatTaskInfo &task_info);
+                                     StatTable &stat_table);
 
   static int gather_table_stats_with_default_param(ObExecContext &ctx,
                                                    const int64_t duration_time,
@@ -549,9 +564,13 @@ private:
 
   static bool is_func_index(const ObTableStatParam &index_param);
 
+
   static bool need_gather_index_stats(const ObTableStatParam &table_param);
 
-  static int resovle_granularity(ObGranularityType granu_type, ObTableStatParam &param);
+  static int resovle_granularity(ObGranularityType granu_type,
+                                 const bool use_size_auto,
+                                 ObTableStatParam &param);
+
   static void decide_modified_part(ObTableStatParam &param, const bool cascade_parts);
 
 };

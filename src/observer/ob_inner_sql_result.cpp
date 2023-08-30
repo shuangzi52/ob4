@@ -149,7 +149,7 @@ int ObInnerSQLResult::open()
         ret = OB_INIT_TWICE;
         LOG_WARN("result set already open", K(ret));
       } else if (has_tenant_resource() && OB_FAIL(result_set_->open())) {
-        result_set_->refresh_location_cache(true, ret);
+        result_set_->refresh_location_cache_by_errno(true, ret);
         LOG_WARN("open result set failed", K(ret));
         // move after precess_retry().
 //        result_set_->close();
@@ -214,7 +214,7 @@ int ObInnerSQLResult::inner_close()
   } else {
     WITH_CONTEXT(mem_context_) {
       if (has_tenant_resource() && OB_FAIL(result_set_->close())) {
-        result_set_->refresh_location_cache(true, ret);
+        result_set_->refresh_location_cache_by_errno(true, ret);
         LOG_WARN("result set close failed", K(ret));
       } else if(!has_tenant_resource() && OB_FAIL(remote_result_set_->close())) {
         LOG_WARN("remote_result_set close failed", K(ret));
@@ -248,7 +248,7 @@ int ObInnerSQLResult::next()
     WITH_CONTEXT(mem_context_) {
       if (has_tenant_resource() && OB_FAIL(result_set_->get_next_row(row_))) {
         if (OB_ITER_END != ret) {
-          result_set_->refresh_location_cache(true, ret);
+          result_set_->refresh_location_cache_by_errno(true, ret);
           LOG_WARN("get next row failed", K(ret));
         }
       } else if (!has_tenant_resource() && OB_FAIL(remote_result_set_->get_next_row(row_))) {
@@ -543,10 +543,9 @@ int ObInnerSQLResult::get_type(const int64_t col_idx, ObObjMeta &type) const
 }
 
 int ObInnerSQLResult::get_col_meta(const int64_t col_idx, bool old_max_length,
-                                   oceanbase::common::ObString &name, ObObjMeta &meta,
-                                   ObAccuracy &acc) const
+                                   oceanbase::common::ObString &name, ObDataType &data_type) const
 {
-  UNUSEDx(col_idx, old_max_length, name, meta, acc);
+  UNUSEDx(col_idx, old_max_length, name, data_type);
   int ret = OB_ERR_UNEXPECTED;
   return ret;
 }

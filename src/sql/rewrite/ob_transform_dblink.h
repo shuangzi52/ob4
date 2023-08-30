@@ -153,6 +153,8 @@ private:
 
   int formalize_select_item(ObDMLStmt *stmt);
 
+  int formalize_bool_select_expr(ObDMLStmt *stmt);
+
   int extract_limit(ObDMLStmt *stmt, ObDMLStmt *&dblink_stmt);
 
   virtual int need_transform(const common::ObIArray<ObParentDMLStmt> &parent_stmts,
@@ -165,6 +167,8 @@ private:
   int add_flashback_query_for_dblink(ObDMLStmt *stmt);
 
   int has_invalid_link_expr(ObDMLStmt &stmt, bool &has_invalid_expr);
+
+  static int check_link_expr_valid(ObRawExpr *expr, bool &is_valid);
 
   DISALLOW_COPY_AND_ASSIGN(ObTransformDBlink);
 

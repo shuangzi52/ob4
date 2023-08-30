@@ -46,9 +46,9 @@ bool UpdateMatchLsnFunc::operator()(const common::ObAddr &server, LsnTsInfo &val
     if (value.lsn_ < new_end_lsn_) {
       // Update last_advance_time_us_ when lsn really changes.
       value.last_advance_time_us_ = new_ack_time_us_;
+      value.last_ack_time_us_ = new_ack_time_us_;
     }
     value.lsn_ = new_end_lsn_;
-    value.last_ack_time_us_ = new_ack_time_us_;
     bool_ret = true;
   }
   return bool_ret;
@@ -120,13 +120,14 @@ LogSlidingWindow::LogSlidingWindow()
     last_rebuild_lsn_(),
     last_record_end_lsn_(PALF_INITIAL_LSN_VAL),
     fs_cb_cost_stat_("[PALF STAT FS CB]", PALF_STAT_PRINT_INTERVAL_US),
-    log_life_time_stat_("[PALF STAT LOG LIFETIME]", PALF_STAT_PRINT_INTERVAL_US),
-    log_gen_to_freeze_cost_stat_("PALF STAT LOG GEN_TO_FREEZE COST TIME", PALF_STAT_PRINT_INTERVAL_US),
-    log_gen_to_submit_cost_stat_("PALF STAT LOG GEN_TO_SUBMIT COST TIME", PALF_STAT_PRINT_INTERVAL_US),
-    log_submit_to_first_ack_cost_stat_("PALF STAT LOG SUBMIT_TO_FIRST_ACK COST TIME", PALF_STAT_PRINT_INTERVAL_US),
-    log_submit_to_flush_cost_stat_("PALF STAT LOG SUBMIT_TO_FLUSH COST TIME", PALF_STAT_PRINT_INTERVAL_US),
-    log_submit_to_commit_cost_stat_("PALF STAT LOG SUBMIT_TO_COMMIT COST TIME", PALF_STAT_PRINT_INTERVAL_US),
-    log_submit_to_slide_cost_stat_("[PALF STAT LOG SUBMIT_TO_SLIDE COST TIME]", PALF_STAT_PRINT_INTERVAL_US),
+    log_life_time_stat_("[PALF STAT LOG LIFE TIME]", PALF_STAT_PRINT_INTERVAL_US),
+    accum_slide_log_cnt_(0),
+    accum_log_gen_to_freeze_cost_(0),
+    accum_log_gen_to_submit_cost_(0),
+    accum_log_submit_to_flush_cost_(0),
+    accum_log_submit_to_first_ack_cost_(0),
+    accum_log_submit_to_commit_cost_(0),
+    accum_log_submit_to_slide_cost_(0),
     group_log_stat_time_us_(OB_INVALID_TIMESTAMP),
     accum_log_cnt_(0),
     accum_group_log_size_(0),
@@ -267,12 +268,6 @@ int LogSlidingWindow::init(const int64_t palf_id,
     PALF_REPORT_INFO_KV(K_(palf_id));
     fs_cb_cost_stat_.set_extra_info(EXTRA_INFOS);
     log_life_time_stat_.set_extra_info(EXTRA_INFOS);
-    log_gen_to_freeze_cost_stat_.set_extra_info(EXTRA_INFOS);
-    log_gen_to_submit_cost_stat_.set_extra_info(EXTRA_INFOS);
-    log_submit_to_first_ack_cost_stat_.set_extra_info(EXTRA_INFOS);
-    log_submit_to_flush_cost_stat_.set_extra_info(EXTRA_INFOS);
-    log_submit_to_commit_cost_stat_.set_extra_info(EXTRA_INFOS);
-    log_submit_to_slide_cost_stat_.set_extra_info(EXTRA_INFOS);
 
     is_inited_ = true;
     LogGroupEntryHeader group_header;
@@ -890,8 +885,8 @@ int LogSlidingWindow::try_push_log_to_children_(const int64_t curr_proposal_id,
     PALF_LOG(WARN, "submit_push_log_req failed", K(ret), K_(palf_id), K_(self));
   } else if (false == need_presend_log) {
   } else if (OB_FAIL(mm_->get_degraded_learner_list(degraded_learner_list))) {
-    PALF_LOG(WARN, "get_log_sync_member_list failed", K(ret), K_(palf_id), K_(self));
-  } else if (OB_UNLIKELY(degraded_learner_list.is_valid() && mm_->need_sync_to_degraded_learners())) {
+    PALF_LOG(WARN, "get_degraded_learner_list failed", K(ret), K_(palf_id), K_(self));
+  } else if (OB_UNLIKELY(degraded_learner_list.is_valid() && mm_->is_sync_to_degraded_learners())) {
     (void) log_engine_->submit_push_log_req(degraded_learner_list, PUSH_LOG,
         curr_proposal_id, prev_log_pid, prev_lsn, lsn, log_write_buf);
   }
@@ -1210,7 +1205,7 @@ int LogSlidingWindow::feedback_freeze_last_log_()
   bool is_need_handle = false;
   if (FEEDBACK_FREEZE_MODE != freeze_mode_) {
     // Only FEEDBACK_FREEZE_MODE need exec this fucntion
-    PALF_LOG(TRACE, "current freeze mode is not feedback", K_(palf_id), K_(self), K_(freeze_mode));
+    PALF_LOG(TRACE, "current freeze mode is not feedback", K_(palf_id), K_(self), "freeze_mode", freeze_mode_2_str(freeze_mode_));
   } else if (OB_FAIL(lsn_allocator_.try_freeze(last_log_end_lsn, last_log_id))) {
     PALF_LOG(WARN, "lsn_allocator try_freeze failed", K(ret), K_(palf_id), K_(self), K(last_log_end_lsn), K(last_log_id));
   } else if (last_log_id <= 0) {
@@ -1250,7 +1245,7 @@ int LogSlidingWindow::check_and_switch_freeze_mode()
       (void) feedback_freeze_last_log_();
     }
   } else {}
-  PALF_LOG(TRACE, "finish check_and_switch_freeze_mode", K_(palf_id), K_(self), K(total_append_cnt), K_(freeze_mode));
+  PALF_LOG(TRACE, "finish check_and_switch_freeze_mode", K_(palf_id), K_(self), K(total_append_cnt), "freeze_mode", freeze_mode_2_str(freeze_mode_));
   return ret;
 }
 
@@ -1262,7 +1257,7 @@ int LogSlidingWindow::period_freeze_last_log()
   bool is_need_handle = false;
   if (PERIOD_FREEZE_MODE != freeze_mode_) {
     // Only PERIOD_FREEZE_MODE need exec this fucntion
-    PALF_LOG(TRACE, "current freeze mode is not period", K_(palf_id), K_(self), K_(freeze_mode));
+    PALF_LOG(TRACE, "current freeze mode is not period", K_(palf_id), K_(self), "freeze_mode", freeze_mode_2_str(freeze_mode_));
   } else if (OB_FAIL(lsn_allocator_.try_freeze(last_log_end_lsn, last_log_id))) {
     PALF_LOG(WARN, "lsn_allocator try_freeze failed", K(ret), K_(palf_id), K_(self), K(last_log_end_lsn), K(last_log_id));
   } else if (last_log_id <= 0) {
@@ -1401,10 +1396,12 @@ int LogSlidingWindow::after_flush_log(const FlushLogCbCtx &flush_cb_ctx)
       (void) gen_committed_end_lsn_(new_committed_end_lsn);
     } else if (FOLLOWER == state_mgr_->get_role()) {
       // follower need send ack to leader
-      const ObAddr &leader = state_mgr_->get_leader();
+      const ObAddr &leader = (state_mgr_->get_leader().is_valid())? \
+          state_mgr_->get_leader(): state_mgr_->get_broadcast_leader();
       // flush op for different role
       if (!leader.is_valid()) {
-        PALF_LOG(TRACE, "current leader is invalid, cannot send ack", K(ret), K_(palf_id), K_(self), K(flush_cb_ctx), K(leader));
+        PALF_LOG(TRACE, "current leader is invalid, cannot send ack", K(ret), K_(palf_id), K_(self),
+            K(flush_cb_ctx), K(log_end_lsn), K(leader));
       } else if (OB_FAIL(submit_push_log_resp_(leader, flush_cb_ctx.curr_proposal_id_, log_end_lsn))) {
         PALF_LOG(WARN, "submit_push_log_resp failed", K(ret), K_(palf_id), K_(self), K(leader), K(flush_cb_ctx));
       } else {}
@@ -1442,6 +1439,18 @@ int LogSlidingWindow::get_last_submit_log_info(LSN &last_submit_lsn,
   } else {
     LSN unused_lsn;
     get_last_submit_log_info_(last_submit_lsn, unused_lsn, log_id, log_proposal_id);
+  }
+  return ret;
+}
+
+int LogSlidingWindow::get_last_submit_log_info(LSN &last_submit_lsn,
+    LSN &last_submit_end_lsn, int64_t &log_id, int64_t &log_proposal_id) const
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else {
+    get_last_submit_log_info_(last_submit_lsn, last_submit_end_lsn, log_id, log_proposal_id);
   }
   return ret;
 }
@@ -1792,11 +1801,11 @@ void LogSlidingWindow::try_update_committed_lsn_for_fetch_(
   LSN last_committed_end_lsn;
   last_fetch_end_lsn.val_ = ATOMIC_LOAD(&last_fetch_end_lsn_.val_);
   last_committed_end_lsn.val_ = ATOMIC_LOAD(&last_fetch_committed_end_lsn_.val_);
+  int64_t last_fetch_max_log_id = OB_INVALID_LOG_ID;
+  get_last_fetch_info_(last_fetch_end_lsn, last_committed_end_lsn, last_fetch_max_log_id);
   if (!last_fetch_end_lsn.is_valid() || last_committed_end_lsn.is_valid()) {
     // no need update
   } else {
-    int64_t last_fetch_max_log_id = OB_INVALID_LOG_ID;
-    get_last_fetch_info_(last_fetch_end_lsn, last_committed_end_lsn, last_fetch_max_log_id);
     if (last_fetch_end_lsn.is_valid()
         && !last_committed_end_lsn.is_valid()
         && (log_end_lsn >= last_fetch_end_lsn || log_id == last_fetch_max_log_id)) {
@@ -1813,7 +1822,7 @@ void LogSlidingWindow::try_update_committed_lsn_for_fetch_(
           K(log_id), K_(last_fetch_max_log_id), K_(last_fetch_end_lsn),
           K_(last_fetch_committed_end_lsn));
     } else if (last_fetch_end_lsn == last_fetch_end_lsn_
-               || log_id == last_fetch_max_log_id_) {
+               || last_fetch_max_log_id == last_fetch_max_log_id_) {
       LSN committed_end_lsn;
       get_committed_end_lsn_(committed_end_lsn);
       // The order is fatal:
@@ -1852,7 +1861,7 @@ bool LogSlidingWindow::need_execute_fetch_(const FetchTriggerType &fetch_trigger
     // If self is currently in streamingly fetch state, it does not need fetch again
     // in some trigger cases.
     bool_ret = false;
-  } else if (now - last_fetch_req_time_ < PALF_FETCH_LOG_OUTER_TRIGGER_INTERVAL
+  } else if (now - last_fetch_req_time_ < PALF_FETCH_LOG_OUTER_TRIGGER_INTERVAL_US
       && (FetchTriggerType::ADD_MEMBER_PRE_CHECK == fetch_trigger_type
           || FetchTriggerType::MODE_META_BARRIER == fetch_trigger_type
           || FetchTriggerType::LEARNER_REGISTER == fetch_trigger_type)) {
@@ -1888,7 +1897,7 @@ int LogSlidingWindow::try_fetch_log(const FetchTriggerType &fetch_log_type,
   } else if (false == need_execute_fetch_(fetch_log_type)) {
     if (palf_reach_time_interval(5 * 1000 * 1000, fetch_failure_print_time_)) {
       PALF_LOG(INFO, "no need execute fetch", K(ret), K_(palf_id), K_(self), K(fetch_log_type),
-          K_(last_fetch_trigger_type), K_(last_fetch_req_time));
+          "last_fetch_trigger_type", fetch_trigger_type_2_str(last_fetch_trigger_type_), K_(last_fetch_req_time));
     }
   } else if (FetchTriggerType::MODE_META_BARRIER == fetch_log_type) {
     int64_t last_slide_log_id = OB_INVALID_LOG_ID;
@@ -2033,7 +2042,7 @@ int LogSlidingWindow::do_fetch_log_(const FetchTriggerType &trigger_type,
           K(fetch_log_count), K(fetch_start_lsn), K(prev_lsn), K(fetch_start_log_id),
           K(last_slide_log_id), K(fetch_log_size), K(accepted_mode_pid), K_(last_fetch_req_time),
           K_(last_fetch_end_lsn), K_(last_fetch_max_log_id), K_(last_fetch_committed_end_lsn),
-          K(trigger_type), KPC(this));
+          "trigger_type", fetch_trigger_type_2_str(trigger_type), KPC(this));
     }
   }
   return ret;
@@ -2048,9 +2057,13 @@ int LogSlidingWindow::get_leader_from_cache_(common::ObAddr &leader) const
 {
   int ret = OB_SUCCESS;
   const common::ObAddr state_mgr_leader = state_mgr_->get_leader();
+  const common::ObAddr broadcast_leader = state_mgr_->get_broadcast_leader();
   if (state_mgr_leader.is_valid()) {
     leader = state_mgr_leader;
-  } else if (palf_reach_time_interval(PALF_FETCH_LOG_RENEW_LEADER_INTERVAL_US, last_fetch_log_renew_leader_ts_us_) &&
+  } else if (broadcast_leader.is_valid()) {
+    leader = broadcast_leader;
+  } else if (palf_reach_time_interval(PALF_FETCH_LOG_RENEW_LEADER_INTERVAL_US,
+             last_fetch_log_renew_leader_ts_us_) &&
              OB_FAIL(plugins_->nonblock_renew_leader(palf_id_))) {
     PALF_LOG(WARN, "nonblock_renew_leader failed", KR(ret), K_(palf_id), K_(self));
   } else if (OB_FAIL(plugins_->nonblock_get_leader(palf_id_, leader))) {
@@ -2171,19 +2184,36 @@ int LogSlidingWindow::sliding_cb(const int64_t sn, const FixedSlidingWindowSlot 
 
         const int64_t log_life_time = fs_cb_begin_ts - log_gen_ts;
         log_life_time_stat_.stat(log_life_time);
-        // When role is follower, the freeze state takes effect immediately and we do not need to stat it.
-        log_gen_to_freeze_cost_stat_.stat(log_freeze_ts - log_gen_ts);
-        log_gen_to_submit_cost_stat_.stat(log_submit_ts - log_gen_ts);
-        log_submit_to_flush_cost_stat_.stat(log_flush_ts - log_submit_ts);
+
         // Concurrency problem
         // The first_ack_ts and committed_ts of log_task may havn't been updated when they were slided from sw.
-        if (OB_INVALID_TIMESTAMP != log_first_ack_ts) {
-          log_submit_to_first_ack_cost_stat_.stat(log_first_ack_ts - log_submit_ts);
+        if (OB_INVALID_TIMESTAMP != log_first_ack_ts && OB_INVALID_TIMESTAMP != log_commit_ts) {
+          const int64_t total_slide_log_cnt = ATOMIC_AAF(&accum_slide_log_cnt_, 1);
+          const int64_t total_log_gen_to_freeze_cost = ATOMIC_AAF(&accum_log_gen_to_freeze_cost_, log_freeze_ts - log_gen_ts);
+          const int64_t total_log_gen_to_submit_cost = ATOMIC_AAF(&accum_log_gen_to_submit_cost_, log_submit_ts - log_gen_ts);
+          const int64_t total_log_submit_to_flush_cost = ATOMIC_AAF(&accum_log_submit_to_flush_cost_, log_flush_ts - log_submit_ts);
+          const int64_t total_log_submit_to_first_ack_cost = ATOMIC_AAF(&accum_log_submit_to_first_ack_cost_, log_first_ack_ts - log_submit_ts);
+          const int64_t total_log_submit_to_commit_cost = ATOMIC_AAF(&accum_log_submit_to_commit_cost_, log_commit_ts - log_submit_ts);
+          const int64_t total_log_submit_to_slide_cost = ATOMIC_AAF(&accum_log_submit_to_slide_cost_, fs_cb_begin_ts - log_submit_ts);
+          if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, log_slide_stat_time_)) {
+            const int64_t avg_log_gen_to_freeze_time = total_log_gen_to_freeze_cost / total_slide_log_cnt;
+            const int64_t avg_log_gen_to_submit_time = total_log_gen_to_submit_cost / total_slide_log_cnt;
+            const int64_t avg_log_submit_to_flush_time = total_log_submit_to_flush_cost / total_slide_log_cnt;
+            const int64_t avg_log_submit_to_first_ack_time = total_log_submit_to_first_ack_cost / total_slide_log_cnt;
+            const int64_t avg_log_submit_to_commit_time = total_log_submit_to_commit_cost / total_slide_log_cnt;
+            const int64_t avg_log_submit_to_slide_time = total_log_submit_to_slide_cost / total_slide_log_cnt;
+            PALF_LOG(INFO, "[PALF STAT LOG TASK TIME]", K_(palf_id), K_(self), K(total_slide_log_cnt),
+                K(avg_log_gen_to_freeze_time), K(avg_log_gen_to_submit_time), K(avg_log_submit_to_flush_time),
+                K(avg_log_submit_to_first_ack_time), K(avg_log_submit_to_commit_time), K(avg_log_submit_to_slide_time));
+            ATOMIC_STORE(&accum_slide_log_cnt_, 0);
+            ATOMIC_STORE(&accum_log_gen_to_freeze_cost_, 0);
+            ATOMIC_STORE(&accum_log_gen_to_submit_cost_, 0);
+            ATOMIC_STORE(&accum_log_submit_to_flush_cost_, 0);
+            ATOMIC_STORE(&accum_log_submit_to_first_ack_cost_, 0);
+            ATOMIC_STORE(&accum_log_submit_to_commit_cost_, 0);
+            ATOMIC_STORE(&accum_log_submit_to_slide_cost_, 0);
+          }
         }
-        if (OB_INVALID_TIMESTAMP != log_commit_ts) {
-          log_submit_to_commit_cost_stat_.stat(log_commit_ts - log_submit_ts);
-        }
-        log_submit_to_slide_cost_stat_.stat(fs_cb_begin_ts - log_submit_ts);
 
         if (log_life_time > 100 * 1000) {
           if (palf_reach_time_interval(100 * 1000, log_life_long_warn_time_)) {
@@ -2521,22 +2551,17 @@ int LogSlidingWindow::to_leader_active()
   // Resize group_buffer
   int ret = OB_SUCCESS;
   SCN ref_scn;
-  int64_t mode_version1 = INVALID_PROPOSAL_ID, mode_version2 = INVALID_PROPOSAL_ID;
+  int64_t mode_version = INVALID_PROPOSAL_ID;
   AccessMode access_mode = AccessMode::INVALID_ACCESS_MODE;
   const int64_t curr_proposal_id = state_mgr_->get_proposal_id();
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else if (OB_FAIL(mode_mgr_->get_ref_scn(mode_version1, ref_scn))) {
-    PALF_LOG(INFO, "get_ref_scn failed", K(ret), K_(palf_id), K_(self));
-  } else if (OB_FAIL(mode_mgr_->get_access_mode(mode_version2, access_mode))) {
-    PALF_LOG(INFO, "get_ref_scn failed", K(ret), K_(palf_id), K_(self));
-  } else if (mode_version1 != mode_version2) {
-    ret = OB_ERR_UNEXPECTED;
-    PALF_LOG(ERROR, "mode_version has been changed", K(ret), K(mode_version1), K(mode_version2));
-  } else if (curr_proposal_id < mode_version1) {
+  } else if (OB_FAIL(mode_mgr_->get_access_mode_ref_scn(mode_version, access_mode, ref_scn))) {
+    PALF_LOG(INFO, "get_access_mode_ref_scn failed", K(ret), K_(palf_id), K_(self));
+  } else if (curr_proposal_id < mode_version) {
     ret = OB_ERR_UNEXPECTED;
     PALF_LOG(ERROR, "curr_proposal_id is less than proposal_id in ModeMeta", K(ret),
-        K_(palf_id), K_(self), K(mode_version1), K(curr_proposal_id));
+        K_(palf_id), K_(self), K(mode_version), K(curr_proposal_id));
   } else if (!is_all_log_flushed_()) {
     ret = OB_EAGAIN;
     PALF_LOG(WARN, "to_leader_active need retry, because there is some log has not been flushed", K(ret),
@@ -2570,12 +2595,34 @@ int LogSlidingWindow::gen_committed_end_lsn_(LSN &new_committed_end_lsn)
   ObMemberList member_list;
   int64_t replica_num = 0;
   LSN result_lsn;
-  if (OB_FAIL(mm_->get_log_sync_member_list(member_list, replica_num))) {
+  bool is_before_barrier = false;
+  LSN barrier_lsn;
+  if (OB_FAIL(mm_->get_log_sync_member_list_for_generate_committed_lsn(member_list,
+      replica_num, is_before_barrier, barrier_lsn))) {
     PALF_LOG(WARN, "get_log_sync_member_list failed", K(ret), K_(palf_id), K_(self));
   } else if (OB_FAIL(get_majority_lsn_(member_list, replica_num, result_lsn))) {
     PALF_LOG(WARN, "get_majority_lsn failed", K(ret), K_(palf_id), K_(self));
   } else {
-    (void) try_advance_committed_lsn_(result_lsn);
+    // Note: the leader generates committed_end_lsn based on different memberlists before
+    // and after a reconfiguration, barrier_lsn is the boundary.
+    // - Logs which is before barrier_lsn should be committed by previous memberlist.
+    // - Logs which is after barrier_lsn should be committed by current memberlist.
+    // - If current committed_end_lsn is smaller than barrier_lsn, then new committed_end_lsn
+    //   generated by previous memberlist must be smaller than barrier_lsn.
+    //   For example, memberlist:{A} + replica:B. After adding B successfully, Logs after the
+    //   barrier may have been persisted by A, but not B. The leader A can not commit logs after
+    //   the barrier with memberlist:{A}.
+    result_lsn = (is_before_barrier)? MIN(result_lsn, barrier_lsn): result_lsn;
+    // Note: The leader is not allowed to generate new committed_end_lsn while changing configs with arb.
+    // 1. {A, B, C(arb)}, A is the leader, end_lsns of A and B are both 100.
+    // 2. B crashes and A decicdes to degrade B to a learner, A changes memberlist to {A, C(arb)} and
+    //    sends config log to C. While the config log is flying, applications submits logs [100, 200).
+    //    A can not commit [100, 200] logs before A receives ack messages to the config log from C.
+    //    Otherwise, if the config log do not reaches majority and B is elected to be new leader later,
+    //    new leader B may lost committed logs [100, 200).
+    if (OB_LIKELY(false == state_mgr_->is_changing_config_with_arb())) {
+      (void) try_advance_committed_lsn_(result_lsn);
+    }
     new_committed_end_lsn = result_lsn;
   }
   return ret;
@@ -2748,21 +2795,27 @@ int LogSlidingWindow::get_majority_lsn_(const ObMemberList &member_list,
     ObAddr tmp_server;
     LsnTsInfo tmp_val;
     for (int64_t i = 0; OB_SUCC(ret) && i < member_list.get_member_number(); ++i) {
+      int tmp_ret = OB_SUCCESS;
       tmp_server.reset();
       if (OB_FAIL(member_list.get_server_by_index(i, tmp_server))) {
         PALF_LOG(WARN, "get_server_by_index failed", K(ret), K_(palf_id), K_(self));
-      } else if (OB_FAIL(match_lsn_map_.get(tmp_server, tmp_val))) {
-        // 预期不应该失败，每次成员变更时同步更新保持map与member_list一致
-        PALF_LOG(WARN, "match_lsn_map_ get failed", K(ret), K_(palf_id), K_(self), K(tmp_server));
+      } else if (OB_TMP_FAIL(match_lsn_map_.get(tmp_server, tmp_val))) {
+        // Note: the leader may generate committed_end_lsn based on previous member list,
+        // members in member_list may do not exist in match_lsn_map. For example, removing D from
+        // (ABCD), previous member_list is (ABCD) but D has been removed from match_lsn_map.
+        // Therefore, we just skip members that do not exist in match_lsn_map.
+        PALF_LOG(WARN, "match_lsn_map_ get failed", K(tmp_ret), K_(palf_id), K_(self), K(tmp_server));
       } else {
-        valid_member_cnt++;
-        lsn_array[i] = tmp_val.lsn_;
+        lsn_array[valid_member_cnt++] = tmp_val.lsn_;
         PALF_LOG(TRACE, "current matched lsn", K_(palf_id), K_(self), "server:", tmp_server, "lsn:", tmp_val.lsn_);
       }
     }
   } while(0);
 
-  if (OB_SUCC(ret)) {
+  if (valid_member_cnt < replica_num / 2 + 1) {
+    PALF_LOG(WARN, "match_lsn_map do not reach majority", K(ret), K_(palf_id), K_(self),
+        K(member_list), K(replica_num), K(valid_member_cnt));
+  } else if (OB_SUCC(ret)) {
     std::sort(lsn_array, lsn_array + valid_member_cnt, LSNCompare());
     assert(replica_num / 2 < OB_MAX_MEMBER_NUMBER);
     result_lsn = lsn_array[replica_num / 2];
@@ -3847,6 +3900,7 @@ int LogSlidingWindow::reset_match_lsn_map_()
   int64_t replica_num = 0;
   LSN max_flushed_end_lsn;
   LSN committed_end_lsn;
+  const int64_t now_us = ObTimeUtility::current_time();
   ObSpinLockGuard guard(match_lsn_map_lock_);
   if (OB_FAIL(mm_->get_log_sync_member_list(member_list, replica_num))) {
     PALF_LOG(WARN, "get_log_sync_member_list failed", K(ret), K_(palf_id), K_(self));
@@ -3865,7 +3919,7 @@ int LogSlidingWindow::reset_match_lsn_map_()
         // Leader update match_lsn for each paxos member.
         // Setting match_lsn to max_flushed_end_lsn for itself and committed_end_lsn for others.
         tmp_match_lsn = (self_ == tmp_server) ? max_flushed_end_lsn : committed_end_lsn;
-        if (OB_FAIL(match_lsn_map_.insert(tmp_server, LsnTsInfo(tmp_match_lsn, INITIAL_LAST_ACK_TS)))) {
+        if (OB_FAIL(match_lsn_map_.insert(tmp_server, LsnTsInfo(tmp_match_lsn, now_us)))) {
           PALF_LOG(WARN, "match_lsn_map_.insert failed", K(ret), KPC(this));
         }
       }
@@ -3888,6 +3942,7 @@ int LogSlidingWindow::config_change_update_match_lsn_map(
     ret = OB_NOT_INIT;
   } else {
     LSN init_lsn(PALF_INITIAL_LSN_VAL);
+    const int64_t now_us = ObTimeUtility::current_time();
     ObSpinLockGuard guard(match_lsn_map_lock_);
     int tmp_ret = OB_SUCCESS;
     ObAddr tmp_server;
@@ -3895,7 +3950,7 @@ int LogSlidingWindow::config_change_update_match_lsn_map(
       tmp_server.reset();
       if (OB_SUCCESS != (tmp_ret = added_memberlist.get_server_by_index(i, tmp_server))) {
         PALF_LOG(WARN, "get_server_by_index failed", K(tmp_ret), K_(palf_id), K_(self));
-      } else if (OB_SUCCESS != (tmp_ret = match_lsn_map_.insert(tmp_server, LsnTsInfo(init_lsn, INITIAL_LAST_ACK_TS))) &&
+      } else if (OB_SUCCESS != (tmp_ret = match_lsn_map_.insert(tmp_server, LsnTsInfo(init_lsn, now_us))) &&
           OB_ENTRY_EXIST != tmp_ret) {
         PALF_LOG(WARN, "match_lsn_map_.insert failed", K(tmp_ret), K(tmp_server), K_(palf_id), K_(self));
       } else {
@@ -3950,7 +4005,7 @@ int LogSlidingWindow::try_update_match_lsn_map_(const common::ObAddr &server, co
     ObSpinLockGuard guard(match_lsn_map_lock_);
     if (OB_SUCCESS != (tmp_ret = match_lsn_map_.get(server, tmp_val))) {
       if (OB_ENTRY_NOT_EXIST == tmp_ret) {
-        if (OB_FAIL(match_lsn_map_.insert(server, LsnTsInfo(end_lsn, INITIAL_LAST_ACK_TS)))) {
+        if (OB_FAIL(match_lsn_map_.insert(server, LsnTsInfo(end_lsn, now_us)))) {
           PALF_LOG(WARN, "match_lsn_map_.insert failed", K(ret), KPC(this), K(server));
         } else {
           PALF_LOG(INFO, "match_lsn_map_.insert success", K(ret), K_(palf_id), K_(self), K(server), K(end_lsn));
@@ -4078,6 +4133,8 @@ int LogSlidingWindow::ack_log(const common::ObAddr &src_server, const LSN &end_l
   ObMemberList member_list;
   int64_t replica_num = 0;
   GlobalLearnerList degraded_learner_list;
+  bool in_member_list = false;
+  bool in_degraded_list = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
   } else if (!src_server.is_valid() || !end_lsn.is_valid()) {
@@ -4087,7 +4144,9 @@ int LogSlidingWindow::ack_log(const common::ObAddr &src_server, const LSN &end_l
     PALF_LOG(WARN, "get_log_sync_member_list failed", K(ret), K_(palf_id), K_(self));
   } else if (OB_FAIL(mm_->get_degraded_learner_list(degraded_learner_list))) {
     PALF_LOG(WARN, "get_degraded_learner_list failed", K(ret), K_(palf_id), K_(self));
-  } else if (!member_list.contains(src_server) && !degraded_learner_list.contains(src_server)) {
+  } else if (FALSE_IT(in_member_list = member_list.contains(src_server))) {
+  } else if (FALSE_IT(in_degraded_list = degraded_learner_list.contains(src_server))) {
+  } else if (!in_member_list && !in_degraded_list) {
     // src_server is not paxos member or degraded learners, skip
     // why record end_lsn of degraded learners in match_lsn_map?
     // if a degraded server recovers,
@@ -4108,6 +4167,12 @@ int LogSlidingWindow::ack_log(const common::ObAddr &src_server, const LSN &end_l
       (void) gen_committed_end_lsn_(new_committed_end_lsn);
       if (new_committed_end_lsn > old_committed_end_lsn) {
         (void) leader_broadcast_committed_info_(new_committed_end_lsn);
+      }
+      // if the leader receives ack from degraded learners and the log
+      // is in the range of sliding window, start to send logs to degraded learners
+      if (OB_UNLIKELY(in_degraded_list &&
+          end_lsn >= get_max_lsn() - 2 * LEADER_DEFAULT_GROUP_BUFFER_SIZE)) {
+        mm_->set_sync_to_degraded_learners();
       }
     }
     (void) handle_committed_log_();

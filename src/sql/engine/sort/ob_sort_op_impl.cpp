@@ -989,7 +989,7 @@ int ObSortOpImpl::before_add_row()
       if (OB_FAIL(sql_mem_processor_.init(
                   &mem_context_->get_malloc_allocator(),
                   tenant_id_,
-                  size, op_type_, op_id_, exec_ctx_))) {
+                  size, op_monitor_info_.op_type_, op_monitor_info_.op_id_, exec_ctx_))) {
         LOG_WARN("failed to init sql mem processor", K(ret));
       } else {
         datum_store_.set_dir_id(sql_mem_processor_.get_dir_id());
@@ -1766,9 +1766,8 @@ int ObSortOpImpl::sort()
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (sort_chunks_.get_size() >= 2) {
-    // clear iteration age, make sure no iteration block cached in inner round.
-    set_iteration_age(NULL);
-
+    blk_holder_.release();
+    set_blk_holder(nullptr);
     // do merge sort
     int64_t ways = 0;
     while (OB_SUCC(ret)) {
@@ -1812,8 +1811,7 @@ int ObSortOpImpl::sort()
     }
 
     if (OB_SUCC(ret)) {
-      // set iteration age for batch iteration.
-      set_iteration_age(&iter_age_);
+      set_blk_holder(&blk_holder_);
       next_stored_row_func_ = &ObSortOpImpl::ems_heap_next_stored_row;
     }
   }
@@ -1882,13 +1880,6 @@ int ObSortOpImpl::rewind()
   return ret;
 }
 
-void ObSortOpImpl::set_iteration_age(ObChunkDatumStore::IterationAge *iter_age)
-{
-  DLIST_FOREACH_NORET(chunk, sort_chunks_) {
-    chunk->iter_.set_iteration_age(iter_age);
-  }
-}
-
 int ObSortOpImpl::get_next_batch_stored_rows(int64_t max_cnt, int64_t &read_rows)
 {
   int ret = OB_SUCCESS;
@@ -1896,8 +1887,8 @@ int ObSortOpImpl::get_next_batch_stored_rows(int64_t max_cnt, int64_t &read_rows
     ret = OB_NOT_INIT;
     LOG_WARN("get next batch failed", K(ret));
   } else {
-    iter_age_.inc();
     read_rows = 0;
+    blk_holder_.release();
     for (int64_t i = 0; OB_SUCC(ret) && i < max_cnt; i++) {
       const ObChunkDatumStore::StoredRow *sr = NULL;
       if (OB_FAIL((this->*next_stored_row_func_)(sr))) {
@@ -1953,7 +1944,7 @@ int ObSortOpImpl::add_heap_sort_row(const common::ObIArray<ObExpr*> &exprs,
     int64_t size = OB_INVALID_ID == input_rows_ ? 0 : input_rows_ * input_width_ * 2;
     if (OB_FAIL(sql_mem_processor_.init(
                &mem_context_->get_malloc_allocator(),
-               tenant_id_, size, op_type_, op_id_, &eval_ctx_->exec_ctx_))) {
+               tenant_id_, size, op_monitor_info_.op_type_, op_monitor_info_.op_id_, &eval_ctx_->exec_ctx_))) {
       LOG_WARN("failed to init sql mem processor", K(ret));
     }
   } else {
@@ -1978,10 +1969,15 @@ int ObSortOpImpl::add_heap_sort_row(const common::ObIArray<ObExpr*> &exprs,
   } else { // push back array
     SortStoredRow *new_row = NULL;
     ObIAllocator &alloc = mem_context_->get_malloc_allocator();
+    int64_t topn_heap_size = topn_heap_->count();
     if (OB_FAIL(copy_to_row(exprs, alloc, new_row))) {
       LOG_WARN("failed to generate new row", K(ret));
     } else if (OB_FAIL(topn_heap_->push(new_row))) {
       LOG_WARN("failed to push back row", K(ret));
+      if (topn_heap_->count() == topn_heap_size) {
+        mem_context_->get_malloc_allocator().free(new_row);
+        new_row = NULL;
+      }
     } else {
       store_row = new_row;
       LOG_DEBUG("in memory topn sort check add row", KPC(new_row));
@@ -2103,10 +2099,15 @@ int ObSortOpImpl::adjust_topn_heap_with_ties(const common::ObIArray<ObExpr*> &ex
       /* do nothing */
     } else if (0 == cmp) {
       // equal to heap top, add row to ties array
+      int64_t ties_array_size = ties_array_.count();
       if (OB_FAIL(copy_to_row(exprs, alloc, new_row))) {
         LOG_WARN("failed to generate new row", K(ret));
       } else if (OB_FAIL(ties_array_.push_back(new_row))) {
         LOG_WARN("failed to push back ties array", K(ret));
+        if (ties_array_size == ties_array_.count()) {
+          mem_context_->get_malloc_allocator().free(new_row);
+          new_row = NULL;
+        }
       } else {
         store_row = new_row;
         LOG_DEBUG("in memory topn sort with ties add ties array", KPC(new_row));
@@ -2320,6 +2321,13 @@ int ObSortOpImpl::adjust_topn_read_rows(ObChunkDatumStore::StoredRow **stored_ro
   }
 
   return ret;
+}
+
+void ObSortOpImpl::set_blk_holder(ObChunkDatumStore::IteratedBlockHolder *blk_holder)
+{
+  DLIST_FOREACH_NORET(chunk, sort_chunks_) {
+    chunk->iter_.set_blk_holder_ptr(blk_holder);
+  }
 }
 
 /************************************* end ObSortOpImpl ********************************/

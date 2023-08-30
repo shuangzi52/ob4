@@ -28,7 +28,6 @@
 #include "ob_fetch_log_task.h"                          // ObFetchLogTask
 #include "ob_log_restore_handler.h"                     // ObLogRestoreHandler
 #include "ob_log_restore_allocator.h"                       // ObLogRestoreAllocator
-#include "ob_log_restore_controller.h"
 #include "storage/tx_storage/ob_ls_handle.h"            // ObLSHandle
 #include "logservice/archiveservice/ob_archive_define.h"   // archive
 #include "storage/tx_storage/ob_ls_map.h"               // ObLSIterator
@@ -60,11 +59,11 @@ using namespace share;
 ObRemoteFetchWorker::ObRemoteFetchWorker() :
   inited_(false),
   tenant_id_(OB_INVALID_TENANT_ID),
-  restore_controller_(NULL),
   restore_service_(NULL),
   ls_svr_(NULL),
   task_queue_(),
   allocator_(NULL),
+  log_ext_handler_(),
   cond_()
 {}
 
@@ -75,7 +74,6 @@ ObRemoteFetchWorker::~ObRemoteFetchWorker()
 
 int ObRemoteFetchWorker::init(const uint64_t tenant_id,
     ObLogRestoreAllocator *allocator,
-    ObLogRestoreController *restore_controller,
     ObLogRestoreService *restore_service,
     ObLSService *ls_svr)
 {
@@ -87,18 +85,17 @@ int ObRemoteFetchWorker::init(const uint64_t tenant_id,
     LOG_ERROR("ObRemoteFetchWorker has been initialized", K(ret));
   } else if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)
       || OB_ISNULL(allocator)
-      || OB_ISNULL(restore_controller)
       || OB_ISNULL(restore_service)
       || OB_ISNULL(ls_svr)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(tenant_id), K(restore_controller),
-        K(allocator), K(restore_service), K(ls_svr));
+    LOG_WARN("invalid argument", K(tenant_id), K(allocator), K(restore_service), K(ls_svr));
   } else if (OB_FAIL(task_queue_.init(FETCH_LOG_TASK_LIMIT, "RFLTaskQueue", MTL_ID()))) {
     LOG_WARN("task_queue_ init failed", K(ret));
+  } else if (OB_FAIL(log_ext_handler_.init())) {
+    LOG_WARN("log_ext_handler_ init failed", K(ret));
   } else {
     tenant_id_ = tenant_id;
     allocator_ = allocator;
-    restore_controller_ = restore_controller;
     restore_service_ = restore_service;
     ls_svr_ = ls_svr;
     inited_ = true;
@@ -128,7 +125,7 @@ void ObRemoteFetchWorker::destroy()
     restore_service_ = NULL;
     ls_svr_ = NULL;
     allocator_ = NULL;
-    restore_controller_ = NULL;
+    log_ext_handler_.destroy();
     inited_ = false;
   }
 }
@@ -140,6 +137,8 @@ int ObRemoteFetchWorker::start()
   if (OB_UNLIKELY(! inited_)) {
     ret = OB_NOT_INIT;
     LOG_ERROR("ObRemoteFetchWorker not init", K(ret));
+  } else if (OB_FAIL(log_ext_handler_.start(0))) {
+    LOG_WARN("ObLogExtStorageHandler start failed");
   } else if (OB_FAIL(ObThreadPool::start())) {
     LOG_WARN("ObRemoteFetchWorker start failed", K(ret));
   } else {
@@ -151,12 +150,14 @@ int ObRemoteFetchWorker::start()
 void ObRemoteFetchWorker::stop()
 {
   LOG_INFO("ObRemoteFetchWorker thread stop", K_(tenant_id));
+  log_ext_handler_.stop();
   ObThreadPool::stop();
 }
 
 void ObRemoteFetchWorker::wait()
 {
   LOG_INFO("ObRemoteFetchWorker thread wait", K_(tenant_id));
+  log_ext_handler_.wait();
   ObThreadPool::wait();
 }
 
@@ -183,21 +184,31 @@ int ObRemoteFetchWorker::submit_fetch_log_task(ObFetchLogTask *task)
   return ret;
 }
 
-int ObRemoteFetchWorker::modify_thread_count(const int64_t thread_count)
+int ObRemoteFetchWorker::modify_thread_count(const int64_t log_restore_concurrency)
 {
   int ret = OB_SUCCESS;
-  int64_t count = thread_count;
-  if (thread_count < MIN_FETCH_LOG_WORKER_THREAD_COUNT) {
-    count = MIN_FETCH_LOG_WORKER_THREAD_COUNT;
-  } else if (thread_count > MAX_FETCH_LOG_WORKER_THREAD_COUNT) {
-    count = MAX_FETCH_LOG_WORKER_THREAD_COUNT;
-  }
-  if (count == get_thread_count()) {
+  int64_t thread_count = 0;
+  if (OB_FAIL(log_ext_handler_.resize(log_restore_concurrency))) {
+    LOG_WARN("log_ext_handler_ resize failed", K(log_restore_concurrency), K(thread_count));
+  } else if (FALSE_IT(thread_count = calcuate_thread_count_(log_restore_concurrency))) {
+    LOG_WARN("calcuate_thread_count_ failed", K(log_restore_concurrency), K(thread_count));
+  } else if (thread_count == lib::Threads::get_thread_count()) {
     // do nothing
-  } else if (OB_FAIL(set_thread_count(count))) {
+  } else if (OB_FAIL(set_thread_count(thread_count))) {
     LOG_WARN("set thread count failed", K(ret));
   } else {
-    LOG_INFO("set thread count succ", K(count));
+    LOG_INFO("set thread count succ", K(thread_count), K(log_restore_concurrency));
+  }
+  return ret;
+}
+
+int ObRemoteFetchWorker::get_thread_count(int64_t &thread_count) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(! inited_)) {
+    LOG_WARN("ObRemoteFetchWorker not init");
+  } else {
+    thread_count = lib::Threads::get_thread_count();
   }
   return ret;
 }
@@ -228,18 +239,9 @@ void ObRemoteFetchWorker::do_thread_task_()
 {
   int ret = OB_SUCCESS;
   int64_t size = task_queue_.size();
-  if (0 != get_thread_idx() || get_thread_count() <= 1) {
-    for (int64_t i = 0; i < size && OB_SUCC(ret) && !has_set_stop(); i++) {
-      if (OB_FAIL(handle_single_task_())) {
-        LOG_WARN("handle single task failed", K(ret));
-      }
-    }
-  }
-
-  if (0 == get_thread_idx())
-  {
-    if (OB_FAIL(try_consume_data_())) {
-      LOG_WARN("try_consume_data_ failed", K(ret));
+  for (int64_t i = 0; i < size && OB_SUCC(ret) && !has_set_stop(); i++) {
+    if (OB_FAIL(handle_single_task_())) {
+      LOG_WARN("handle single task failed", K(ret));
     }
   }
 
@@ -286,12 +288,14 @@ int ObRemoteFetchWorker::handle_fetch_log_task_(ObFetchLogTask *task)
 {
   int ret = OB_SUCCESS;
   bool empty = true;
+  const int64_t DEFAULT_BUF_SIZE = 64 * 1024 * 1024L;
 
   if (OB_UNLIKELY(! task->is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_ERROR("invalid argument", K(ret), K(task));
   } else if (OB_FAIL(task->iter_.init(tenant_id_, task->id_, task->pre_scn_,
-          task->cur_lsn_, task->end_lsn_, allocator_->get_buferr_pool()))) {
+          task->cur_lsn_, task->end_lsn_, allocator_->get_buferr_pool(),
+          &log_ext_handler_, DEFAULT_BUF_SIZE))) {
     LOG_WARN("ObRemoteLogIterator init failed", K(ret), K_(tenant_id), KPC(task));
   } else if (!need_fetch_log_(task->id_)) {
     LOG_TRACE("no need fetch log", KPC(task));
@@ -316,9 +320,11 @@ int ObRemoteFetchWorker::handle_fetch_log_task_(ObFetchLogTask *task)
     } else {
       LOG_TRACE("pre read data is empty and failed", K(ret), KPC(task));
     }
+    if (! is_fatal_error_(ret)) {
+      task->iter_.update_source_cb();
+    }
     // not encounter fatal error or push submit array succ, just try retire task
     int tmp_ret = OB_SUCCESS;
-    task->iter_.update_source_cb();
     if (OB_SUCCESS != (tmp_ret = try_retire_(task))) {
       LOG_WARN("retire task failed", K(tmp_ret), KP(task));
     }
@@ -342,94 +348,24 @@ bool ObRemoteFetchWorker::need_fetch_log_(const share::ObLSID &id)
   return bret;
 }
 
-int ObRemoteFetchWorker::submit_entries_(ObFetchLogTask &task)
+int ObRemoteFetchWorker::push_submit_array_(ObFetchLogTask &task)
 {
   int ret = OB_SUCCESS;
-  LogGroupEntry entry;
-  const char *buf = NULL;
-  int64_t size = 0;
-  LSN lsn;
   const ObLSID id = task.id_;
-  while (OB_SUCC(ret) && ! has_set_stop()) {
-    bool quota_done = false;
-    if (OB_FAIL(task.iter_.next(entry, lsn, buf, size))) {
-      if (OB_ITER_END != ret) {
-        LOG_WARN("ObRemoteLogIterator next failed", K(task));
-      } else {
-        LOG_TRACE("ObRemoteLogIterator to end", K(task.iter_));
-      }
-    } else if (OB_UNLIKELY(! entry.check_integrity())) {
-      ret = OB_INVALID_DATA;
-      LOG_WARN("entry is invalid", K(entry), K(lsn), K(task));
-    } else if (task.cur_lsn_ > lsn) {
-      LOG_INFO("repeated log, just skip", K(lsn), K(entry), K(task));
-    } else if (OB_FAIL(wait_restore_quota_(entry.get_serialize_size(), quota_done))) {
-      LOG_WARN("wait restore quota failed", K(entry), K(task));
-    } else if (! quota_done) {
-      break;
-    } else if (OB_FAIL(submit_log_(id, task.proposal_id_, lsn,
-            entry.get_scn(), buf, entry.get_serialize_size()))) {
-      LOG_WARN("submit log failed", K(buf), K(entry), K(lsn), K(task));
-    } else {
-      task.cur_lsn_ = lsn + entry.get_serialize_size();
-    }
-  } // while
-  if (OB_ITER_END == ret) {
-    if (lsn.is_valid()) {
-      LOG_INFO("submit_entries_ succ", K(id), K(lsn), K(entry.get_scn()), K(task));
-    }
-    ret = OB_SUCCESS;
-  }
-  return ret;
-}
-
-int ObRemoteFetchWorker::wait_restore_quota_(const int64_t size, bool &done)
-{
-  int ret = OB_SUCCESS;
-  done = false;
-  while (OB_SUCC(ret) && ! done && ! has_set_stop()) {
-    if (OB_FAIL(restore_controller_->get_quota(size, done))) {
-      LOG_WARN("get quota failed");
-    } else if (! done) {
-      if (REACH_TIME_INTERVAL(10 * 1000 * 1000L)) {
-        LOG_INFO("clog disk is not enough, just wait", K(size));
-      } else {
-        LOG_TRACE("get quota succ", K(size));
-      }
-      usleep(100 * 1000L);  // if get quota not done, sleep 100ms
+  DEBUG_SYNC(BEFORE_RESTORE_SERVICE_PUSH_FETCH_DATA);
+  GET_RESTORE_HANDLER_CTX(id) {
+    if (OB_FAIL(restore_handler->submit_sorted_task(task))) {
+      LOG_WARN("submit sort task failed", K(ret), K(task));
     }
   }
   return ret;
 }
 
-int ObRemoteFetchWorker::submit_log_(const ObLSID &id,
-    const int64_t proposal_id,
-    const LSN &lsn,
-    const SCN &scn,
-    const char *buf,
-    const int64_t buf_size)
+bool ObRemoteFetchWorker::is_fatal_error_(const int ret_code) const
 {
-  int ret = OB_SUCCESS;
-  do {
-    GET_RESTORE_HANDLER_CTX(id) {
-      if (OB_FAIL(restore_handler->raw_write(proposal_id, lsn, scn, buf, buf_size))) {
-        if (OB_ERR_OUT_OF_LOWER_BOUND == ret) {
-          ret = OB_SUCCESS;
-        } else if (OB_RESTORE_LOG_TO_END == ret) {
-          // do nothing
-        } else {
-          LOG_WARN("raw write failed", K(ret), K(id), K(lsn), K(buf), K(buf_size));
-        }
-      }
-    }
-  } while (OB_LOG_OUTOF_DISK_SPACE == ret && ! has_set_stop());
-  // submit log until successfully if which can succeed with retry
-  // except NOT MASTER or OTHER FATAL ERROR
-
-  if (OB_ERR_UNEXPECTED == ret) {
-    report_error_(id, ret, lsn, ObLogRestoreErrorContext::ErrorType::SUBMIT_LOG);
-  }
-  return ret;
+  return OB_ARCHIVE_ROUND_NOT_CONTINUOUS == ret_code
+    || OB_ARCHIVE_LOG_RECYCLED == ret_code
+    || OB_INVALID_BACKUP_DEST == ret_code;
 }
 
 int ObRemoteFetchWorker::try_retire_(ObFetchLogTask *&task)
@@ -442,7 +378,6 @@ int ObRemoteFetchWorker::try_retire_(ObFetchLogTask *&task)
     } else if (done) {
       inner_free_task_(*task);
       task = NULL;
-      restore_service_->signal();
     } else {
       if (OB_FAIL(submit_fetch_log_task(task))) {
         LOG_ERROR("submit fetch log task failed", K(ret), KPC(task));
@@ -460,129 +395,10 @@ int ObRemoteFetchWorker::try_retire_(ObFetchLogTask *&task)
   return ret;
 }
 
-int ObRemoteFetchWorker::push_submit_array_(ObFetchLogTask &task)
-{
-  int ret = OB_SUCCESS;
-  const ObLSID id = task.id_;
-  DEBUG_SYNC(BEFORE_RESTORE_SERVICE_PUSH_FETCH_DATA);
-  GET_RESTORE_HANDLER_CTX(id) {
-    if (OB_FAIL(restore_handler->submit_sorted_task(task))) {
-      LOG_WARN("submit sort task failed", K(ret), K(task));
-    }
-  }
-  return ret;
-}
-
-int ObRemoteFetchWorker::try_consume_data_()
-{
-  int ret = OB_SUCCESS;
-  if (0 != get_thread_idx()) {
-    // do nothing
-  } else if (OB_FAIL(do_consume_data_())) {
-    LOG_WARN("do consume data failed", K(ret));
-  }
-  return ret;
-}
-
-int ObRemoteFetchWorker::do_consume_data_()
-{
-  int ret = OB_SUCCESS;
-  ObFetchLogTask *task = NULL;
-  ObLS *ls = NULL;
-  ObLSIterator *iter = NULL;
-  common::ObSharedGuard<ObLSIterator> guard;
-  if (OB_FAIL(ls_svr_->get_ls_iter(guard, ObLSGetMod::LOG_MOD))) {
-    LOG_WARN("get ls iter failed", K(ret));
-  } else if (OB_ISNULL(iter = guard.get_ptr())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("iter is NULL", K(ret), K(iter));
-  } else {
-    while (OB_SUCC(ret) && ! has_set_stop()) {
-     ls = NULL;
-     if (OB_FAIL(iter->get_next(ls))) {
-       if (OB_ITER_END != ret) {
-         LOG_WARN("iter ls get next failed", K(ret));
-       } else {
-         LOG_TRACE("iter to end", K(ret));
-       }
-      } else if (OB_ISNULL(ls)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_ERROR("ls is NULL", K(ret), K(ls));
-      } else if (OB_FAIL(foreach_ls_(ls->get_ls_id()))) {
-        LOG_WARN("foreach ls failed", K(ret), K(ls));
-      }
-    }
-    // rewrite ret code
-    if (OB_ITER_END == ret) {
-      ret = OB_SUCCESS;
-    }
-  }
-
-  return ret;
-}
-
-int ObRemoteFetchWorker::foreach_ls_(const ObLSID &id)
-{
-  int ret = OB_SUCCESS;
-  const int64_t MAX_TASK_COUNT = 6;  // max task count for single turn
-  ObFetchLogTask *task = NULL;
-  for (int64_t i = 0; i < MAX_TASK_COUNT && OB_SUCC(ret); i++) {
-    GET_RESTORE_HANDLER_CTX(id) {
-      task = NULL;
-      // get task only if it is in turn
-      if (OB_FAIL(restore_handler->get_next_sorted_task(task))) {
-        if (OB_NOT_MASTER == ret) {
-          // do nothing
-          LOG_TRACE("ls not master, just skip", K(ret), K(id));
-        } else {
-          LOG_WARN("get sorted task failed", K(ret), K(id));
-        }
-      } else if (NULL == task) {
-        break;
-      } else if (OB_FAIL(submit_entries_(*task))) {
-        if (OB_RESTORE_LOG_TO_END != ret) {
-          LOG_WARN("submit_entries_ failed", K(ret), KPC(task));
-        }
-      }
-
-      // try retire task, if task is consumed done or stale, free it,
-      // otherwise push_back to task_queue_
-      if (NULL != task) {
-        int tmp_ret = OB_SUCCESS;
-        task->iter_.update_source_cb();
-        if (OB_SUCCESS != (tmp_ret = try_retire_(task))) {
-          LOG_WARN("retire task failed", K(tmp_ret), KP(task));
-        }
-      }
-    }
-  }
-  // rewrite ret code
-  ret = OB_SUCCESS;
-  return ret;
-}
-
 void ObRemoteFetchWorker::inner_free_task_(ObFetchLogTask &task)
 {
   task.reset();
   mtl_free(&task);
-}
-
-bool ObRemoteFetchWorker::is_retry_ret_code_(const int ret_code) const
-{
-  return OB_ITER_END == ret_code
-    || OB_NOT_MASTER == ret_code
-    || OB_EAGAIN == ret_code
-    || OB_ALLOCATE_MEMORY_FAILED == ret_code
-    || OB_LS_NOT_EXIST == ret_code
-    || OB_ENTRY_NOT_EXIST == ret_code
-    || is_io_error(ret_code);
-}
-
-bool ObRemoteFetchWorker::is_fatal_error_(const int ret_code) const
-{
-  return OB_ARCHIVE_ROUND_NOT_CONTINUOUS == ret_code
-    || OB_ARCHIVE_LOG_RECYCLED == ret_code
-    || OB_INVALID_BACKUP_DEST == ret_code;
 }
 
 void ObRemoteFetchWorker::report_error_(const ObLSID &id,
@@ -594,6 +410,15 @@ void ObRemoteFetchWorker::report_error_(const ObLSID &id,
   GET_RESTORE_HANDLER_CTX(id) {
     restore_handler->mark_error(*ObCurTraceId::get_trace_id(), ret_code, lsn, error_type);
   }
+}
+
+int64_t ObRemoteFetchWorker::calcuate_thread_count_(const int64_t log_restore_concurrency)
+{
+  int64_t thread_count = 0;
+  int64_t recommend_concurrency_in_single_file = log_ext_handler_.get_recommend_concurrency_in_single_file();
+  thread_count = static_cast<int64_t>(
+    log_restore_concurrency + recommend_concurrency_in_single_file - 1) / recommend_concurrency_in_single_file;
+  return thread_count;
 }
 
 } // namespace logservice

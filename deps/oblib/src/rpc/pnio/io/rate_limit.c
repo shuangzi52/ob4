@@ -27,19 +27,19 @@ void rl_sock_push(rl_impl_t* rl_impl, sock_t* sk) {
 }
 
 static int handle_rl_sock_read_event(eloop_t* ep, sock_t* s, rl_impl_t* rl, int64_t* avail_bytes) {
-  int handle_err = 0;
+  int err = 0;
   if ((handle_event_t)pkts_sk_handle_event == s->handle_event) {
-    handle_err = pkts_sk_consume((pkts_sk_t*)s, get_epoll_handle_time_limit(), avail_bytes);
+    err = pkts_sk_consume((pkts_sk_t*)s, get_epoll_handle_time_limit(), avail_bytes);
   } else if ((handle_event_t)pktc_sk_handle_event == s->handle_event) {
-    handle_err = pktc_sk_consume((pktc_sk_t*)s, get_epoll_handle_time_limit(), avail_bytes);
+    err = pktc_sk_consume((pktc_sk_t*)s, get_epoll_handle_time_limit(), avail_bytes);
   } else {
-    handle_err = -EIO;
-    rk_error("unexpect socket struct:%p, s->handle_event=%p", s, s->handle_event);
+    err = -EIO;
+    rk_error("[ratelimit] unexpect socket struct:%p, s->handle_event=%p", s, s->handle_event);
   }
-  if (handle_err == EAGAIN && *avail_bytes <= 0) {
-    handle_err = 0; // not real EAGIAN
+  if (err == EAGAIN && *avail_bytes <= 0) {
+    err = 0; // not real EAGIAN
   }
-  return handle_err;
+  return err;
 }
 
 static int rl_timerfd_handle_event(rl_timerfd_t* s) {
@@ -54,7 +54,8 @@ static int rl_timerfd_handle_event(rl_timerfd_t* s) {
   if (read_start_time < pn->next_readable_time) {
     // rate-limitted
   } else if ((rl->bw = LOAD(&pn_grp->rx_bw)) <= 0) {
-    // not to read data
+    // not to read any data and check pn_grp->rx_bw again after 1 second
+    pn->next_readable_time = read_start_time + 1000000;
   } else if (RATE_UNLIMITED == rl->bw) {
     // socket should be handled in normal queue when ratelimit disabled
     dlink_for(rl_queue, p) {
@@ -64,7 +65,10 @@ static int rl_timerfd_handle_event(rl_timerfd_t* s) {
     }
   } else {
     // read data
-    int64_t avail_bytes = rl->bw / (1000000/RL_SLEEP_TIME_US);
+    int64_t avail_bytes = rl->bw * 0.1 + 1;
+    if (avail_bytes > 65536) {
+      avail_bytes = 65536; // read only up to 64k once
+    }
     int64_t temp_bytes = avail_bytes;
     int rl_err = 0;
     dlink_t* last_dlink = rl_queue->prev;
@@ -96,20 +100,16 @@ static int rl_timerfd_handle_event(rl_timerfd_t* s) {
     temp_bytes = temp_bytes - avail_bytes;
     if (temp_bytes <= 0) {
       // all sockets are unreadable, do nothing
-      rk_info("all sockets are unreadable, now the rl_link queue is empty: %d", dlink_is_empty(rl_queue));
+      rk_info("[ratelimit] all sockets are unreadable, now the rl_link queue is empty: %d", dlink_is_empty(rl_queue));
     } else {
-      double rx_bw_per_us= rl->bw/1000000.0;
       int64_t wait_time_us = (temp_bytes * 1000000)/rl->bw + 1;
-      rk_debug("wait_time_us=%ld, temp_bytes=%ld, avail_bytes=%ld", wait_time_us, temp_bytes, avail_bytes);
+      rk_debug("[ratelimit] wait_time_us=%ld, next_readable_time=%ld, temp_bytes=%ld, avail_bytes=%ld", wait_time_us, pn->next_readable_time, temp_bytes, avail_bytes);
+      pn->next_readable_time = AAF(&pn_grp->next_readable_time, wait_time_us);
       int64_t read_finish_time = rk_get_us();
-      if (LOAD(&pn_grp->next_readable_time) < read_finish_time) {
+      if (pn->next_readable_time < read_finish_time - 1000000) { // 1s time compensation
+        rk_info("[ratelimit] update global next_readable_time as %ld, pn->next_readable_time=%ld", read_finish_time, pn->next_readable_time);
         STORE(&pn_grp->next_readable_time, read_finish_time);
       }
-      pn->next_readable_time = AAF(&pn_grp->next_readable_time, wait_time_us);
-      // int64_t read_finish_time = rk_get_us();
-      // if (pn->next_readable_time < read_finish_time) {
-      //   STORE(&pn_grp->next_readable_time, read_finish_time);
-      // }
     }
   }
   if (!dlink_is_empty(rl_queue)) {

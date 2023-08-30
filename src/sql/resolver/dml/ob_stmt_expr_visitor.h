@@ -181,6 +181,8 @@ public:
   int add_replace_exprs(const ObIArray<ObRawExpr *> &from_exprs,
                         const ObIArray<ObRawExpr *> &to_exprs,
                         const ObIArray<ObRawExpr *> *skip_exprs = NULL);
+  void set_skip_bool_param_mysql(bool skip) { replacer_.set_skip_bool_param_mysql(skip); }
+  bool is_skip_bool_param_mysql() { return replacer_.is_skip_bool_param_mysql(); }
 private:
   int add_skip_expr(const ObRawExpr *skip_expr);
   int check_expr_need_skip(const ObRawExpr *skip_expr, bool &need_skip);
@@ -205,18 +207,16 @@ class ObSharedExprChecker : public ObStmtExprVisitor
 {
 public:
   ObSharedExprChecker() : stmt_expr_set_(NULL),
-                          shared_expr_set_(),
-                          ignore_column_(false) {}
+                          shared_expr_set_() {}
 
   virtual int do_visit(ObRawExpr *&expr) override;
 
-  int init(ObDMLStmt &stmt, bool ignore_column = false);
+  int init(ObDMLStmt &stmt);
   int destroy();
   int is_shared_expr(const ObRawExpr *expr, bool &is_shared) const;
 private:
   hash::ObHashSet<uint64_t> *stmt_expr_set_;
   hash::ObHashSet<uint64_t> shared_expr_set_;
-  bool ignore_column_;
 };
 
 class ObStmtExecParamFormatter : public ObStmtExprVisitor

@@ -14,6 +14,7 @@
 
 #include "rootserver/freeze/ob_zone_merge_manager.h"
 
+#include "share/config/ob_server_config.h"
 #include "share/ob_freeze_info_proxy.h"
 #include "share/ob_zone_merge_table_operator.h"
 #include "share/ob_global_merge_table_operator.h"
@@ -62,6 +63,8 @@ int ObZoneMergeManagerBase::reload()
 {
   int ret = OB_SUCCESS;
 
+  LOG_INFO("start to reload zone_merge_mgr", K_(tenant_id), K_(is_loaded), K_(global_merge_info),
+            "zone_merge_infos", ObArrayWrap<ObZoneMergeInfo>(zone_merge_infos_, zone_count_));
   ObSEArray<ObZone, DEFAULT_ZONE_COUNT> zone_list;
   HEAP_VAR(ObGlobalMergeInfo, global_merge_info) {
     ObMalloc alloc(ObModIds::OB_TEMP_VARIABLES);
@@ -99,7 +102,7 @@ int ObZoneMergeManagerBase::reload()
     }
 
     if (OB_SUCC(ret)) {
-      reset_merge_info();
+      reset_merge_info_without_lock();
       if (OB_FAIL(global_merge_info_.assign(global_merge_info))) {
         LOG_WARN("fail to assign", KR(ret), K(global_merge_info));
       }
@@ -130,13 +133,17 @@ int ObZoneMergeManagerBase::try_reload()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), K_(tenant_id));
   } else if (is_loaded_) {
+    if (TC_REACH_TIME_INTERVAL(5 * 60 * 1000 * 1000)) { // 5min
+      FLOG_INFO("zone_merge_mgr is already loaded", K_(tenant_id), K_(global_merge_info),
+                "zone_merge_infos", ObArrayWrap<ObZoneMergeInfo>(zone_merge_infos_, zone_count_));
+    }
   } else if (OB_FAIL(reload())) {
     LOG_WARN("fail to reload", KR(ret), K_(tenant_id));
   }
   return ret;
 }
 
-void ObZoneMergeManagerBase::reset_merge_info()
+void ObZoneMergeManagerBase::reset_merge_info_without_lock()
 {
   zone_count_ = 0;
   global_merge_info_.reset();
@@ -570,7 +577,8 @@ int ObZoneMergeManagerBase::check_need_broadcast(
     LOG_WARN("invalid argument", KR(ret), K_(tenant_id), K(frozen_scn));
   } else if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("fail to check inner stat", KR(ret), K_(tenant_id));
-  } else if (global_merge_info_.frozen_scn() < frozen_scn) {
+  } else if ((global_merge_info_.frozen_scn() < frozen_scn)
+             && GCONF.enable_major_freeze) { // require enable_major_freeze = true
     need_broadcast = true;
   }
   return ret;
@@ -1522,6 +1530,19 @@ int ObZoneMergeManager::adjust_global_merge_info(const int64_t expected_epoch)
     }
   }
   return ret;
+}
+
+void ObZoneMergeManager::reset_merge_info()
+{
+  int ret = OB_SUCCESS;
+  SpinWLockGuard guard(write_lock_);
+  {
+    ObZoneMergeMgrGuard shadow_guard(lock_,
+      *(static_cast<ObZoneMergeManagerBase *> (this)), shadow_, ret);
+    if (OB_SUCC(ret)) {
+      shadow_.reset_merge_info_without_lock();
+    }
+  }
 }
 
 } // namespace rootserver

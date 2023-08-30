@@ -538,7 +538,6 @@ int LogEngine::submit_purge_throttling_task(const PurgeThrottlingType purge_type
 int LogEngine::append_log(const LSN &lsn, const LogWriteBuf &write_buf, const SCN &scn)
 {
   int ret = OB_SUCCESS;
-  ObTimeGuard time_guard("append_log", 100);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     PALF_LOG(ERROR, "LogEngine not inited!!!", K(ret), K_(palf_id), K_(is_inited));
@@ -551,7 +550,6 @@ int LogEngine::append_log(const LSN &lsn, const LogWriteBuf &write_buf, const SC
     PALF_LOG(
         TRACE, "LogEngine append_log success", K(ret), K_(palf_id), K_(is_inited), K(lsn), K(write_buf), K(scn));
   }
-  time_guard.click("append_log");
   return ret;
 }
 
@@ -786,6 +784,8 @@ int LogEngine::get_total_used_disk_space(int64_t &total_used_size_byte,
   block_id_t max_block_id = LOG_INVALID_BLOCK_ID;
   int64_t log_storage_used = 0;
   int64_t meta_storage_used = 0;
+  int64_t log_storage_logical_block_size = 0;
+  int64_t meta_storage_logical_block_size = 0;
   // calc log storage used
   if (OB_FAIL(get_block_id_range(min_block_id, max_block_id))
       && OB_ENTRY_NOT_EXIST != ret) {
@@ -793,10 +793,14 @@ int LogEngine::get_total_used_disk_space(int64_t &total_used_size_byte,
   } else if (OB_ENTRY_NOT_EXIST == ret) {
     log_storage_used = 0;
     ret = OB_SUCCESS;
+  } else if (OB_FAIL(log_storage_.get_logical_block_size(log_storage_logical_block_size))) {
+    PALF_LOG(WARN, "LogStorage get_logical_block_size failed", KPC(this));
+  } else if (OB_FAIL(log_meta_storage_.get_logical_block_size(meta_storage_logical_block_size))) {
+    PALF_LOG(WARN, "MetaStorage get_logical_block_size failed", KPC(this));
   } else {
     //usage calculation should be precise to avoid stopping writing when actually no need
-    log_storage_used = (max_block_id - min_block_id) * (PALF_BLOCK_SIZE + MAX_INFO_BLOCK_SIZE)
-      + lsn_2_offset(log_storage_.get_end_lsn(), PALF_BLOCK_SIZE) + MAX_INFO_BLOCK_SIZE;
+    log_storage_used = (max_block_id - min_block_id) * (log_storage_logical_block_size + MAX_INFO_BLOCK_SIZE)
+      + lsn_2_offset(log_storage_.get_end_lsn(), log_storage_logical_block_size) + MAX_INFO_BLOCK_SIZE;
     PALF_LOG(TRACE, "log_storage_used size", K(min_block_id), K(max_block_id), K(log_storage_used));
   }
   // calc meta storage used
@@ -804,7 +808,7 @@ int LogEngine::get_total_used_disk_space(int64_t &total_used_size_byte,
   } else if (OB_FAIL(log_meta_storage_.get_block_id_range(min_block_id, max_block_id))) {
     PALF_LOG(WARN, "get_block_id_range failed", K(ret), KPC(this));
   } else {
-    meta_storage_used = PALF_META_BLOCK_SIZE + MAX_INFO_BLOCK_SIZE;
+    meta_storage_used = meta_storage_logical_block_size + MAX_INFO_BLOCK_SIZE;
     total_used_size_byte = log_storage_used + meta_storage_used;
 
     const int64_t unrecyclable_meta_size = meta_storage_used;
@@ -1004,6 +1008,21 @@ int LogEngine::submit_config_change_pre_check_req(const common::ObAddr &server,
   return ret;
 }
 
+#ifdef OB_BUILD_ARBITRATION
+int LogEngine::sync_get_arb_member_info(const common::ObAddr &server,
+                                        const int64_t timeout_us,
+                                        LogGetArbMemberInfoResp &resp)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else {
+    ret = log_net_service_.submit_get_arb_member_info_req(
+        server, timeout_us, resp);
+  }
+  return ret;
+}
+#endif
 
 int LogEngine::submit_fetch_log_req(const ObAddr &server,
                                     const FetchLogType fetch_type,
@@ -1021,6 +1040,24 @@ int LogEngine::submit_fetch_log_req(const ObAddr &server,
     ret = log_net_service_.submit_fetch_log_req(
         server, fetch_type, msg_proposal_id, prev_lsn, lsn,
         fetch_log_size, fetch_log_count, accepted_mode_pid);
+  }
+  return ret;
+}
+
+int LogEngine::submit_batch_fetch_log_resp(const common::ObAddr &server,
+                                           const int64_t msg_proposal_id,
+                                           const int64_t prev_log_proposal_id,
+                                           const LSN &prev_lsn,
+                                           const LSN &curr_lsn,
+                                           const LogWriteBuf &write_buf)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else {
+    ret = log_net_service_.submit_batch_fetch_log_resp(
+        server, msg_proposal_id, prev_log_proposal_id,
+        prev_lsn, curr_lsn, write_buf);
   }
   return ret;
 }
@@ -1428,12 +1465,16 @@ int LogEngine::try_clear_up_holes_and_check_storage_integrity_(
   const LSN base_lsn = log_meta_.get_log_snapshot_meta().base_lsn_;
   const LogInfo prev_log_info = log_meta_.get_log_snapshot_meta().prev_log_info_;
   const bool prev_log_info_is_valid = prev_log_info.is_valid();
-  const block_id_t base_block_id = lsn_2_block(base_lsn, PALF_BLOCK_SIZE);
   // 'expected_next_block_id': ethier it's the empty block or not exist.
+  block_id_t base_block_id = LOG_INVALID_BLOCK_ID;
   block_id_t min_block_id = LOG_INVALID_BLOCK_ID;
   block_id_t max_block_id = LOG_INVALID_BLOCK_ID;
-
-  if (OB_FAIL(log_storage_.get_block_id_range(min_block_id, max_block_id))
+  int64_t logical_block_size = 0;
+  const LSN log_storage_tail = log_storage_.get_end_lsn();
+  if (OB_FAIL(log_storage_.get_logical_block_size(logical_block_size))) {
+    PALF_LOG(WARN, "get_logical_block_size failed", K(ret), K_(palf_id), K_(is_inited));
+  } else if (FALSE_IT(base_block_id = lsn_2_block(base_lsn, logical_block_size))) {
+  } else if (OB_FAIL(log_storage_.get_block_id_range(min_block_id, max_block_id))
       && OB_ENTRY_NOT_EXIST != ret) {
     PALF_LOG(ERROR, "get_block_id_range failed", K(ret), K_(palf_id), K_(is_inited));
   } else if (OB_ENTRY_NOT_EXIST == ret) {
@@ -1449,7 +1490,10 @@ int LogEngine::try_clear_up_holes_and_check_storage_integrity_(
     } else {
       ret = OB_SUCCESS;
     }
-  } else if (!last_group_entry_header.is_valid()) {
+    // If log_storage_ is not empty but last_group_entry_header is invalid, unexpected error.
+    // For rebuild, the base_lsn may be greater than the log_tail of LogStorage because we
+    // update LogSnapshotMeta firstly.
+  } else if (log_storage_.get_end_lsn() != base_lsn && !last_group_entry_header.is_valid()) {
     ret = OB_ERR_UNEXPECTED;
     PALF_LOG(ERROR, "unexpected error, LogStorage are not empty bus last log entry is invalid",
         K(last_entry_begin_lsn), K(expected_next_block_id), K(last_group_entry_header));

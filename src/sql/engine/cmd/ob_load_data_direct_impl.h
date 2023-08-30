@@ -92,13 +92,15 @@ private:
       store_column_idxs_; // Mapping of stored columns to source data columns
   };
 
-  struct LoadExecuteContext : public observer::ObTableLoadExecCtx
+  struct LoadExecuteContext
   {
   public:
     LoadExecuteContext();
     bool is_valid() const;
-    TO_STRING_KV(KP_(exec_ctx), KP_(allocator), KP_(direct_loader), KP_(job_stat), KP_(logger));
+    TO_STRING_KV(K_(exec_ctx), KP_(allocator), KP_(direct_loader), KP_(job_stat), KP_(logger));
   public:
+    observer::ObTableLoadSqlExecCtx exec_ctx_;
+    common::ObIAllocator *allocator_;
     observer::ObTableLoadInstance *direct_loader_;
     sql::ObLoadDataStat *job_stat_;
     Logger *logger_;
@@ -153,7 +155,7 @@ private:
     int copy(const ObLoadFileIterator &file_iter);
     int copy(const DataDescIterator &desc_iter);
     int add_data_desc(const DataDesc &data_desc);
-    int get_next_data_desc(DataDesc &data_desc);
+    int get_next_data_desc(DataDesc &data_desc, int64_t &pos);
     TO_STRING_KV(K_(data_descs), K_(pos));
   private:
     common::ObSEArray<DataDesc, 64> data_descs_;
@@ -335,16 +337,20 @@ private:
 
   struct TaskHandle
   {
+  public:
     TaskHandle()
       : task_id_(common::OB_INVALID_ID), worker_idx_(-1), session_id_(0), start_line_no_(0)
     {
     }
+    table::ObTableLoadSequenceNo get_next_seq_no () { return sequence_no_ ++ ; }
+  public:
     int64_t task_id_;
     DataBuffer data_buffer_;
     int64_t worker_idx_; // parse thread idx
     int32_t session_id_; // table load session id
     DataDesc data_desc_;
     int64_t start_line_no_; // 从1开始
+    table::ObTableLoadSequenceNo sequence_no_;
     TaskResult result_;
     TO_STRING_KV(K_(task_id), K_(data_buffer), K_(worker_idx), K_(session_id), K_(data_desc),
                  K_(start_line_no), K_(result));
@@ -427,6 +433,8 @@ private:
     DataBuffer expr_buffer_;
     DataReader data_reader_;
     int64_t next_worker_idx_;
+    int64_t next_chunk_id_;
+    int64_t total_line_no_;
     DISALLOW_COPY_AND_ASSIGN(LargeFileLoadExecutor);
   };
 

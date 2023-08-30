@@ -26,7 +26,6 @@
 #include "lib/profile/ob_perf_event.h"
 #include "share/schema/ob_table_dml_param.h"
 #include "share/ob_tablet_autoincrement_service.h"
-#include "sql/engine/cmd/ob_table_direct_insert_service.h"
 
 
 namespace oceanbase
@@ -154,11 +153,6 @@ OB_INLINE int ObTableInsertOp::open_table_for_each()
       const ObInsCtDef &ins_ctdef = *ctdefs.at(j);
       if (OB_FAIL(ObDMLService::init_ins_rtdef(dml_rtctx_, ins_rtdef, ins_ctdef, trigger_clear_exprs_))) {
         LOG_WARN("init insert rtdef failed", K(ret));
-      } else {
-        const ObPhysicalPlan *plan = GET_PHY_PLAN_CTX(ctx_)->get_phy_plan();
-        if (plan->get_enable_append() && (0 != plan->get_append_table_id())) {
-          ins_rtdef.das_rtdef_.direct_insert_task_id_ = 1;
-        }
       }
     }
     if (OB_SUCC(ret) && !rtdefs.empty()) {
@@ -235,7 +229,7 @@ void ObTableInsertOp::record_err_for_load_data(int err_ret, int row_num)
 OB_INLINE int ObTableInsertOp::insert_row_to_das()
 {
   int ret = OB_SUCCESS;
-  int64_t savepoint_no = 0;
+  transaction::ObTxSEQ savepoint_no;
   NG_TRACE(insert_start);
   // first get next row from child operator
   ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
@@ -405,16 +399,6 @@ int ObTableInsertOp::inner_open()
   } else if (OB_FAIL(inner_open_with_das())) {
     LOG_WARN("inner open with das failed", K(ret));
   }
-  if (OB_SUCC(ret)) {
-    const ObPhysicalPlan *plan = GET_PHY_PLAN_CTX(ctx_)->get_phy_plan();
-    if (ObTableDirectInsertService::is_direct_insert(*plan)) {
-      int64_t task_id = 1;
-      if (OB_FAIL(ObTableDirectInsertService::open_task(plan->get_append_table_id(), task_id))) {
-        LOG_WARN("failed to open table direct insert task", KR(ret),
-            K(plan->get_append_table_id()), K(task_id));
-      }
-    }
-  }
   return ret;
 }
 
@@ -437,14 +421,6 @@ int ObTableInsertOp::inner_close()
 {
   NG_TRACE(insert_close);
   int ret = OB_SUCCESS;
-  const ObPhysicalPlan *plan = GET_PHY_PLAN_CTX(ctx_)->get_phy_plan();
-  if (ObTableDirectInsertService::is_direct_insert(*plan)) {
-    int64_t task_id = 1;
-    if (OB_FAIL(ObTableDirectInsertService::close_task(plan->get_append_table_id(), task_id))) {
-      LOG_WARN("failed to close table direct insert task", KR(ret),
-          K(plan->get_append_table_id()), K(task_id));
-    }
-  }
   if (OB_FAIL(close_table_for_each())) {
     LOG_WARN("close table for each failed", K(ret));
   }
@@ -455,15 +431,20 @@ int ObTableInsertOp::inner_close()
 OB_INLINE int ObTableInsertOp::close_table_for_each()
 {
   int ret = OB_SUCCESS;
-  for (int64_t i = 0; OB_SUCC(ret) && i < ins_rtdefs_.count(); ++i) {
-    if (!ins_rtdefs_.at(i).empty()) {
-      const ObInsCtDef &primary_ins_ctdef = *MY_SPEC.ins_ctdefs_.at(i).at(0);
-      ObInsRtDef &primary_ins_rtdef = ins_rtdefs_.at(i).at(0);
-      if (OB_FAIL(ObDMLService::process_after_stmt_trigger(primary_ins_ctdef,
-                                                           primary_ins_rtdef,
-                                                           dml_rtctx_,
-                                                           ObDmlEventType::DE_INSERTING))) {
-        LOG_WARN("process after stmt trigger failed", K(ret));
+  if (OB_SUCCESS == ctx_.get_errcode()) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < ins_rtdefs_.count(); ++i) {
+      if (!ins_rtdefs_.at(i).empty()) {
+        const ObInsCtDef &primary_ins_ctdef = *MY_SPEC.ins_ctdefs_.at(i).at(0);
+        ObInsRtDef &primary_ins_rtdef = ins_rtdefs_.at(i).at(0);
+        if (OB_NOT_NULL(primary_ins_rtdef.das_rtdef_.table_loc_)) {
+          primary_ins_rtdef.das_rtdef_.table_loc_->is_writing_ = false;
+        }
+        if (OB_FAIL(ObDMLService::process_after_stmt_trigger(primary_ins_ctdef,
+                                                             primary_ins_rtdef,
+                                                             dml_rtctx_,
+                                                             ObDmlEventType::DE_INSERTING))) {
+          LOG_WARN("process after stmt trigger failed", K(ret));
+        }
       }
     }
   }

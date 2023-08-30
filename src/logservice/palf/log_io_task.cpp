@@ -114,6 +114,11 @@ bool LogIOTask::need_purge_throttling()
   return need_purge_throttling_();
 }
 
+int64_t LogIOTask::get_init_task_ts()
+{
+  return init_task_ts_;
+}
+
 void LogIOTask::free_this(IPalfEnvImpl *palf_env_impl)
 {
   return free_this_(palf_env_impl);
@@ -518,6 +523,7 @@ BatchLogIOFlushLogTask::BatchLogIOFlushLogTask()
       scn_array_(),
       lsn_array_(),
       palf_id_(INVALID_PALF_ID),
+      accum_in_queue_time_(0),
       is_inited_(false)
 {}
 
@@ -623,7 +629,7 @@ int BatchLogIOFlushLogTask::push_flush_cb_to_thread_pool_(int tg_id, IPalfEnvImp
       LogIOFlushLogTask *io_task = io_task_array_[i];
       if (NULL == io_task) {
         PALF_LOG(WARN, "io_task is nullptr, may be its' epoch has changed", K(ret), KP(io_task),
-                 KPC(this));
+            KPC(this));
       } else if (FALSE_IT(io_task->push_cb_into_cb_pool_ts_ = current_time)) {
       } else if (OB_FAIL(push_task_into_cb_thread_pool(tg_id, io_task))) {
         // avoid memory leak when push task into cb thread pool failed.
@@ -646,6 +652,7 @@ int BatchLogIOFlushLogTask::do_task_(int tg_id, IPalfEnvImpl *palf_env_impl)
   int64_t palf_epoch = -1;
   IPalfHandleImplGuard guard;
   LSN flushed_log_end_lsn;
+  const int64_t first_handle_ts = ObTimeUtility::fast_current_time();
   if (OB_FAIL(palf_env_impl->get_palf_handle_impl(palf_id_, guard))) {
     PALF_LOG(WARN, "IPalfEnvImpl get_palf_handle_impl failed", K(ret), K(palf_id_));
   } else if (OB_FAIL(guard.get_palf_handle_impl()->get_palf_epoch(palf_epoch))) {
@@ -671,6 +678,7 @@ int BatchLogIOFlushLogTask::do_task_(int tg_id, IPalfEnvImpl *palf_env_impl)
         PALF_LOG(ERROR, "lsn_array_ push_back failed, unexpected error!!!", K(ret), KPC(this),
                  KPC(io_task));
       } else {
+        accum_in_queue_time_ += first_handle_ts - io_task->get_init_task_ts();
         has_valid_data = true;
         flushed_log_end_lsn = io_task->flush_log_cb_ctx_.lsn_ + io_task->write_buf_.get_total_size();
       }

@@ -279,7 +279,7 @@ int ObLogSubPlanFilter::get_re_est_cost_infos(const EstimateCostInfo &param,
     if (OB_ISNULL(child)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("set operator i-th child is null", K(ret), K(i));
-    } else if (cur_param.assign(param)) {
+    } else if (OB_FAIL(cur_param.assign(param))) {
       LOG_WARN("failed to assign param", K(ret));
     } else if (0 != i && OB_FALSE_IT(cur_param.need_row_count_ = -1)) {
     } else if (OB_FAIL(SMART_CALL(get_child(i)->re_est_cost(cur_param, cur_child_card, cur_child_cost)))) {
@@ -377,15 +377,15 @@ int ObLogSubPlanFilter::compute_sharding_info()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(get_plan()), K(ret));
   } else if (DistAlgo::DIST_BASIC_METHOD == dist_algo_) {
+    ObShardingInfo *sharding = NULL;
     if (OB_FAIL(ObOptimizerUtil::compute_basic_sharding_info(
                                     get_plan()->get_optimizer_context().get_local_server_addr(),
                                     get_child_list(),
                                     get_plan()->get_allocator(),
                                     dup_table_pos_,
-                                    strong_sharding_))) {
+                                    strong_sharding_,
+                                    inherit_sharding_index_))) {
       LOG_WARN("failed to compute basic sharding info", K(ret));
-    } else {
-      inherit_sharding_index_ = ObLogicalOperator::first_child;
     }
   } else if (DistAlgo::DIST_PULL_TO_LOCAL == dist_algo_) {
     strong_sharding_ = get_plan()->get_optimizer_context().get_local_sharding();
@@ -584,16 +584,14 @@ int ObLogSubPlanFilter::allocate_startup_expr_post()
   return ret;
 }
 
-int ObLogSubPlanFilter::inner_replace_op_exprs(
-    const ObIArray<std::pair<ObRawExpr *, ObRawExpr *> > &to_replace_exprs)
+int ObLogSubPlanFilter::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < exec_params_.count(); ++i) {
     if (OB_ISNULL(exec_params_.at(i))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("exec param is null", K(ret));
-    } else if (OB_FAIL(replace_expr_action(to_replace_exprs,
-                                           exec_params_.at(i)->get_ref_expr()))) {
+    } else if (OB_FAIL(replace_expr_action(replacer, exec_params_.at(i)->get_ref_expr()))) {
       LOG_WARN("failed to replace expr action", K(ret));
     }
   }
@@ -614,8 +612,7 @@ int ObLogSubPlanFilter::allocate_subquery_id()
   return ret;
 }
 
-int ObLogSubPlanFilter::replace_nested_subquery_exprs(
-    const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>> &to_replace_exprs)
+int ObLogSubPlanFilter::replace_nested_subquery_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
   ObLogPlan *plan = NULL;
@@ -627,7 +624,7 @@ int ObLogSubPlanFilter::replace_nested_subquery_exprs(
     ObRawExpr *expr = subquery_exprs_.at(i);
     if (ObOptimizerUtil::find_item(plan->get_onetime_query_refs(), expr)) {
       // do not replace onetime expr ref query, only adjust nested subquery
-    } else if (OB_FAIL(replace_expr_action(to_replace_exprs, expr))) {
+    } else if (OB_FAIL(replace_expr_action(replacer, expr))) {
       LOG_WARN("failed to replace nested subquery expr", K(ret));
     } else if (expr == subquery_exprs_.at(i)) {
       // do nothing

@@ -29,7 +29,7 @@ namespace oceanbase
 {
 namespace logservice
 {
-
+class ObLogService;
 class ObServerLogBlockMgr : public palf::ILogBlockPool
 {
 public:
@@ -187,14 +187,14 @@ public:
   // @brief before 'update_tenant_log_disk_size' in ObMultiTenant, need update it.
   // @param[in] the log disk size used by tenant.
   // @param[in] the log disk size need by tenant.
+  // @param[in] the log disk size allowed by tenant
+  // @param[in] ObLogService*
   //   OB_SUCCESS
   //   OB_MACHINE_RESOURCE_NOT_ENOUGH
-  int update_tenant(const int64_t old_log_disk_size, const int64_t new_log_disk_size);
-
-  // @brief after 'update_tenant_log_disk_size' in ObMultiTenant failed, need rollbakc it.
-  // @param[in] the log disk size need by tenant.
-  // @param[in] the log disk size used by tenant.
-  void abort_update_tenant(const int64_t old_log_disk_size, const int64_t new_log_disk_size);
+  int update_tenant(const int64_t old_log_disk_size,
+                    const int64_t new_log_disk_size,
+                    int64_t &allowed_log_disk_size,
+                    ObLogService *log_service);
 
   // @brief after 'del_tenant' in ObMultiTenant success, need remove it from ObServerLogBlockMgr
   // NB: accurately, when tenant not exist in 'omt_', we can remove it from ObServerLogBlockMgr
@@ -329,6 +329,8 @@ private:
   // NB: in progress of expanding, the free size byte calcuated by BLOCK_SIZE * (max_block_id_ - min_block_id_) may be greater than
   //     curr_total_size_, if we calcuated log disk in use by curr_total_size_ - 'free size byte', the resule may be negative.
   int64_t block_cnt_in_use_;
+  // Before start ObServerLogBlockMgr, not support log disk resize.
+  bool is_started_;
   bool is_inited_;
 
 private:

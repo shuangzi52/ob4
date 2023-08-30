@@ -51,8 +51,7 @@ public:
 
 public:
   static const int64_t MAX_FILE_SIZE = 256 * 1024 * 1024;
-  const int64_t MAX_CONCURRENT_ITEM_CNT = !lib::is_mini_mode() ?
-      MAX(128, sysconf(_SC_NPROCESSORS_ONLN) * 2) : 64;
+  const int64_t MAX_CONCURRENT_ITEM_CNT = 1024;
 
 public:
   char dir_[128];
@@ -102,7 +101,7 @@ TEST_F(TestStorageLoggerManager, test_manager_basic)
       log_item, 1);
   ASSERT_NE(OB_SUCCESS, ret);
   // test normal item allocation (not local)
-  ret = SLOGGERMGR.alloc_item(30 * 1024, log_item, 15);
+  ret = SLOGGERMGR.alloc_item(3 * 1024, log_item, 15);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_TRUE(log_item->is_inited_);
   ASSERT_FALSE(log_item->is_local_);
@@ -135,7 +134,6 @@ TEST_F(TestStorageLoggerManager, test_slogger_basic)
   SLOGGERMGR.init(dir_, MAX_FILE_SIZE, log_file_spec_);
 
   ObStorageLogger *tmp_slogger = OB_NEW(ObStorageLogger, ObModIds::TEST);
-  ASSERT_EQ(0, tmp_slogger->get_pwrite_ts());
   ASSERT_EQ(OB_SUCCESS, tmp_slogger->init(SLOGGERMGR, 500));
   ASSERT_EQ(OB_SUCCESS, tmp_slogger->start());
 
@@ -149,7 +147,6 @@ TEST_F(TestStorageLoggerManager, test_slogger_basic)
   guard.switch_to(5);
   ObStorageLogger *slogger = MTL(ObStorageLogger*);
   slogger->start_log(cursor);
-  ASSERT_EQ(0, slogger->get_pwrite_ts());
 
   // test get_active_cursor
   ObLogCursor tmp_cursor;
@@ -222,7 +219,7 @@ TEST_F (TestStorageLoggerManager, test_build_item)
   data_len = dummy_header.get_serialize_size() +
             dummy_entry.get_serialize_size() +
             12;
-  buf_size = 512<<10;
+  buf_size = 8<<10;
   ASSERT_EQ(data_len, log_item->get_data_len());
   ASSERT_EQ(data_len, log_item->get_log_data_len());
   ASSERT_EQ(buf_size, log_item->get_buf_size());
@@ -282,7 +279,7 @@ TEST_F (TestStorageLoggerManager, test_build_item)
   data_len = dummy_header.get_serialize_size() +
              3 * dummy_entry.get_serialize_size() +
              111;
-  buf_size = 512<<10;
+  buf_size = 8<<10;
   ASSERT_EQ(data_len, log_item->get_data_len());
   ASSERT_EQ(data_len, log_item->get_log_data_len());
   ASSERT_EQ(buf_size, log_item->get_buf_size());

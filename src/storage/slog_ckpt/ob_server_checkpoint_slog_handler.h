@@ -26,7 +26,6 @@ namespace storage
 {
 
 struct ObMetaDiskAddr;
-class ObTenantStorageCheckpointWriter;
 
 class ObRedoModuleReplayParam;
 
@@ -80,7 +79,7 @@ public:
 private:
   virtual int parse(const int32_t cmd, const char *buf, const int64_t len, FILE *stream) override;
 
-  int enable_replay_clog();
+  int try_write_checkpoint_for_compat();
   int read_checkpoint(const ObServerSuperBlock &super_block);
   int replay_and_apply_server_slog(const common::ObLogCursor &replay_start_point);
   int replay_server_slog(const common::ObLogCursor &replay_start_point, common::ObLogCursor &replay_finish_point);
@@ -96,11 +95,13 @@ private:
   int replay_update_tenant_super_block(const char *buf, const int64_t buf_len);
 
   int set_meta_block_list(common::ObIArray<blocksstable::MacroBlockId> &meta_block_list);
-  int applay_replay_result();
+  int apply_replay_result();
   int handle_tenant_creating(const uint64_t tenant_id);
   int handle_tenant_create_commit(const omt::ObTenantMeta &tenant_meta);
 
   int handle_tenant_deleting(const uint64_t tenant_id);
+  int finish_slog_replay();
+  static int enable_replay_clog();
   int mock_start(); // for test;
 
 private:

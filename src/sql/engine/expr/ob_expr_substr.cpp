@@ -231,6 +231,16 @@ int ObExprSubstr::calc_result_typeN(ObExprResType &type,
     } else {
       type.set_varchar();
     }
+    if (OB_SUCC(ret)
+        && ob_is_text_tc(type.get_type())
+        && 3 == param_num
+        && !types_array[2].get_param().is_null()) {
+      const ObObj &len_obj = types_array[2].get_param();
+      int64_t substr_len = len_obj.is_int() ? len_obj.get_int() : 0;
+      if (substr_len > 0 && substr_len <= OB_MAX_CAST_CHAR_VARCHAR_LENGTH) {
+        type.set_varchar();
+      }
+    }
     OZ(aggregate_charsets_for_string_result(type, types_array, 1, type_ctx.get_coll_type()));
     if (OB_SUCC(ret)) {
       if (is_mysql_mode() && (types_array[0].is_text() || types_array[0].is_blob())) {
@@ -246,7 +256,7 @@ int ObExprSubstr::calc_result_typeN(ObExprResType &type,
         types_array[i].set_calc_type(ObIntType);
       }
     }
-    if (OB_SUCC(ret) && type.is_varchar()) {
+    if (OB_SUCC(ret) && !ob_is_text_tc(type.get_type())) {
       // Set cast mode for integer parameters, truncate string to integer.
       // see: ObExprSubstr::cast_param_type_for_mysql
       OX(type_ctx.set_cast_mode(type_ctx.get_cast_mode() | CM_STRING_INTEGER_TRUNC));

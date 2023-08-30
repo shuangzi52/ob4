@@ -31,6 +31,12 @@
 #include "share/rc/ob_context.h"
 #include "observer/ob_server_struct.h"
 #include "observer/mysql/ob_mysql_request_manager.h"
+#ifdef OB_BUILD_ARBITRATION
+#include "share/arbitration_service/ob_arbitration_service_utils.h" //ObArbitrationServiceUtils
+#endif
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 #include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "observer/omt/ob_tenant.h" //ObTenant
@@ -542,7 +548,7 @@ int ObFlushDagWarningsExecutor::execute(ObExecContext &ctx, ObFlushDagWarningsSt
     ret = OB_NOT_INIT;
     LOG_WARN("get task exec ctx error", K(ret), KP(task_exec_ctx));
   } else {
-    share::ObDagWarningHistoryManager::get_instance().clear();
+    MTL(ObDagWarningHistoryManager *)->clear();
   }
   return ret;
 }
@@ -605,6 +611,13 @@ int ObAdminServerExecutor::execute(ObExecContext &ctx, ObAdminServerStmt &stmt)
         // check whether all leaders are switched out
         if (OB_FAIL(wait_leader_switch_out_(*(ctx.get_sql_proxy()), arg.servers_))) {
           LOG_WARN("fail to wait leader switch out", KR(ret), K(arg));
+#ifdef OB_BUILD_ARBITRATION
+        // check whether all 2f tenant with arb service finished degration
+        } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_2f_tenants_arb_service_degration(
+                               *(ctx.get_sql_proxy()),
+                               arg.servers_))) {
+          LOG_WARN("fail to wait degration for arb service", KR(ret), K(arg));
+#endif
         }
       }
     } else {
@@ -760,84 +773,21 @@ int ObAdminZoneExecutor::execute(ObExecContext &ctx, ObAdminZoneStmt &stmt)
                  common_proxy->get_server());
       } else if (ObAdminZoneArg::STOP == stmt.get_op()
                  || ObAdminZoneArg::FORCE_STOP == stmt.get_op()) {
-        // check whether all leaders are switched out
-        ObMySQLProxy *sql_proxy = ctx.get_sql_proxy();
-        const int64_t idx = 0;
-        const int64_t retry_interval_us = 1000l * 1000l; // 1s
-        bool stop = false;
-        while (OB_SUCC(ret) && !stop) {
-          ObSqlString sql;
-          SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-            sqlclient::ObMySQLResult *result = NULL;
-            const int64_t rpc_timeout = THIS_WORKER.get_timeout_remain();
-            obrpc::Bool can_stop(true /* default value */);
-            int64_t leader_cnt = 0;
-            if (0 > THIS_WORKER.get_timeout_remain()) {
-              ret = OB_WAIT_LEADER_SWITCH_TIMEOUT;
-              LOG_WARN("wait switching out all leaders timeout", K(ret));
-            } else if (OB_FAIL(THIS_WORKER.check_status())) {
-              LOG_WARN("ctx check status failed", K(ret));
-            }
-
-            if (OB_FAIL(ret)) {
-            } else if (!can_stop) {
-            } else if (OB_FAIL(sql.assign_fmt(
-                "SELECT CAST(COUNT(*) AS SIGNED) FROM %s WHERE role = 'LEADER' AND zone = '%s'",
-                share::OB_CDB_OB_LS_LOCATIONS_TNAME, arg.zone_.ptr()))) {
-              LOG_WARN("assign_fmt failed", K(ret));
-            } else if (OB_FAIL(sql_proxy->read(res, sql.ptr()))) {
-              if (OB_RS_SHUTDOWN == ret || OB_RS_NOT_MASTER == ret) {
-                // switching rs, sleep and retry
-                ret = OB_SUCCESS;
-              } else {
-                LOG_WARN("execute sql failed", K(ret), K(sql));
-              }
-            } else if (OB_ISNULL(result = res.get_result())) {
-              ret = OB_ERR_UNEXPECTED;
-              LOG_WARN("get result failed", K(ret));
-            } else if (OB_FAIL(result->next())) {
-              if (OB_ITER_END == ret) {
-                ret = OB_ERR_UNEXPECTED;
-                LOG_WARN("result is empty", K(ret));
-              } else {
-                LOG_WARN("get next result failed", K(ret));
-              }
-            } else if (OB_FAIL(result->get_int(idx, leader_cnt))) {
-              if (OB_ERR_NULL_VALUE == ret) {
-                ret = OB_SUCCESS;
-                ObSqlString this_sql;
-                SMART_VAR(ObMySQLProxy::MySQLResult, this_res) {
-                  sqlclient::ObMySQLResult *this_result = NULL;
-                  int64_t server_cnt = -1;
-                  if (OB_FAIL(this_sql.assign_fmt("select count(*) from %s where zone = '%s'",
-                          share::OB_ALL_SERVER_TNAME, arg.zone_.ptr()))) {
-                    LOG_WARN("fail to assign fmt", K(ret));
-                  } else if (OB_FAIL(sql_proxy->read(this_res, this_sql.ptr()))) {
-                    LOG_WARN("fail to execute sql", K(ret), K(this_sql));
-                  } else if (OB_ISNULL(this_result = this_res.get_result())) {
-                    ret = OB_ERR_UNEXPECTED;
-                    LOG_WARN("fail to get result", K(ret));
-                  } else if (OB_FAIL(this_result->next())) {
-                    LOG_WARN("get result error", K(ret));
-                  } else if (OB_FAIL(this_result->get_int(0L, server_cnt))) {
-                    LOG_WARN("fail to get result", K(ret));
-                  } else if (0 == server_cnt) {
-                    // no server in this zone;
-                    stop = true;
-                  } else {
-                    // __all_virtual_server_stat is not ready, sleep and retry
-                  }
-                }
-              } else {
-                LOG_WARN("get sum failed", K(ret));
-              }
-            } else if (0 == leader_cnt) {
-              stop = true;
-            } else {
-              LOG_INFO("waiting switching leaders out", K(ret), "left count", leader_cnt);
-              ob_usleep(retry_interval_us);
-            }
-          }
+        obrpc::ObServerList server_list;
+        if (OB_FAIL(construct_servers_in_zone_(*(ctx.get_sql_proxy()), arg, server_list))) {
+          LOG_WARN("fail to construct servers in zone", KR(ret), K(arg));
+        } else if (0 == server_list.count()) {
+          // no need to wait leader election and arb-degration
+        } else if (OB_FAIL(wait_leader_switch_out_(*(ctx.get_sql_proxy()), arg))) {
+          // check whether all leaders are switched out
+          LOG_WARN("fail to wait leader switch out", KR(ret), K(arg));
+#ifdef OB_BUILD_ARBITRATION
+        // check whether all 2f tenant with arb service finished degration
+        } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_2f_tenants_arb_service_degration(
+                               *(ctx.get_sql_proxy()),
+                               server_list))) {
+          LOG_WARN("fail to wait degration for arb service", KR(ret), K(arg), K(server_list));
+#endif
         }
       } else {} // force stop, no need to wait leader switch
     } else if (ObAdminZoneArg::MODIFY == stmt.get_op()) {
@@ -847,6 +797,112 @@ int ObAdminZoneExecutor::execute(ObExecContext &ctx, ObAdminZoneStmt &stmt)
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected op: %ld", "type", stmt.get_op());
+    }
+  }
+  return ret;
+}
+
+int ObAdminZoneExecutor::wait_leader_switch_out_(
+    ObISQLClient &sql_proxy,
+    const obrpc::ObAdminZoneArg &arg)
+{
+  int ret = OB_SUCCESS;
+  const int64_t idx = 0;
+  const int64_t retry_interval_us = 1000l * 1000l; // 1s
+  bool stop = false;
+  ObSqlString sql("AdminZoneExe");
+  if (OB_UNLIKELY(!arg.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg));
+  } else if (OB_FAIL(construct_wait_leader_switch_sql_(arg, sql))) {
+    LOG_WARN("fail to construct wait leader switch sql", KR(ret), K(arg));
+  }
+
+  while (OB_SUCC(ret) && !stop) {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+      sqlclient::ObMySQLResult *result = NULL;
+      int64_t leader_cnt = 0;
+      if (0 > THIS_WORKER.get_timeout_remain()) {
+        ret = OB_WAIT_LEADER_SWITCH_TIMEOUT;
+        LOG_WARN("wait switching out leaders from all servers timeout", KR(ret));
+      } else if (OB_FAIL(THIS_WORKER.check_status())) {
+        LOG_WARN("ctx check status failed", KR(ret));
+      } else if (OB_FAIL(sql_proxy.read(res, sql.ptr()))) {
+        if (OB_RS_SHUTDOWN == ret || OB_RS_NOT_MASTER == ret) {
+          // switching rs, sleep and retry
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("execute sql failed", KR(ret), K(sql));
+        }
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get result failed", KR(ret));
+      } else if (OB_FAIL(result->next())) {
+        if (OB_ITER_END == ret) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("result is empty", KR(ret));
+        } else {
+          LOG_WARN("get next result failed", KR(ret));
+        }
+      } else if (OB_FAIL(result->get_int(idx, leader_cnt))) {
+        if (OB_ERR_NULL_VALUE == ret) {
+          ret = OB_SUCCESS;
+          // __all_virtual_server_stat is not ready, sleep and retry
+        } else {
+          LOG_WARN("get sum failed", KR(ret));
+        }
+      } else if (0 == leader_cnt) {
+        stop = true;
+      } else {
+        LOG_INFO("waiting switching leaders out", KR(ret), "left count", leader_cnt);
+        ob_usleep(retry_interval_us);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObAdminZoneExecutor::construct_wait_leader_switch_sql_(
+    const obrpc::ObAdminZoneArg &arg,
+    ObSqlString &sql)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!arg.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg));
+  } else if (OB_FAIL(sql.assign_fmt(
+                         "SELECT CAST(COUNT(*) AS SIGNED) FROM %s "
+                         "WHERE role = 'LEADER' AND zone = '%s'",
+                         share::OB_CDB_OB_LS_LOCATIONS_TNAME, arg.zone_.ptr()))) {
+    LOG_WARN("assign_fmt failed", KR(ret), K(arg));
+  }
+  return ret;
+}
+
+int ObAdminZoneExecutor::construct_servers_in_zone_(
+    ObISQLClient &sql_proxy,
+    const obrpc::ObAdminZoneArg &arg,
+    obrpc::ObServerList &svr_list)
+{
+  int ret = OB_SUCCESS;
+  svr_list.reset();
+  share::ObServerTableOperator st_operator;
+  ObArray<share::ObServerStatus> server_statuses;
+
+  if (OB_UNLIKELY(!arg.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg));
+  } else if (OB_FAIL(st_operator.init(&sql_proxy))) {
+    LOG_WARN("fail to init ObServerTableOperator", KR(ret));
+  } else if (OB_FAIL(st_operator.get(server_statuses))) {
+    LOG_WARN("build server statused from __all_server failed", KR(ret));
+  } else {
+    for (int64_t idx = 0; OB_SUCC(ret) && idx < server_statuses.count(); ++idx) {
+      if (arg.zone_ == server_statuses.at(idx).zone_) {
+        if (OB_FAIL(svr_list.push_back(server_statuses.at(idx).server_))) {
+          LOG_WARN("fail to add server to server_list", KR(ret), K(arg), K(server_statuses));
+        }
+      }
     }
   }
   return ret;
@@ -1118,30 +1174,115 @@ int ObMigrateUnitExecutor::execute(ObExecContext &ctx, ObMigrateUnitStmt &stmt)
 int ObAddArbitrationServiceExecutor::execute(ObExecContext &ctx, ObAddArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "add arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("add arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_FAIL(common_rpc->admin_add_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("add arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  }
+#endif
   return ret;
 }
 
 int ObRemoveArbitrationServiceExecutor::execute(ObExecContext &ctx, ObRemoveArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "remove arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("remove arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_FAIL(common_rpc->admin_remove_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("remove arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  }
+#endif
   return ret;
 }
 
 int ObReplaceArbitrationServiceExecutor::execute(ObExecContext &ctx, ObReplaceArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("replace arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(GCTX.sql_proxy_));
+  } else if (OB_FAIL(common_rpc->admin_replace_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("replace arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_tenant_with_arb_has_arb_member(
+                 *GCTX.sql_proxy_,
+                 stmt.get_rpc_arg().get_arbitration_service(),
+                 stmt.get_rpc_arg().get_previous_arbitration_service()))) {
+    LOG_WARN("fail to wait all tenant with arb service has expected arb member",
+             KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  } else {
+    // try clean cluster info from arb server
+    ObRemoveClusterInfoFromArbServerArg remove_cluster_info_arg;
+    int tmp_ret = OB_SUCCESS; // for remove_cluster_info operation
+    if (OB_TMP_FAIL(remove_cluster_info_arg.init(stmt.get_rpc_arg().get_previous_arbitration_service()))) {
+      LOG_WARN("fail to init a rpc arg", K(tmp_ret), "rpc_arg", stmt.get_rpc_arg());
+    } else if (OB_TMP_FAIL(common_rpc->remove_cluster_info_from_arb_server(remove_cluster_info_arg))) {
+      LOG_WARN("fail to remove cluster info from arb server", K(tmp_ret), K(remove_cluster_info_arg));
+    }
+    if (OB_SUCCESS != tmp_ret) {
+      LOG_USER_WARN(OB_CLUSTER_INFO_MAYBE_REMAINED, stmt.get_rpc_arg().get_previous_arbitration_service().length(),
+                    stmt.get_rpc_arg().get_previous_arbitration_service().ptr());
+    }
+  }
+#endif
   return ret;
 }
 
@@ -1829,6 +1970,8 @@ int ObSwitchTenantExecutor::execute(ObExecContext &ctx, ObSwitchTenantStmt &stmt
 
     // TODO support specify ALL
     if (OB_FAIL(ret)) {
+    } else if (arg.get_is_verify()) {
+      //do nothing
     } else if (OB_FAIL(OB_PRIMARY_STANDBY_SERVICE.switch_tenant(arg))) {
       LOG_WARN("failed to switch_tenant", KR(ret), K(arg));
     }
@@ -2108,6 +2251,13 @@ int ObDeletePolicyExecutor::execute(ObExecContext &ctx, ObDeletePolicyStmt &stmt
 int ObBackupKeyExecutor::execute(ObExecContext &ctx, ObBackupKeyStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifdef OB_BUILD_TDE_SECURITY
+  if (OB_FAIL(ObMasterKeyUtil::backup_key(stmt.get_tenant_id(),
+                                          stmt.get_backup_dest(),
+                                          stmt.get_encrypt_key()))) {
+    LOG_WARN("failed to backup master key", K(ret));
+  }
+#endif
   return ret;
 }
 
@@ -2380,7 +2530,6 @@ int ObCheckpointSlogExecutor::execute(ObExecContext &ctx, ObCheckpointSlogStmt &
   obrpc::ObSrvRpcProxy *srv_rpc_proxy = NULL;
   const ObAddr server = stmt.server_;
   ObCheckpointSlogArg arg;
-  const int64_t TIMEOUT = 60 * 1000 * 1000; // 60s
   arg.tenant_id_ = stmt.tenant_id_;
 
   if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
@@ -2389,12 +2538,45 @@ int ObCheckpointSlogExecutor::execute(ObExecContext &ctx, ObCheckpointSlogStmt &
   } else if (OB_ISNULL(srv_rpc_proxy = task_exec_ctx->get_srv_rpc())) {
     ret = OB_NOT_INIT;
     LOG_WARN("get srv rpc proxy failed");
-  } else if (OB_FAIL(srv_rpc_proxy->to(server).timeout(TIMEOUT).checkpoint_slog(arg))) {
+  } else if (OB_FAIL(srv_rpc_proxy->to(server).timeout(THIS_WORKER.get_timeout_remain()).checkpoint_slog(arg))) {
     LOG_WARN("rpc proxy checkpoint slog failed", K(ret));
   }
 
   LOG_INFO("checkpoint slog execute finish", K(ret), K(arg.tenant_id_), K(server));
 
+  return ret;
+}
+
+int ObCancelRestoreExecutor::execute(ObExecContext &ctx, ObCancelRestoreStmt &stmt)
+{
+  int ret = OB_SUCCESS;
+  ObTaskExecutorCtx *task_exec_ctx = nullptr;
+  obrpc::ObCommonRpcProxy *common_rpc_proxy = nullptr;
+  ObSchemaGetterGuard guard;
+  const ObTenantSchema *tenant_schema = nullptr;
+  if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("task exec ctx must not be null", K(ret));
+  } else if (OB_ISNULL(common_rpc_proxy = task_exec_ctx->get_common_rpc())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("common rpc proxy must not be null", K(ret));
+  } else if (OB_FAIL(GSCHEMASERVICE.get_tenant_schema_guard(OB_SYS_TENANT_ID, guard))) {
+    LOG_WARN("failed to get sys tenant schema guard", K(ret));
+  } else if (OB_FAIL(guard.get_tenant_info(stmt.get_drop_tenant_arg().tenant_name_, tenant_schema))) {
+    LOG_WARN("failed to get tenant info", K(ret), K(stmt));
+  } else if (OB_ISNULL(tenant_schema)) {
+    ret = OB_TENANT_NOT_EXIST;
+    LOG_USER_ERROR(OB_TENANT_NOT_EXIST, stmt.get_drop_tenant_arg().tenant_name_.length(), stmt.get_drop_tenant_arg().tenant_name_.ptr());
+    LOG_WARN("tenant not exist", KR(ret), K(stmt));
+  } else if (!tenant_schema->is_restore()) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Cancel tenant not in restore is");
+    LOG_WARN("Cancel tenant not in restore is not allowed", K(ret), K(stmt.get_drop_tenant_arg()));
+  } else if (OB_FAIL(common_rpc_proxy->drop_tenant(stmt.get_drop_tenant_arg()))) {
+    LOG_WARN("rpc proxy drop tenant failed", K(ret));
+  } else {
+    LOG_INFO("[RESTORE]succeed to cancel restore tenant", K(stmt));
+  }
   return ret;
 }
 

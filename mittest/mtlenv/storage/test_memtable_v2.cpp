@@ -20,7 +20,6 @@
 #include "storage/tx_table/ob_tx_table.h"
 #include "storage/memtable/mvcc/ob_mvcc_row.h"
 #include "storage/init_basic_struct.h"
-#include "observer/ob_safe_destroy_thread.h"
 #include "share/ob_master_key_getter.h"
 
 namespace oceanbase
@@ -136,6 +135,7 @@ private:
 public:
   virtual void SetUp() override
   {
+    ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
     // mock sequence no
     ObClockGenerator::init();
     // mock tx table
@@ -198,8 +198,6 @@ public:
   {
     TRANS_LOG(INFO, "SetUpTestCase");
     EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
-    SAFE_DESTROY_INSTANCE.init();
-    SAFE_DESTROY_INSTANCE.start();
     ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
 
     // create ls
@@ -216,9 +214,6 @@ public:
     ObLSID ls_id(1001);
     ASSERT_EQ(OB_SUCCESS, MTL(ObLSService*)->remove_ls(ls_id, false));
 
-    SAFE_DESTROY_INSTANCE.stop();
-    SAFE_DESTROY_INSTANCE.wait();
-    SAFE_DESTROY_INSTANCE.destroy();
     MockTenantModuleEnv::get_instance().destroy();
     TRANS_LOG(INFO, "TearDownTestCase");
   }
@@ -255,8 +250,8 @@ public:
   }
 
   void rollback_to_txn(ObStoreCtx *store_ctx,
-                       const int64_t from,
-                       const int64_t to)
+                       const ObTxSEQ from,
+                       const ObTxSEQ to)
   {
     ObUndoAction undo(from, to);
     ObPartTransCtx *tx_ctx = store_ctx->mvcc_acc_ctx_.tx_ctx_;
@@ -372,7 +367,7 @@ public:
     tx_ctx->mt_ctx_.log_gen_.set(&(tx_ctx->mt_ctx_.trans_mgr_),
                                  &(tx_ctx->mt_ctx_));
     store_ctx->mvcc_acc_ctx_.snapshot_.tx_id_ = tx_id;
-    store_ctx->mvcc_acc_ctx_.tx_table_guard_.init(&tx_table_);
+    store_ctx->mvcc_acc_ctx_.tx_table_guards_.tx_table_guard_.init(&tx_table_);
     if (for_replay) {
       store_ctx->mvcc_acc_ctx_.mem_ctx_->commit_to_replay();
     }
@@ -392,14 +387,14 @@ public:
     store_ctx->mvcc_acc_ctx_.type_ = ObMvccAccessCtx::T::WRITE;
     store_ctx->mvcc_acc_ctx_.snapshot_.tx_id_ = store_ctx->mvcc_acc_ctx_.tx_id_;
     store_ctx->mvcc_acc_ctx_.snapshot_.version_ = snapshot_scn;
-    store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = ObSequence::get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
     const int64_t abs_expire_time = expire_time + ::oceanbase::common::ObTimeUtility::current_time();
     store_ctx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(), 0);
   }
   void start_pdml_stmt(ObStoreCtx *store_ctx,
                        const share::SCN snapshot_scn,
-                       const int64_t read_seq_no,
+                       const ObTxSEQ read_seq_no,
                        const int64_t expire_time = 10000000000)
   {
     ObSequence::inc();
@@ -409,7 +404,7 @@ public:
     store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = read_seq_no;
     const int64_t abs_expire_time = expire_time + ::oceanbase::common::ObTimeUtility::current_time();
     store_ctx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(), 0);
   }
   void print_callback(ObStoreCtx *wtx)
   {
@@ -432,12 +427,23 @@ public:
     share::SCN snapshot_scn;
     snapshot_scn.convert_for_tx(snapshot);
     start_stmt(wtx, snapshot_scn, expire_time);
-    EXPECT_EQ(expect_ret, (ret = memtable->set(*wtx,
-                                               encrypt_index_,
-                                               read_info_,
-                                               columns_,
-                                               write_row,
-                                               encrypt_meta_)));
+
+    ObTableAccessContext context;
+    ObVersionRange trans_version_range;
+    const bool read_latest = true;
+    ObQueryFlag query_flag;
+
+    trans_version_range.base_version_ = 0;
+    trans_version_range.multi_version_start_ = 0;
+    trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+    query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+    query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+    if (OB_FAIL(context.init(query_flag, *wtx, allocator_, trans_version_range))) {
+      TRANS_LOG(WARN, "Fail to init access context", K(ret));
+    }
+
+    EXPECT_EQ(expect_ret, (ret = memtable->set(iter_param_, context, columns_, write_row, encrypt_meta_)));
 
     TRANS_LOG(INFO, "======================= end write tx ======================",
               K(ret), K(wtx->mvcc_acc_ctx_.tx_id_), K(*wtx), K(snapshot), K(expire_time), K(write_row));
@@ -457,10 +463,23 @@ public:
      share::SCN snapshot_scn;
      snapshot_scn.convert_for_tx(snapshot);
      start_stmt(ltx, snapshot_scn, expire_time);
-     EXPECT_EQ(expect_ret, (ret = memtable->lock(*ltx,
-                                                 tablet_id_.id(),
-                                                 read_info_,
-                                                 rowkey)));
+
+     ObTableAccessContext context;
+     ObVersionRange trans_version_range;
+     const bool read_latest = true;
+     ObQueryFlag query_flag;
+
+     trans_version_range.base_version_ = 0;
+     trans_version_range.multi_version_start_ = 0;
+     trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+     query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+     query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+     if (OB_FAIL(context.init(query_flag, *ltx, allocator_, trans_version_range))) {
+       TRANS_LOG(WARN, "Fail to init access context", K(ret));
+     }
+
+     EXPECT_EQ(expect_ret, (ret = memtable->lock(iter_param_, context, rowkey)));
 
      TRANS_LOG(INFO, "======================= end lock tx ======================",
                K(ret), K(ltx->mvcc_acc_ctx_.tx_id_), K(*ltx), K(snapshot), K(expire_time), K(rowkey));
@@ -480,10 +499,23 @@ public:
       share::SCN snapshot_scn;
       snapshot_scn.convert_for_tx(snapshot);
       start_stmt(ltx, snapshot_scn, expire_time);
-      EXPECT_EQ(expect_ret, (ret = memtable->lock(*ltx,
-                                                  tablet_id_.id(),
-                                                  read_info_,
-                                                  rowkey)));
+
+      ObTableAccessContext context;
+      ObVersionRange trans_version_range;
+      const bool read_latest = true;
+      ObQueryFlag query_flag;
+
+      trans_version_range.base_version_ = 0;
+      trans_version_range.multi_version_start_ = 0;
+      trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+      query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+      query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+      if (OB_FAIL(context.init(query_flag, *ltx, allocator_, trans_version_range))) {
+        TRANS_LOG(WARN, "Fail to init access context", K(ret));
+      }
+
+      EXPECT_EQ(expect_ret, (ret = memtable->lock(iter_param_, context, rowkey)));
       ObMvccTransNode *node = get_tx_last_tnode(ltx);
       ((ObMemtableDataHeader *)(node->buf_))->dml_flag_ = blocksstable::ObDmlFlag::DF_INSERT;
 
@@ -786,16 +818,15 @@ public:
                                                               OB_MAX_MASTER_KEY_LENGTH,
                                                               master_key_len));
       meta.master_key_.get_content().set_length(master_key_len);
-      EXPECT_EQ(OB_SUCCESS, ObAesEncryption::aes_decrypt(meta.master_key_.ptr(),
-                                                         meta.master_key_.size(),
-                                                         meta.encrypted_table_key_.ptr(),
-                                                         meta.encrypted_table_key_.size(),
-                                                         OB_ENCRYPTED_TABLE_KEY_LEN,
-                                                         NULL,
-                                                         0,
-                                                         static_cast<ObAesOpMode>(meta.encrypt_algorithm_),
-                                                         decrypted_table_key,
-                                                         out_len));
+      EXPECT_EQ(OB_SUCCESS, ObBlockCipher::decrypt(meta.master_key_.ptr(),
+                                                   meta.master_key_.size(),
+                                                   meta.encrypted_table_key_.ptr(),
+                                                   meta.encrypted_table_key_.size(),
+                                                   OB_ENCRYPTED_TABLE_KEY_LEN,
+                                                   NULL, 0, NULL, 0, NULL, 0,
+                                                   static_cast<ObCipherOpMode>(meta.encrypt_algorithm_),
+                                                   decrypted_table_key,
+                                                   out_len));
       meta.table_key_.set_content(decrypted_table_key, out_len);
 
       EXPECT_EQ(true, meta.is_valid());
@@ -862,13 +893,14 @@ public:
 
   int mock_iter_param()
   {
+	int ret = OB_SUCCESS;
     // iter_param_.rowkey_cnt_ = rowkey_cnt_;
     iter_param_.tablet_id_ = tablet_id_;
     iter_param_.table_id_ = tablet_id_.id();
-    read_info_.init(allocator_, 16000, rowkey_cnt_, lib::is_oracle_mode(), columns_);
+    read_info_.init(allocator_, 16000, rowkey_cnt_, lib::is_oracle_mode(), columns_, nullptr/*storage_cols_index*/);
     iter_param_.read_info_ = &read_info_;
 
-    return OB_SUCCESS;
+    return ret;
   }
 
   void reset_iter_param()
@@ -887,7 +919,7 @@ public:
 
   void verify_cb(ObMvccRowCallback *cb,
                  const ObMemtable *mt,
-                 const int64_t seq_no,
+                 const ObTxSEQ seq_no,
                  const int64_t k,
                  const bool is_link = true,
                  const bool need_fill_redo = true,
@@ -919,7 +951,7 @@ public:
                     const ObMemtable *mt,
                     const ObTransID &tx_id,
                     const int64_t trans_version,
-                    const int64_t seq_no,
+                    const ObTxSEQ seq_no,
                     const uint32_t modify_count,
                     const uint8_t tnode_flag,
                     const ObDmlFlag dml_flag,
@@ -978,7 +1010,7 @@ public:
                   ObMemtable *wmt,
                   ObMvccTransNode *prev,
                   ObMvccTransNode *next,
-                  int64_t seq_no,
+                  ObTxSEQ seq_no,
                   uint32_t modify_count,
                   int64_t k,
                   int64_t v)
@@ -1081,13 +1113,13 @@ public:
     char encrypt_table_key[OB_ENCRYPTED_TABLE_KEY_LEN] = {0};
 
     int64_t encrypt_out_len = 0;
-    int algorithm = ObAesOpMode::ob_invalid_mode + 3;
+    int algorithm = ObCipherOpMode::ob_invalid_mode + 3;
     EXPECT_EQ(OB_SUCCESS, ObKeyGenerator::generate_encrypt_key(origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN));
-    EXPECT_EQ(OB_SUCCESS, ObAesEncryption::aes_encrypt(cur_master_key, strlen(cur_master_key),
-                                                       origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN,
-                                                       OB_ENCRYPTED_TABLE_KEY_LEN, NULL, 0,
-                                                       static_cast<ObAesOpMode>(algorithm),
-                                                       encrypt_table_key, encrypt_out_len));
+    EXPECT_EQ(OB_SUCCESS, ObBlockCipher::encrypt(cur_master_key, strlen(cur_master_key),
+                                                 origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN,
+                                                 OB_ENCRYPTED_TABLE_KEY_LEN, NULL, 0, NULL, 0, 0,
+                                                 static_cast<ObCipherOpMode>(algorithm),
+                                                 encrypt_table_key, encrypt_out_len, NULL));
     encrypt_table_key[encrypt_out_len] = '\0';
     EXPECT_STRNE(origin_table_key, encrypt_table_key);
 
@@ -1099,13 +1131,9 @@ public:
     EXPECT_EQ(OB_SUCCESS, ObMasterKeyGetter::get_master_key(tenant_id, master_key_id, master_key, OB_MAX_MASTER_KEY_LENGTH, master_key_len));
     EXPECT_STREQ(master_key, cur_master_key);
 
-    char random_string[OB_CLOG_ENCRYPT_RANDOM_LEN] = {0};
-    EXPECT_EQ(OB_SUCCESS, ObKeyGenerator::generate_encrypt_key(random_string, OB_CLOG_ENCRYPT_RANDOM_LEN));
-
     encrypt_meta.master_key_.set_content(master_key, master_key_len);
     encrypt_meta.table_key_.set_content(origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN);
     encrypt_meta.encrypted_table_key_.set_content(encrypt_table_key, OB_ENCRYPTED_TABLE_KEY_LEN);
-    encrypt_meta.random_.set_content(random_string, OB_CLOG_ENCRYPT_RANDOM_LEN);
     encrypt_meta.tenant_id_ = tenant_id;
     encrypt_meta.master_key_version_ = master_key_id;
     encrypt_meta.encrypt_algorithm_ = algorithm;
@@ -1167,7 +1195,7 @@ TEST_F(TestMemtableV2, test_write_read_conflict)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
@@ -1310,7 +1338,7 @@ TEST_F(TestMemtableV2, test_tx_abort)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
@@ -1426,7 +1454,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
-            ObSequence::get_max_seq_no(),
+            ObTxSEQ(ObSequence::get_max_seq_no(),0),
             1,   /*key*/
             true /*is_link*/);
   verify_tnode(get_tx_last_tnode(wtx),
@@ -1435,7 +1463,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
                memtable,
                wtx->mvcc_acc_ctx_.tx_id_,
                INT64_MAX, /*trans_version*/
-               ObSequence::get_max_seq_no(),
+               ObTxSEQ(ObSequence::get_max_seq_no(),0),
                0,         /*modify_count*/
                ObMvccTransNode::F_INIT,
                ObDmlFlag::DF_INSERT,
@@ -1493,7 +1521,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
-            ObSequence::get_max_seq_no(),
+            ObTxSEQ(ObSequence::get_max_seq_no(),0),
             1,   /*key*/
             true /*is_link*/);
   verify_tnode(get_tx_last_tnode(wtx),
@@ -1502,7 +1530,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
                memtable,
                wtx->mvcc_acc_ctx_.tx_id_,
                INT64_MAX, /*trans_version*/
-               ObSequence::get_max_seq_no(),
+               ObTxSEQ(ObSequence::get_max_seq_no(),0),
                1,         /*modify_count*/
                ObMvccTransNode::F_INIT,
                ObDmlFlag::DF_INSERT,
@@ -1557,7 +1585,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
            memtable,
            2100, /*snapshot version*/
            write_row2);
-  const int64_t wtx2_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx2),
             memtable,
@@ -1639,7 +1667,7 @@ TEST_F(TestMemtableV2, test_lock)
           memtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(ltx),
             memtable,
@@ -1747,7 +1775,7 @@ TEST_F(TestMemtableV2, test_lock)
           memtable,
           2500, /*snapshot version*/
           rowkey);
-  const int64_t wtx2_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   verify_cb(get_tx_last_cb(wtx2),
             memtable,
             wtx2_seq_no,
@@ -1812,7 +1840,7 @@ TEST_F(TestMemtableV2, test_lock)
            memtable,
            4500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   verify_cb(get_tx_last_cb(wtx3),
             memtable,
             wtx3_seq_no,
@@ -1939,12 +1967,12 @@ TEST_F(TestMemtableV2, test_rollback_to)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            memtable,
            1000, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   print_callback(wtx);
 
@@ -2038,7 +2066,7 @@ TEST_F(TestMemtableV2, test_replay)
            lmemtable,
            500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   commit_txn(wtx3,
              800,/*commit_version*/
              false/*need_write_back*/);
@@ -2049,12 +2077,12 @@ TEST_F(TestMemtableV2, test_replay)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi;
   mock_replay_iterator(wtx, mmi);
@@ -2225,12 +2253,12 @@ TEST_F(TestMemtableV2, test_replay_with_clog_encryption)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
 
   //use encrypt_meta_ in memtable during submitting log
   char *redo_log_buffer = new char[REDO_BUFFER_SIZE];
@@ -2360,12 +2388,12 @@ TEST_F(TestMemtableV2, test_compact)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi;
   mock_replay_iterator(wtx, mmi);
@@ -2382,7 +2410,7 @@ TEST_F(TestMemtableV2, test_compact)
            lmemtable,
            2500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   commit_txn(wtx3,
              3000,/*commit_version*/
              false/*need_write_back*/);
@@ -2593,7 +2621,7 @@ TEST_F(TestMemtableV2, test_compact_v2)
           memtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_first_tnode = get_tx_last_tnode(wtx);
   ObMvccRow *row = get_tx_last_mvcc_row(wtx);
 
@@ -2601,14 +2629,14 @@ TEST_F(TestMemtableV2, test_compact_v2)
            memtable,
            1200, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_second_tnode = get_tx_last_tnode(wtx);
 
   write_tx(wtx,
            memtable,
            1300, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no3 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no3 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_third_tnode = get_tx_last_tnode(wtx);
 
   print_callback(wtx);
@@ -2623,7 +2651,7 @@ TEST_F(TestMemtableV2, test_compact_v2)
            memtable,
            2500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx3_first_tnode = get_tx_last_tnode(wtx3);
   commit_txn(wtx3,
              3000,/*commit_version*/
@@ -2896,7 +2924,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
            lmemtable,
            400, /*snapshot version*/
            write_row1);
-  const int64_t wtx1_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx1_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRow *wtx1_row = get_tx_last_mvcc_row(wtx1);
   ObMvccTransNode *wtx1_tnode1 = get_tx_last_tnode(wtx1);
 
@@ -2927,7 +2955,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
           lmemtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx2_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi2;
   mock_replay_iterator(wtx2, mmi2);
@@ -2949,7 +2977,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
            lmemtable,
            1400, /*snapshot version*/
            write_row2);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx3_tnode1 = get_tx_last_tnode(wtx3);
 
   ObMemtableMutatorIterator mmi3;
@@ -3049,7 +3077,7 @@ TEST_F(TestMemtableV2, test_fast_commit)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRowCallback *wtx_cb = (ObMvccRowCallback *)(get_tx_last_cb(wtx));
   ObMvccRow *wtx_row = get_tx_last_mvcc_row(wtx);
   ObMvccTransNode *wtx_tnode = get_tx_last_tnode(wtx);
@@ -3169,7 +3197,7 @@ TEST_F(TestMemtableV2, test_fast_commit_with_no_delay_cleanout)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRowCallback *wtx_cb = (ObMvccRowCallback *)(get_tx_last_cb(wtx));
   ObMvccRow *wtx_row = get_tx_last_mvcc_row(wtx);
   ObMvccTransNode *wtx_tnode = get_tx_last_tnode(wtx);
@@ -3297,21 +3325,35 @@ TEST_F(TestMemtableV2, test_seq_set_violation)
   ObTransID write_tx_id = ObTransID(1);
   ObStoreCtx *wtx = start_tx(write_tx_id);
 
-  int64_t read_seq_no = ObSequence::get_max_seq_no();
+  ObTxSEQ read_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   share::SCN scn_3000;
   scn_3000.convert_for_tx(3000);
   start_pdml_stmt(wtx, scn_3000, read_seq_no, 1000000000/*expire_time*/);
-  EXPECT_EQ(OB_SUCCESS, (ret = memtable->set(*wtx,
-                                             tablet_id_.id(),
-                                             read_info_,
+
+  ObTableAccessContext context;
+  ObVersionRange trans_version_range;
+  const bool read_latest = true;
+  ObQueryFlag query_flag;
+
+  trans_version_range.base_version_ = 0;
+  trans_version_range.multi_version_start_ = 0;
+  trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+  query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+  query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+  if (OB_FAIL(context.init(query_flag, *wtx, allocator_, trans_version_range))) {
+    TRANS_LOG(WARN, "Fail to init access context", K(ret));
+  }
+
+  EXPECT_EQ(OB_SUCCESS, (ret = memtable->set(iter_param_,
+                                             context,
                                              columns_,
                                              write_row,
                                              encrypt_meta_)));
 
   start_pdml_stmt(wtx, scn_3000, read_seq_no, 1000000000/*expire_time*/);
-  EXPECT_EQ(OB_ERR_PRIMARY_KEY_DUPLICATE, (ret = memtable->set(*wtx,
-                                                               tablet_id_.id(),
-                                                               read_info_,
+  EXPECT_EQ(OB_ERR_PRIMARY_KEY_DUPLICATE, (ret = memtable->set(iter_param_,
+                                                               context,
                                                                columns_,
                                                                write_row,
                                                                encrypt_meta_)));
@@ -3338,7 +3380,7 @@ TEST_F(TestMemtableV2, test_parallel_lock_with_same_txn)
 
   // Step1: prepare the global sequence
   ObSequence::inc();
-  int64_t read_seq_no = ObSequence::get_max_seq_no();
+  ObTxSEQ read_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   // Step2: init the mvcc acc ctx
   wtx->mvcc_acc_ctx_.type_ = ObMvccAccessCtx::T::WRITE;
@@ -3347,19 +3389,32 @@ TEST_F(TestMemtableV2, test_parallel_lock_with_same_txn)
   wtx->mvcc_acc_ctx_.snapshot_.scn_ = read_seq_no;
   const int64_t abs_expire_time = 10000000000 + ::oceanbase::common::ObTimeUtility::current_time();
   wtx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-  wtx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+  wtx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(),0);
+
+  ObTableAccessContext context;
+  ObVersionRange trans_version_range;
+  const bool read_latest = true;
+  ObQueryFlag query_flag;
+
+  trans_version_range.base_version_ = 0;
+  trans_version_range.multi_version_start_ = 0;
+  trans_version_range.snapshot_version_ = EXIST_READ_SNAPSHOT_VERSION;
+  query_flag.use_row_cache_ = ObQueryFlag::DoNotUseCache;
+  query_flag.read_latest_ = read_latest & ObQueryFlag::OBSF_MASK_READ_LATEST;
+
+  if (OB_FAIL(context.init(query_flag, *wtx, allocator_, trans_version_range))) {
+    TRANS_LOG(WARN, "Fail to init access context", K(ret));
+  }
 
   // Step3: lock for the first time
-  EXPECT_EQ(OB_SUCCESS, (ret = memtable->lock(*wtx,
-                                              tablet_id_.id(),
-                                              read_info_,
+  EXPECT_EQ(OB_SUCCESS, (ret = memtable->lock(iter_param_,
+                                              context,
                                               rowkey)));
 
   // Step4: lock for the second time
-  wtx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
-  EXPECT_EQ(OB_SUCCESS, (ret = memtable->lock(*wtx,
-                                              tablet_id_.id(),
-                                              read_info_,
+  wtx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(),0);
+  EXPECT_EQ(OB_SUCCESS, (ret = memtable->lock(iter_param_,
+                                              context,
                                               rowkey)));
   memtable->destroy();
 }
@@ -3401,12 +3456,13 @@ int ObTxCtxTable::release_ref_()
 
 namespace memtable
 {
-int ObMemtable::lock_row_on_frozen_stores_(ObStoreCtx &,
-                                           const ObTxNodeArg &,
-                                           const ObMemtableKey *,
-                                           ObMvccRow *,
-                                           const storage::ObTableReadInfo &read_info,
-                                           ObMvccWriteResult &)
+int ObMemtable::lock_row_on_frozen_stores_(
+    const storage::ObTableIterParam &,
+    const ObTxNodeArg &,
+    storage::ObTableAccessContext &,
+    const ObMemtableKey *,
+    ObMvccRow *,
+    ObMvccWriteResult &)
 {
   if (unittest::TestMemtableV2::is_sstable_contains_lock_) {
     return OB_TRY_LOCK_ROW_CONFLICT;

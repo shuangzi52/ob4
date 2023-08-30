@@ -19,6 +19,7 @@
 #include "share/allocator/ob_memstore_allocator_mgr.h"     // ObMemstoreAllocatorMgr
 #include "storage/tx_storage/ob_tenant_freezer.h"          // ObTenantFreezer
 #include "storage/tx_storage/ob_tenant_memory_printer.h"
+#include "deps/oblib/src/lib/alloc/malloc_hook.h"
 
 namespace oceanbase
 {
@@ -29,8 +30,7 @@ void ObPrintTenantMemoryUsage::runTimerTask()
 {
   LOG_INFO("=== Run print tenant memory usage task ===");
   ObTenantMemoryPrinter &printer = ObTenantMemoryPrinter::get_instance();
-  PRINT_WITH_TRACE_MODE(LIB, INFO, printer.print_tenant_usage());
-  ObObjFreeListList::get_freelists().dump();
+  printer.print_tenant_usage();
 }
 
 ObTenantMemoryPrinter &ObTenantMemoryPrinter::get_instance()
@@ -69,8 +69,9 @@ int ObTenantMemoryPrinter::print_tenant_usage()
   } else {
     if (OB_FAIL(databuff_printf(print_buf, BUF_LEN, pos,
                                 "=== TENANTS MEMORY INFO ===\n"
-                                "all_tenants_memstore_used=% '15ld\n",
-                                allocator_mgr->get_all_tenants_memstore_used()))) {
+                                "all_tenants_memstore_used=% '15ld, divisive_memory_used=% '15ld\n",
+                                allocator_mgr->get_all_tenants_memstore_used(),
+                                get_divisive_mem_size()))) {
       LOG_WARN("print failed", K(ret));
     } else if (OB_FAIL(ObVirtualTenantManager::get_instance().print_tenant_usage(print_buf,
                                                                                  BUF_LEN,
@@ -107,7 +108,6 @@ int ObTenantMemoryPrinter::print_tenant_usage()
           if (is_deleted_tenant) {
             mallocator->print_tenant_memory_usage(id);
             mallocator->print_tenant_ctx_memory_usage(id);
-            mallocator->print_malloc_sample(id);
           }
         }
       }
@@ -128,7 +128,10 @@ int ObTenantMemoryPrinter::print_tenant_usage()
     int64_t memory_used = get_virtual_memory_used(&resident_size);
     _STORAGE_LOG(INFO,
         "[CHUNK_MGR] free=%ld pushes=%ld pops=%ld limit=%'15ld hold=%'15ld total_hold=%'15ld used=%'15ld" \
-        " freelist_hold=%'15ld maps=%'15ld unmaps=%'15ld large_maps=%'15ld large_unmaps=%'15ld" \
+        " freelist_hold=%'15ld large_freelist_hold=%'15ld" \
+        " maps=%'15ld unmaps=%'15ld" \
+        " large_maps=%'15ld large_unmaps=%'15ld" \
+        " huge_maps=%'15ld huge_unmaps=%'15ld" \
         " memalign=%d resident_size=%'15ld"
 #ifndef ENABLE_SANITY
         " virtual_memory_used=%'15ld\n",
@@ -142,11 +145,14 @@ int ObTenantMemoryPrinter::print_tenant_usage()
         CHUNK_MGR.get_hold(),
         CHUNK_MGR.get_total_hold(),
         CHUNK_MGR.get_used(),
-        CHUNK_MGR.get_freelist_hold(),
+        CHUNK_MGR.get_freelist_hold() + CHUNK_MGR.get_large_freelist_hold(),
+        CHUNK_MGR.get_large_freelist_hold(),
         CHUNK_MGR.get_maps(),
         CHUNK_MGR.get_unmaps(),
         CHUNK_MGR.get_large_maps(),
         CHUNK_MGR.get_large_unmaps(),
+        CHUNK_MGR.get_huge_maps(),
+        CHUNK_MGR.get_huge_unmaps(),
         0,
         resident_size,
 #ifndef ENABLE_SANITY

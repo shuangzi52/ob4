@@ -26,9 +26,20 @@ namespace sql
 void ObKeyPart::reset()
 {
   common::ObDLinkBase<ObKeyPart>::reset();
+  reset_key();
   id_.table_id_ = OB_INVALID_ID;
   id_.column_id_ = OB_INVALID_ID;
   pos_.offset_ = -1;
+  key_type_ = T_NORMAL_KEY;
+  item_next_ = NULL;
+  or_next_ = NULL;
+  and_next_ = NULL;
+  rowid_column_idx_ = OB_INVALID_ID;
+  is_phy_rowid_key_part_ = false;
+}
+
+void ObKeyPart::reset_key()
+{
   if (is_normal_key()) {
     normal_keypart_->start_.reset();
     normal_keypart_->end_.reset();
@@ -41,13 +52,10 @@ void ObKeyPart::reset()
     like_keypart_->escape_.reset();
   } else if (is_in_key()) {
     in_keypart_->reset();
+  } else if (is_geo_key()) {
+    geo_keypart_->wkb_.reset();
+    geo_keypart_->distance_.reset();
   }
-  key_type_ = T_NORMAL_KEY;
-  item_next_ = NULL;
-  or_next_ = NULL;
-  and_next_ = NULL;
-  rowid_column_idx_ = OB_INVALID_ID;
-  is_phy_rowid_key_part_ = false;
 }
 
 // can be unioned as one
@@ -95,6 +103,9 @@ bool ObKeyPart::union_key(const ObKeyPart *other)
         } else if (0 == cmp) {
           normal_keypart_->include_start_ =
               (normal_keypart_->include_start_ || other->normal_keypart_->include_start_);
+          if (normal_keypart_->include_start_ && s1.is_null()) {
+            null_safe_ = null_safe_ || other->null_safe_;
+          }
         }
         cmp = e2.compare(e1);
         if (cmp > 0) {
@@ -103,6 +114,9 @@ bool ObKeyPart::union_key(const ObKeyPart *other)
         } else if (0 == cmp) {
           normal_keypart_->include_end_ =
               (normal_keypart_->include_end_ || other->normal_keypart_->include_end_);
+          if (normal_keypart_->include_end_ && e1.is_null()) {
+            null_safe_ = null_safe_ || other->null_safe_;
+          }
         }
       }
     }
@@ -335,7 +349,7 @@ int ObKeyPart::intersect(ObKeyPart *other, bool contain_row)
       ObObj *e2 = &(other->normal_keypart_->end_);
       bool e2_flag = other->normal_keypart_->include_end_;
       int cmp = 0;
-      SQL_REWRITE_LOG(DEBUG, "has intersect");
+      SQL_REWRITE_LOG(DEBUG, "has intersect", KPC(this), KPC(other));
 
       //取大
       cmp = s1->compare(*s2);
@@ -347,6 +361,9 @@ int ObKeyPart::intersect(ObKeyPart *other, bool contain_row)
       } else {
         s1_flag = (s1_flag && s2_flag);
       }
+      if (s1->is_null() && s1_flag) {
+        null_safe_ = null_safe_ && other->null_safe_;
+      }
 
       // 取小
       cmp = e1->compare(*e2);
@@ -357,6 +374,9 @@ int ObKeyPart::intersect(ObKeyPart *other, bool contain_row)
         // do nothing
       } else {
         e1_flag = (e1_flag && e2_flag);
+      }
+      if (e1->is_null() && e1_flag) {
+        null_safe_ = null_safe_ && other->null_safe_;
       }
 
       // we need to set the always_true[false] flag accordingly to the intersection
@@ -530,9 +550,9 @@ int ObKeyPart::merge_two_in_keys(ObKeyPart *other, const SameValIdxMap &lr_idx)
 {
   int ret = OB_SUCCESS;
   ObSEArray<InParamMeta *, 4> new_params;
-  if (OB_ISNULL(other)) {
+  if (OB_ISNULL(other) || OB_UNLIKELY(!other->is_in_key()) || OB_UNLIKELY(!is_in_key())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret));
+    LOG_WARN("get unexpected null", K(other), K(key_type_));
   } else if (OB_FAIL(append_array_no_dup(in_keypart_->offsets_,
                                          other->in_keypart_->offsets_))) {
     LOG_WARN("failed to append right offsets", K(ret));
@@ -582,7 +602,7 @@ int ObKeyPart::merge_two_in_keys(ObKeyPart *other, const SameValIdxMap &lr_idx)
       if (OB_SUCC(ret)) {
         new_param->pos_ = cur_param->pos_;
         if (OB_FAIL(new_param->vals_.assign(vals))) {
-          LOG_WARN("failed to assign vals", K(ret));
+          LOG_WARN("failed to assign vals", K(ret), K(vals.count()));
         } else if (OB_FAIL(new_params.push_back(new_param))) {
           LOG_WARN("failed to push back new param", K(ret));
         }
@@ -715,6 +735,31 @@ int ObKeyPart::deep_node_copy(const ObKeyPart &other)
   return ret;
 }
 
+int ObKeyPart::shallow_node_copy(const ObKeyPart &other)
+{
+  int ret = OB_SUCCESS;
+  reset_key();
+  id_ = other.id_;
+  pos_ = other.pos_;
+  null_safe_ = other.null_safe_;
+  rowid_column_idx_ = other.rowid_column_idx_;
+  is_phy_rowid_key_part_ = other.is_phy_rowid_key_part_;
+  if (other.is_normal_key()) {
+    normal_keypart_ = other.normal_keypart_;
+    key_type_ = other.key_type_;
+  } else if (other.is_like_key()) {
+    like_keypart_ = other.like_keypart_;
+    key_type_ = other.key_type_;
+  } else if (other.is_in_key()) {
+    in_keypart_ = other.in_keypart_;
+    key_type_ = other.key_type_;
+  } else if (other.is_geo_key()) {
+    geo_keypart_ = other.geo_keypart_;
+    key_type_ = other.key_type_;
+  }
+  return ret;
+}
+
 int InParamMeta::assign(const InParamMeta &other, ObIAllocator &alloc)
 {
   int ret = OB_SUCCESS;
@@ -822,6 +867,93 @@ int ObInKeyPart::get_dup_vals(int64_t offset, const ObObj &val, ObIArray<int64_t
     for (int64_t i = 0; OB_SUCC(ret) && i < param_meta->vals_.count(); ++i) {
       if (param_meta->vals_.at(i).compare(val) == 0) {
         ret = dup_val_idx.push_back(i);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObInKeyPart::remove_in_dup_vals()
+{
+  int ret = OB_SUCCESS;
+  int param_cnt = in_params_.count();
+  int val_cnt = get_param_val_cnt();
+  common::hash::ObHashSet<InParamValsWrapper> distinct_param_val_set;
+  ObSEArray<InParamValsWrapper, 16> distinct_param_val_arr;
+  ObSEArray<obj_cmp_func, MAX_EXTRACT_IN_COLUMN_NUMBER> cmp_funcs;
+  if (OB_UNLIKELY(param_cnt == 0 || val_cnt == 0)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get invalid in keypart", K(ret), K(param_cnt), K(val_cnt));
+  } else if (OB_FAIL(distinct_param_val_set.create(val_cnt))) {
+    LOG_WARN("failed to create partition macro id set", K(ret));
+  } else if (OB_FAIL(get_obj_cmp_funcs(cmp_funcs))) {
+    LOG_WARN("failed to get cmp funcs", K(ret));
+  }
+  bool has_dup = false;
+  for (int64_t i = 0; OB_SUCC(ret) && i < val_cnt; ++i) {
+    InParamValsWrapper cur_param_vals;
+    for (int64_t j = 0; OB_SUCC(ret) && j < param_cnt; ++j) {
+      InParamMeta *cur_param = in_params_.at(j);
+      if (OB_ISNULL(cur_param) || OB_UNLIKELY(val_cnt != cur_param->vals_.count())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get invalid argument", K(ret), K(val_cnt), K(cur_param), K(i), K(j));
+      } else if (OB_FAIL(cur_param_vals.param_vals_.push_back(cur_param->vals_.at(i)))) {
+        LOG_WARN("failed to push back val", K(ret));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(cur_param_vals.cmp_funcs_.assign(cmp_funcs))) {
+      LOG_WARN("failed to assign cmp func", K(ret));
+    } else if (OB_HASH_EXIST == (ret = distinct_param_val_set.set_refactored(cur_param_vals, 0))) {
+      ret = OB_SUCCESS;
+      has_dup = true;
+    } else if (OB_UNLIKELY(OB_SUCCESS != ret)) {
+      LOG_WARN("failed to set range", K(ret));
+    } else if (OB_FAIL(distinct_param_val_arr.push_back(cur_param_vals))) {
+      LOG_WARN("failed to push back param values", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && has_dup) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < param_cnt; ++i) {
+      in_params_.at(i)->vals_.reuse();
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < distinct_param_val_arr.count(); ++i) {
+      const InParamValsWrapper &cur_param_vals = distinct_param_val_arr.at(i);
+      if (OB_UNLIKELY(cur_param_vals.param_vals_.count() != param_cnt)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get invalid param cnt", K(ret), K(param_cnt), K(cur_param_vals.param_vals_.count()));
+      } else {
+        for (int64_t j = 0; OB_SUCC(ret) && j < param_cnt; ++j) {
+          if (OB_ISNULL(in_params_.at(j))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("get unexpected null", K(ret));
+          } else if (OB_FAIL(in_params_.at(j)->vals_.push_back(cur_param_vals.param_vals_.at(j)))) {
+            LOG_WARN("failed to push back val", K(ret));
+          }
+        }
+      }
+    }
+  }
+  LOG_TRACE("succeed to remove duplicated values from in keypart", K(has_dup), K(val_cnt), K(distinct_param_val_arr.count()));
+  return ret;
+}
+
+int ObInKeyPart::get_obj_cmp_funcs(ObIArray<obj_cmp_func> &cmp_funcs)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < in_params_.count(); ++i) {
+    InParamMeta *cur_param = in_params_.at(i);
+    obj_cmp_func cmp_op_func = NULL;
+    if (OB_ISNULL(cur_param) || OB_UNLIKELY(cur_param->vals_.count() == 0)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get invalid argument", K(ret), K(cur_param), K(i));
+    } else {
+      const ObObjTypeClass obj_tc = cur_param->vals_.at(0).get_meta().get_type_class();
+      if (OB_FAIL(ObObjCmpFuncs::get_cmp_func(obj_tc, obj_tc, CO_EQ, cmp_op_func))) {
+        LOG_WARN("failed to get cmp func", K(ret), K(obj_tc));
+      } else {
+        OB_ASSERT(cmp_op_func != NULL);
+        ret = cmp_funcs.push_back(cmp_op_func);
       }
     }
   }
@@ -1172,8 +1304,28 @@ int ObKeyPart::formalize_keypart(bool contain_row)
         LOG_WARN("failed to adjust in param", K(ret));
       } else if (OB_FAIL(remove_in_params_vals(invalid_val_idx))) {
         LOG_WARN("failed to adjust in param values", K(ret));
+      } else if (OB_FAIL(remove_in_dup_vals())) {
+        LOG_WARN("failed to remove duplicated values", K(ret));
       }
     }
+    if (OB_SUCC(ret) && is_in_key() &&
+       (in_keypart_->in_params_.empty() || in_keypart_->get_param_val_cnt() == 0)) {
+      if (OB_FAIL(convert_to_true_or_false(false))) {
+        LOG_WARN("failed to convert to always true");
+      }
+    }
+  }
+  return ret;
+}
+
+int ObKeyPart::remove_in_dup_vals()
+{
+  int ret = OB_SUCCESS;
+  if (!is_in_key()) {
+  } else if (OB_FAIL(in_keypart_->remove_in_dup_vals())) {
+    LOG_WARN("failed to remove in dup values", K(ret));
+  } else if (in_keypart_->get_param_val_cnt() == 0) {
+    ret = convert_to_true_or_false(false);
   }
   return ret;
 }
@@ -1198,7 +1350,10 @@ int ObKeyPart::get_dup_param_and_vals(ObIArray<int64_t> &dup_param_idx, ObIArray
           LOG_WARN("failed to push back removed param idx", K(ret));
         } else {
           for (int64_t j = 0; OB_SUCC(ret) && j < start_param->vals_.count(); ++j) {
-            if (!is_contain(invalid_val_idx, j) &&
+            if (OB_UNLIKELY(start_param->vals_.count() != next_param->vals_.count())) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("values count must be the same", K(ret), K(*start_param), K(*next_param));
+            } else if (!is_contain(invalid_val_idx, j) &&
                 next_param->vals_.at(j) != start_param->vals_.at(j)) {
               ret = invalid_val_idx.push_back(j);
             }
@@ -1281,7 +1436,7 @@ int ObKeyPart::remove_in_params_vals(const ObIArray<int64_t> &val_idx)
   return ret;
 }
 
-int ObKeyPart::cast_value_type(const ObDataTypeCastParams &dtc_params, bool contain_row)
+int ObKeyPart::cast_value_type(const ObDataTypeCastParams &dtc_params, bool contain_row, bool &is_bound_modified)
 {
   int ret = OB_SUCCESS;
   int64_t start_cmp = 0;
@@ -1299,16 +1454,20 @@ int ObKeyPart::cast_value_type(const ObDataTypeCastParams &dtc_params, bool cont
     if (start_cmp < 0) {
       // after cast, precise becomes bigger, ( -> [
       normal_keypart_->include_start_ = true;
+      is_bound_modified = true;
     } else if (start_cmp > 0) {
       // after cast, the result becomes smaller, [ -> (
       normal_keypart_->include_start_ = false;
+      is_bound_modified = true;
     }
     if (end_cmp < 0) {
       // after cast, the result becomes bigger, ] -> )
       normal_keypart_->include_end_ = false;
+      is_bound_modified = true;
     } else if (end_cmp > 0) {
       // after cast, the result becomes smaller, ) -> ]
       normal_keypart_->include_end_ = true;
+      is_bound_modified = true;
     }
     normal_keypart_->start_.set_collation_type(pos_.column_type_.get_collation_type());
     normal_keypart_->end_.set_collation_type(pos_.column_type_.get_collation_type());

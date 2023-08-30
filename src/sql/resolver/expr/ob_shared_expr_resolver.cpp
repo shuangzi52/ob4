@@ -18,12 +18,14 @@ using namespace oceanbase::lib;
 bool ObQuestionmarkEqualCtx::compare_const(const ObConstRawExpr &left,
                                            const ObConstRawExpr &right)
 {
+  int &ret = err_code_;
   bool bret = false;
   if (left.get_expr_type() != right.get_expr_type() ||
       left.get_result_type() != right.get_result_type() ||
       (left.get_result_type().is_ext()
         && left.get_result_type().get_extend_type() > 0
         && left.get_result_type().get_extend_type() < T_EXT_SQL_ARRAY) ||
+      left.get_result_type().is_user_defined_sql_type() ||
       OB_SUCCESS != err_code_) {
     // do nothing
   } else if (left.get_expr_type() != T_QUESTIONMARK) {
@@ -37,7 +39,11 @@ bool ObQuestionmarkEqualCtx::compare_const(const ObConstRawExpr &left,
       ObPCParamEqualInfo equal_info;
       equal_info.first_param_idx_ = left.get_value().get_unknown();
       equal_info.second_param_idx_ = right.get_value().get_unknown();
-      err_code_ = equal_pairs_.push_back(equal_info);
+      if (equal_info.first_param_idx_ != equal_info.second_param_idx_) {
+        if (OB_FAIL(equal_pairs_.push_back(equal_info))) {
+          LOG_WARN("failed to push back equal_info", K(ret));
+        }
+      }
     }
   }
   return bret;

@@ -53,6 +53,9 @@ ObExprJoinFilter::ObExprJoinFilterContext::~ObExprJoinFilterContext()
     // do not destroy it, because other worker threads may not start yet
     rf_msg_->dec_ref_count();
   }
+  hash_funcs_.reset();
+  cmp_funcs_.reset();
+  cur_row_.reset();
 }
 
 void ObExprJoinFilter::ObExprJoinFilterContext::reset_monitor_info()
@@ -121,27 +124,6 @@ int ObExprJoinFilter::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_exp
     }
   }
 
-  rt_expr.inner_func_cnt_ = rt_expr.arg_cnt_ * FUNCTION_CNT;
-
-  if (0 == rt_expr.inner_func_cnt_) {
-    // do nothing
-  } else if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(rt_expr.inner_functions_ = reinterpret_cast<void**>(expr_cg_ctx.allocator_->
-                       alloc(sizeof(ObExpr::EvalFunc) * rt_expr.arg_cnt_ * FUNCTION_CNT)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc memory for inner_functions_ failed", K(ret));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < rt_expr.arg_cnt_; ++i) {
-      rt_expr.inner_functions_[GET_FUNC(i, HASH_ROW)] =
-          reinterpret_cast<void*>(rt_expr.args_[i]->basic_funcs_->murmur_hash_v2_);
-      rt_expr.inner_functions_[GET_FUNC(i, HASH_BATCH)] =
-          reinterpret_cast<void*>(rt_expr.args_[i]->basic_funcs_->murmur_hash_v2_batch_);
-      rt_expr.inner_functions_[GET_FUNC(i, NULL_FIRST_COMPARE)] =
-          reinterpret_cast<void*>(rt_expr.args_[i]->basic_funcs_->null_first_cmp_);
-      rt_expr.inner_functions_[GET_FUNC(i, NULL_LAST_COMPARE)] =
-          reinterpret_cast<void*>(rt_expr.args_[i]->basic_funcs_->null_last_cmp_);
-    }
-  }
   return ret;
 }
 
@@ -156,6 +138,12 @@ int ObExprJoinFilter::check_rf_ready(
     if (join_filter_ctx->need_wait_ready()) {
       while (!join_filter_ctx->is_ready() && OB_SUCC(exec_ctx.fast_check_status())) {
         if (OB_NOT_NULL(rf_msg)) {
+#ifdef ERRSIM
+          if (OB_FAIL(OB_E(EventTable::EN_PX_JOIN_FILTER_HOLD_MSG) OB_SUCCESS)) {
+            LOG_WARN("join filter hold msg by design", K(ret));
+            ob_usleep(80000000);
+          }
+#endif
           if (rf_msg->check_ready()) {
             break;
           }
@@ -237,6 +225,51 @@ void ObExprJoinFilter::check_need_dynamic_diable_bf(
           (join_filter_ctx->window_size_ * join_filter_ctx->window_cnt_);
       join_filter_ctx->dynamic_disable_ = true;
     }
+  }
+}
+
+void ObExprJoinFilter::collect_sample_info_batch(
+    ObExprJoinFilter::ObExprJoinFilterContext &join_filter_ctx,
+    int64_t filter_count, int64_t total_count)
+{
+  if (!join_filter_ctx.dynamic_disable()) {
+    join_filter_ctx.partial_filter_count_ += filter_count;
+    join_filter_ctx.partial_total_count_ += total_count;
+  }
+  check_need_dynamic_diable_bf_batch(join_filter_ctx);
+}
+
+void ObExprJoinFilter::check_need_dynamic_diable_bf_batch(
+    ObExprJoinFilter::ObExprJoinFilterContext &join_filter_ctx)
+{
+  if (join_filter_ctx.cur_pos_ >= join_filter_ctx.next_check_start_pos_
+      && join_filter_ctx.need_reset_sample_info_) {
+    join_filter_ctx.partial_total_count_ = 0;
+    join_filter_ctx.partial_filter_count_ = 0;
+    join_filter_ctx.need_reset_sample_info_ = false;
+    if (join_filter_ctx.dynamic_disable()) {
+      join_filter_ctx.dynamic_disable_ = false;
+    }
+  } else if (join_filter_ctx.cur_pos_ >=
+            join_filter_ctx.next_check_start_pos_ + join_filter_ctx.window_size_) {
+    if (join_filter_ctx.partial_total_count_ -
+          join_filter_ctx.partial_filter_count_ <
+          join_filter_ctx.partial_filter_count_) {
+      // partial_filter_count_ / partial_total_count_ > 0.5
+      // The optimizer choose the bloom filter when the filter threshold is larger than 0.6
+      // 0.5 is a acceptable value
+      // if enabled, the slide window not needs to expand
+      join_filter_ctx.window_cnt_ = 0;
+      join_filter_ctx.next_check_start_pos_ = join_filter_ctx.cur_pos_;
+    } else {
+      join_filter_ctx.window_cnt_++;
+      join_filter_ctx.next_check_start_pos_ = join_filter_ctx.cur_pos_ +
+          (join_filter_ctx.window_size_ * join_filter_ctx.window_cnt_);
+      join_filter_ctx.dynamic_disable_ = true;
+    }
+    join_filter_ctx.partial_total_count_ = 0;
+    join_filter_ctx.partial_filter_count_ = 0;
+    join_filter_ctx.need_reset_sample_info_ = true;
   }
 }
 

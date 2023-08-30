@@ -252,7 +252,7 @@ int ObSlaveMapRepartIdxCalcBase::init()
   // p0 : [task1,task2,task3]
   // p1 : [task1,task2,task3]
   // p2 : [task4,task5]
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
   if (OB_SUCC(ret)) {
     if (OB_FAIL(part_to_task_array_map_.create(max(1, part_ch_array.count()), ObModIds::OB_SQL_PX))) {
       LOG_WARN("fail create part to task array map", "count", part_ch_array.count(), K(ret));
@@ -518,7 +518,7 @@ int ObRepartSliceIdxCalc::setup_one_side_one_level_info()
 int ObRepartSliceIdxCalc::build_repart_ch_map(ObPxPartChMap &affinity_map)
 {
   int ret = OB_SUCCESS;
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
   if (OB_FAIL(affinity_map.create(max(1, part_ch_array.count()), ObModIds::OB_SQL_PX))) {
     LOG_WARN("fail create hashmap", "count", part_ch_array.count(), K(ret));
   }
@@ -580,7 +580,7 @@ int ObSlaveMapBcastIdxCalc::get_slice_indexes(const ObIArray<ObExpr*> &exprs,
       LOG_WARN("failed to push back slice idx", K(ret));
     }
   } else {
-    const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+    const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
     ARRAY_FOREACH (part_ch_array, idx) {
       if (tablet_id == part_ch_array.at(idx).first_) {
         if (OB_FAIL(slice_idx_array.push_back(part_ch_array.at(idx).second_))) {
@@ -859,7 +859,7 @@ int ObSlaveMapPkeyRangeIdxCalc::build_partition_range_channel_map(
 {
   int ret = OB_SUCCESS;
   part_range_channel_map.destroy();
-  const ObIArray<ObPxTabletRange> &part_ranges = exec_ctx_.get_partition_ranges();
+  const Ob2DArray<ObPxTabletRange> &part_ranges = exec_ctx_.get_partition_ranges();
   if (OB_FAIL(part_range_channel_map.create(DEFAULT_PARTITION_COUNT, common::ObModIds::OB_SQL_PX))) {
     LOG_WARN("create part range map failed", K(ret));
   } else {
@@ -876,7 +876,7 @@ int ObSlaveMapPkeyRangeIdxCalc::build_partition_range_channel_map(
           PartitionRangeChannelInfo *item = nullptr;
           if (OB_ISNULL(buf = exec_ctx_.get_allocator().alloc(sizeof(PartitionRangeChannelInfo)))) {
             ret = OB_ALLOCATE_MEMORY_FAILED;
-          } else if (FALSE_IT(item = new (buf) PartitionRangeChannelInfo)) {
+          } else if (FALSE_IT(item = new (buf) PartitionRangeChannelInfo(exec_ctx_.get_allocator()))) {
           } else if (FALSE_IT(item->tablet_id_ = tmp_tablet_id)) {
           } else if (OB_FAIL(item->channels_.assign(tmp_channels))) {
             LOG_WARN("assign partition channels failed", K(ret));
@@ -951,7 +951,7 @@ bool ObSlaveMapPkeyRangeIdxCalc::Compare::operator()(
     int cmp = 0;
     const int64_t cnt = sort_cmp_funs_->count();
     for (int64_t i = 0; OB_SUCC(ret) && 0 == cmp && i < cnt; i++) {
-      if (OB_FAIL(sort_cmp_funs_->at(i).cmp_func_(l[i], r[i], cmp))) {
+      if (OB_FAIL(sort_cmp_funs_->at(i).cmp_func_(l.at(i), r.at(i), cmp))) {
         LOG_WARN("do cmp failed", K(ret), K(i), K(l), K(r));
       } else if (cmp < 0) {
         less = sort_collations_->at(i).is_ascending_;
@@ -1134,7 +1134,7 @@ int ObSlaveMapPkeyHashIdxCalc::build_affi_hash_map(hash::ObHashMap<int64_t, ObPx
   int ret = OB_SUCCESS;
   int64_t tablet_id = common::OB_INVALID_INDEX_INT64;
   ObPxPartChMapItem item;
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
   if (OB_FAIL(affi_hash_map.create(part_ch_array.count(), common::ObModIds::OB_SQL_PX))) {
     LOG_WARN("failed to create part ch map", K(ret));
   }
@@ -1266,7 +1266,7 @@ bool ObRangeSliceIdCalc::Compare::operator()(
     int cmp = 0;
     const int64_t cnt = sort_cmp_funs_->count();
     for (int64_t i = 0; OB_SUCC(ret) && 0 == cmp && i < cnt; i++) {
-      if (OB_FAIL(sort_cmp_funs_->at(i).cmp_func_(l[i], r[i], cmp))) {
+      if (OB_FAIL(sort_cmp_funs_->at(i).cmp_func_(l.at(i), r.at(i), cmp))) {
         LOG_WARN("do cmp failed", K(ret), K(i), K(l), K(r));
       } else if (cmp < 0) {
         less = sort_collations_->at(i).is_ascending_;

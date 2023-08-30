@@ -24,13 +24,15 @@
 #include "sql/ob_optimizer_trace_impl.h"
 #include "sql/engine/cmd/ob_table_direct_insert_service.h"
 #include "sql/dblink/ob_dblink_utils.h"
+#include "sql/resolver/dml/ob_merge_stmt.h"
+#include "sql/optimizer/ob_log_temp_table_insert.h"
 using namespace oceanbase;
 using namespace sql;
 using namespace oceanbase::common;
 
 int ObOptimizer::optimize(ObDMLStmt &stmt, ObLogPlan *&logical_plan)
 {
-  ObActiveSessionGuard::get_stat().in_sql_optimize_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_optimize);
   int ret = OB_SUCCESS;
   ObLogPlan *plan = NULL;
   const ObQueryCtx *query_ctx = ctx_.get_query_ctx();
@@ -83,7 +85,6 @@ int ObOptimizer::optimize(ObDMLStmt &stmt, ObLogPlan *&logical_plan)
   }
   optimizer_mem_usage = ctx_.get_allocator().total() - last_mem_usage;
   LOG_TRACE("[SQL MEM USAGE]", K(optimizer_mem_usage), K(last_mem_usage));
-  ObActiveSessionGuard::get_stat().in_sql_optimize_ = false;
   return ret;
 }
 
@@ -113,11 +114,74 @@ int ObOptimizer::get_optimization_cost(ObDMLStmt &stmt,
   return ret;
 }
 
+int ObOptimizer::get_cte_optimization_cost(ObDMLStmt &root_stmt,
+                                           ObSelectStmt *cte_query,
+                                           ObIArray<ObSelectStmt *> &stmts,
+                                           double &cte_cost,
+                                           ObIArray<double> &costs)
+{
+  int ret = OB_SUCCESS;
+  cte_cost = 0.0;
+  ctx_.set_cost_evaluation();
+  costs.reuse();
+  if (OB_ISNULL(ctx_.get_query_ctx()) ||
+      OB_ISNULL(ctx_.get_session_info())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("query ctx or session info is null", K(ret));
+  } else if (OB_FAIL(init_env_info(root_stmt))) {
+    LOG_WARN("failed to init env info", K(ret));
+  } else if (OB_FAIL(generate_plan_for_temp_table(root_stmt))) {
+    LOG_WARN("failed to generate plan for temp table", K(ret));
+  }
+  if (OB_SUCC(ret) && NULL != cte_query) {
+    bool find = false;
+    for (int64_t i = 0; OB_SUCC(ret) && !find && i < ctx_.get_temp_table_infos().count(); i ++) {
+      ObSqlTempTableInfo *temp_table_info = ctx_.get_temp_table_infos().at(i);
+      ObLogPlan *plan = NULL;
+      if (OB_ISNULL(temp_table_info) || OB_ISNULL(temp_table_info->table_plan_)
+          || OB_ISNULL(plan = temp_table_info->table_plan_->get_plan())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null", K(ret));
+      } else if (cte_query == temp_table_info->table_query_) {
+        find = true;
+        if (OB_FAIL(plan->allocate_temp_table_insert_as_top(temp_table_info->table_plan_,
+                                                            temp_table_info))) {
+          LOG_WARN("failed to allocate temp table insert", K(ret));
+        } else {
+          cte_cost = temp_table_info->table_plan_->get_cost();
+        }
+      }
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < stmts.count(); i ++) {
+    ObLogPlan *plan = NULL;
+    ObSelectStmt *stmt = stmts.at(i);
+    ObLogicalOperator *best_plan = NULL;
+    if (OB_ISNULL(stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (OB_ISNULL(plan = ctx_.get_log_plan_factory().create(ctx_, *stmt))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("failed to create plan", "stmt", ctx_.get_query_ctx()->get_sql_stmt(), K(ret));
+    } else if (OB_FAIL(plan->generate_raw_plan())) {
+      LOG_WARN("failed to perform optimization", K(ret));
+    } else if (OB_FAIL(plan->init_candidate_plans(plan->get_candidate_plans().candidate_plans_))) {
+      LOG_WARN("failed to do candi into", K(ret));
+    } else if (OB_FAIL(plan->get_candidate_plans().get_best_plan(best_plan))) {
+      LOG_WARN("failed to get best plan", K(ret));
+    } else if (OB_FAIL(costs.push_back(best_plan->get_cost()))) {
+      LOG_WARN("failed to push back", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
 {
   int ret = OB_SUCCESS;
   ObIArray<ObSqlTempTableInfo*> &temp_table_infos = ctx_.get_temp_table_infos();
-  if (OB_FAIL(collect_temp_tables(ctx_.get_allocator(), stmt, temp_table_infos))) {
+  if (OB_FAIL(ObSqlTempTableInfo::collect_temp_tables(ctx_.get_allocator(), stmt, temp_table_infos,
+                                                      ctx_.get_query_ctx(), true))) {
     LOG_WARN("failed to add all temp tables", K(ret));
   } else if (temp_table_infos.empty()) {
     //do nothing
@@ -127,6 +191,9 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
     ObSelectLogPlan *temp_plan = NULL;
     ObLogicalOperator *temp_op = NULL;
     for (int64_t i = 0; OB_SUCC(ret) && i < temp_table_infos.count(); i++) {
+      ObRawExpr *temp_table_nonwhere_filter = NULL;
+      ObRawExpr *temp_table_where_filter = NULL;
+      bool can_push_to_where = true;
       if (OB_ISNULL(temp_table_info = temp_table_infos.at(i)) ||
           OB_ISNULL(ref_query = temp_table_info->table_query_)) {
         ret = OB_ERR_UNEXPECTED;
@@ -140,6 +207,13 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
         OPT_TRACE_TITLE("begin generate plan for temp table ", temp_table_info->table_name_);
       }
       if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(try_push_down_temp_table_filter(*temp_table_info,
+                                                         temp_table_nonwhere_filter,
+                                                         temp_table_where_filter))) {
+        LOG_WARN("failed to push down filter for temp table", K(ret));
+      } else if (NULL != temp_table_where_filter &&
+                 OB_FAIL(temp_plan->get_pushdown_filters().push_back(temp_table_where_filter))) {
+        LOG_WARN("failed to push down filter", K(ret));
       } else if (OB_FAIL(temp_plan->generate_raw_plan())) {
         LOG_WARN("Failed to generate temp_plan for sub_stmt", K(ret));
       } else if (OB_FAIL(temp_plan->get_candidate_plans().get_best_plan(temp_op))) {
@@ -147,6 +221,9 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
       } else if (OB_ISNULL(temp_op)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null", K(ret));
+      } else if (NULL != temp_table_nonwhere_filter &&
+                 OB_FAIL(temp_op->get_filter_exprs().push_back(temp_table_nonwhere_filter))) {
+        LOG_WARN("failed to push back", K(ret));
       } else {
         temp_table_info->table_plan_ = temp_op;
         OPT_TRACE_TITLE("end generate plan for temp table ", temp_table_info->table_name_);
@@ -156,72 +233,131 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
   return ret;
 }
 
-int ObOptimizer::collect_temp_tables(ObIAllocator &allocator,
-                                     ObDMLStmt &stmt,
-                                     ObIArray<ObSqlTempTableInfo*> &temp_table_infos)
+/**
+ * If every appearance of cte is accompanied by some filter,
+ * We can combine these filters to reduce the data materialized by cte.
+ * We try to push these filters to where condition.
+ * If all filters can be push to where condition, nonwhere_filter will be NULL.
+ * Otherwise, we might have both where_filter and nonwhere_filter.
+ * e.g.
+ *   with cte as (select a,count(*) as cnt from t1 group by a)
+ *    select * from cte where a = 1 and cnt = 1 union all select * from cte where a = 2 and cnt = 2;
+ *   nonwhere_filter :  (a = 1 and cnt = 1) or (a = 2 and cnt = 2)
+ *   where_filter : (a = 1) or (a = 2)
+*/
+int ObOptimizer::try_push_down_temp_table_filter(ObSqlTempTableInfo &info,
+                                                 ObRawExpr *&nonwhere_filter,
+                                                 ObRawExpr *&where_filter)
 {
   int ret = OB_SUCCESS;
-  ObSqlTempTableInfo *temp_table_info = NULL;
-  void *ptr = NULL;
-  TableItem *table = NULL;
-  ObSEArray<ObSelectStmt*, 4> child_stmts;
-  if (OB_ISNULL(ctx_.get_query_ctx())) {
+  bool have_filter = true;
+  nonwhere_filter = NULL;
+  where_filter = NULL;
+  ObSEArray<ObIArray<ObRawExpr *> *, 4> temp_table_filters;
+  ObSEArray<const ObDMLStmt *, 4> parent_stmts;
+  ObSEArray<const ObSelectStmt *, 4> subqueries;
+  ObSEArray<int64_t, 4> table_ids;
+  for (int64_t i = 0; OB_SUCC(ret) && have_filter && i < info.table_infos_.count(); ++i) {
+    TableItem *table =  info.table_infos_.at(i).table_item_;
+    ObDMLStmt *stmt = info.table_infos_.at(i).upper_stmt_;
+    if (OB_ISNULL(table) || OB_ISNULL(stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (info.table_infos_.at(i).table_filters_.empty()) {
+      have_filter = false;
+    } else if (OB_FAIL(temp_table_filters.push_back(&info.table_infos_.at(i).table_filters_))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(parent_stmts.push_back(stmt))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(subqueries.push_back(table->ref_query_))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(table_ids.push_back(table->table_id_))) {
+      LOG_WARN("failed to push back", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && have_filter) {
+    OPT_TRACE("pushdown filter into temp table:", info.table_query_);
+    bool can_push_all = false;
+    if (OB_FAIL(ObOptimizerUtil::split_or_filter_into_subquery(parent_stmts,
+                                                               subqueries,
+                                                               table_ids,
+                                                               temp_table_filters,
+                                                               ctx_,
+                                                               where_filter,
+                                                               can_push_all,
+                                                               /*check_match_index = */false))) {
+      LOG_WARN("failed to split filter", K(ret));
+    } else if (can_push_all) {
+      // do nothing
+    } else if (OB_FAIL(push_down_temp_table_filter(info, nonwhere_filter))) {
+      LOG_WARN("failed to push down remain temp table filter", K(ret));
+    }
+    if (NULL != where_filter) {
+      OPT_TRACE("succeed to pushdown filter to where:", where_filter);
+    }
+    if (NULL != nonwhere_filter) {
+      OPT_TRACE("succeed to pushdown filter into the top of temp table:", nonwhere_filter);
+    }
+  }
+  return ret;
+}
+
+int ObOptimizer::push_down_temp_table_filter(ObSqlTempTableInfo &info,
+                                             ObRawExpr *&temp_table_filter)
+{
+  int ret = OB_SUCCESS;
+  ObRawExprFactory &expr_factory = ctx_.get_expr_factory();
+  ObSQLSessionInfo *session_info = NULL;
+  temp_table_filter = NULL;
+  ObSEArray<ObRawExpr *, 8> and_exprs;
+  ObRawExpr *or_expr = NULL;
+  bool have_temp_table_filter = true;
+  if (OB_ISNULL(session_info = ctx_.get_session_info()) ||
+             OB_ISNULL(info.table_query_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret));
-  } else if (OB_FAIL(stmt.get_child_stmts(child_stmts))) {
-    LOG_WARN("failed to get child stmts", K(ret));
+    LOG_WARN("unexpect null param", K(session_info), K(ret));
   }
-  for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); i++) {
-    if (OB_ISNULL(child_stmts.at(i))) {
+  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
+    have_temp_table_filter &= !info.table_infos_.at(i).table_filters_.empty();
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
+    ObDMLStmt *upper_stmt = info.table_infos_.at(i).upper_stmt_;
+    TableItem *table = info.table_infos_.at(i).table_item_;
+    ObIArray<ObRawExpr *> &table_filters = info.table_infos_.at(i).table_filters_;
+    ObSEArray<ObRawExpr *, 8> rename_exprs;
+    ObRawExpr *and_expr = NULL;
+    if (table_filters.empty() || OB_ISNULL(upper_stmt) ||
+        OB_ISNULL(table)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected null", K(ret));
-    } else if (OB_FAIL(SMART_CALL(collect_temp_tables(allocator, *child_stmts.at(i),
-                                                      temp_table_infos)))) {
-      LOG_WARN("failed to add all temp tables", K(ret));
+      LOG_WARN("unexpect null table info", K(ret));
+    } else if (OB_FAIL(ObOptimizerUtil::rename_pushdown_filter(*upper_stmt,
+                                                               *info.table_query_,
+                                                               table->table_id_,
+                                                               session_info,
+                                                               expr_factory,
+                                                               table_filters,
+                                                               rename_exprs))) {
+      LOG_WARN("failed to rename push down preds", K(ret));
+    } else if (OB_FAIL(ObRawExprUtils::build_and_expr(expr_factory,
+                                                      rename_exprs,
+                                                      and_expr))) {
+      LOG_WARN("failed to build and expr", K(ret));
+    }
+    if (OB_SUCC(ret) && OB_FAIL(and_exprs.push_back(and_expr))) {
+      LOG_WARN("failed to push back expr", K(ret));
     }
   }
-  for (int64_t i = 0; OB_SUCC(ret) && i < stmt.get_table_items().count(); i++) {
-    bool find = true;
-    if (OB_ISNULL(table = stmt.get_table_items().at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected null", K(ret));
-    } else if (!table->is_temp_table()) {
-      //do nothing
-    } else {
-      ObIArray<ObSqlTempTableInfo*> &temp_table_infos_ = ctx_.get_temp_table_infos();
-      find = false;
-      for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_infos_.count(); j++) {
-        ObSqlTempTableInfo* info = temp_table_infos_.at(j);
-        if (OB_ISNULL(info)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpect null info", K(ret));
-        } else if (info->table_query_ == table->ref_query_) {
-          find = true;
-          table->ref_id_ = info->temp_table_id_;
-        }
-      }
-    }
-    if (OB_SUCC(ret) && !find) {
-      if (OB_ISNULL(table->ref_query_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected null", K(ret));
-      } else if (OB_FAIL(SMART_CALL(collect_temp_tables(allocator, *table->ref_query_,
-                                                        temp_table_infos)))) {
-        LOG_WARN("failed to add all temp tables", K(ret));
-      } else if (OB_ISNULL(ptr = allocator.alloc(sizeof(ObSqlTempTableInfo)))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected null", K(ret));
-      } else {
-        temp_table_info = new (ptr) ObSqlTempTableInfo();
-        table->ref_id_ = ctx_.get_query_ctx()->available_tb_id_--;
-        temp_table_info->temp_table_id_ = table->ref_id_;
-        temp_table_info->table_name_ = table->table_name_;
-        temp_table_info->table_query_ = table->ref_query_;
-        if (OB_FAIL(temp_table_infos.push_back(temp_table_info))) {
-          LOG_WARN("failed to push back", K(ret));
-        }
-      }
-    }
+  if (OB_FAIL(ret) || !have_temp_table_filter) {
+  } else if (OB_FAIL(ObRawExprUtils::build_or_exprs(expr_factory,
+                                                    and_exprs,
+                                                    or_expr))) {
+    LOG_WARN("failed to build or expr", K(ret));
+  } else if (OB_FAIL(or_expr->formalize(session_info))) {
+    LOG_WARN("failed to formalize expr", K(ret));
+  } else if (OB_FAIL(or_expr->pull_relation_id())) {
+    LOG_WARN("failed to pull relation id and levels", K(ret));
+  } else {
+    temp_table_filter = or_expr;
   }
   return ret;
 }
@@ -306,7 +442,7 @@ int ObOptimizer::check_pdml_enabled(const ObDMLStmt &stmt,
   } else if (OB_ISNULL(sql_ctx = ctx_.get_exec_ctx()->get_sql_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), K(ctx_.get_exec_ctx()));
-  } else if (sql_ctx->multi_stmt_item_.is_batched_multi_stmt()) {
+  } else if (sql_ctx->is_batch_params_execute()) {
     can_use_pdml = false;
     // 当batch优化打开时，不支持pdml
   } else if (!stmt.is_pdml_supported_stmt()) {
@@ -445,14 +581,22 @@ int ObOptimizer::check_pdml_supported_feature(const ObDelUpdStmt &pdml_stmt,
         }
       }
     } else if (stmt::T_MERGE == pdml_stmt.get_stmt_type()) {
-      bool with_unique_global_idx = false;
-      if (OB_FAIL(schema_guard->check_has_global_unique_index(
-                  session.get_effective_tenant_id(),
-                  main_table_tid, with_unique_global_idx))) {
-        LOG_WARN("fail check if table with global unqiue index", K(main_table_tid), K(ret));
-      } else if (with_unique_global_idx) {
+      bool update_rowkey = false;
+      ObSEArray<uint64_t, 4> index_ids;
+     if (OB_FAIL(schema_guard->get_all_unique_index(session.get_effective_tenant_id(),
+                                                    main_table_tid,
+                                                    index_ids))) {
+        LOG_WARN("failed to get all local unique index", K(ret));
+      } else if (OB_FAIL(index_ids.push_back(main_table_tid))) {
+        LOG_WARN("failed to push back index ids", K(ret));
+      } else if (OB_FAIL(check_merge_stmt_is_update_index_rowkey(session,
+                                                                 pdml_stmt,
+                                                                 index_ids,
+                                                                 update_rowkey))) {
+        LOG_WARN("failed to check merge stmt update rowkey", K(ret));
+      } else if (update_rowkey) {
         is_use_pdml = false;
-        ctx_.add_plan_note(PDML_DISABLED_BY_GLOBAL_UK);
+        ctx_.add_plan_note(PDML_DISABLE_BY_MERGE_UPDATE_PK);
       }
     }
   }
@@ -551,6 +695,18 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     ctx_.set_has_dblink(has_dblink);
     ctx_.set_cost_model_type(rowsets_enabled ? ObOptEstCost::VECTOR_MODEL : ObOptEstCost::NORMAL_MODEL);
     ctx_.set_has_cursor_expression(has_cursor_expr);
+    if (!tenant_config.is_valid() ||
+        (!tenant_config->_hash_join_enabled &&
+         !tenant_config->_optimizer_sortmerge_join_enabled &&
+         !tenant_config->_nested_loop_join_enabled)) {
+      ctx_.set_hash_join_enabled(true);
+      ctx_.set_merge_join_enabled(true);
+      ctx_.set_nested_join_enabled(true);
+    } else {
+      ctx_.set_hash_join_enabled(tenant_config->_hash_join_enabled);
+      ctx_.set_merge_join_enabled(tenant_config->_optimizer_sortmerge_join_enabled);
+      ctx_.set_nested_join_enabled(tenant_config->_nested_loop_join_enabled);
+    }
   }
   return ret;
 }
@@ -660,6 +816,11 @@ int ObOptimizer::check_whether_contain_nested_sql(const ObDMLStmt &stmt)
 {
   int ret = OB_SUCCESS;
   const ObDelUpdStmt *del_upd_stmt = nullptr;
+  // dml + select need run das path
+  if (!stmt.get_query_ctx()->disable_udf_parallel_ && stmt.get_query_ctx()->udf_has_select_stmt_) {
+    stmt.get_query_ctx()->disable_udf_parallel_ |= ((stmt.is_select_stmt() && stmt.has_for_update())
+                                                   || (stmt.is_dml_write_stmt()));
+  }
   if (stmt.get_query_ctx()->disable_udf_parallel_) {
     ctx_.set_has_pl_udf(true);
   }
@@ -671,7 +832,7 @@ int ObOptimizer::check_whether_contain_nested_sql(const ObDMLStmt &stmt)
     if (OB_FAIL(del_upd_stmt->get_dml_table_infos(table_infos))) {
       LOG_WARN("failed to get dml table infos", K(ret));
     }
-    for (int64_t i = 0; OB_SUCC(ret) && !ctx_.contain_nested_sql() && i < table_infos.count(); ++i) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < table_infos.count(); ++i) {
       const ObDmlTableInfo* table_info = table_infos.at(i);
       ObSchemaGetterGuard *schema_guard = ctx_.get_schema_guard();
       const ObTableSchema *table_schema = nullptr;
@@ -928,16 +1089,21 @@ int ObOptimizer::add_column_usage_arg(const ObDMLStmt &stmt,
 int ObOptimizer::update_column_usage_infos()
 {
   int ret = OB_SUCCESS;
-  const ObSQLSessionInfo *session = ctx_.get_session_info();
+  ObSQLSessionInfo *session = ctx_.get_session_info();
   if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret));
+    LOG_WARN("get unexpected null", K(ret), K(session));
   } else {
-    ret = ObOptStatMonitorManager::get_instance().update_local_cache(
-                session->get_effective_tenant_id(),
-                ctx_.get_column_usage_infos());
+    MTL_SWITCH(session->get_effective_tenant_id()) {
+      ObOptStatMonitorManager *optstat_monitor_mgr = NULL;
+      if (OB_ISNULL(optstat_monitor_mgr = MTL(ObOptStatMonitorManager*))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret), K(optstat_monitor_mgr));
+      } else if (OB_FAIL(optstat_monitor_mgr->update_local_cache(ctx_.get_column_usage_infos()))) {
+        LOG_WARN("failed to update local cache", K(ret));
+      } else {/*do nothiing*/}
+    }
   }
-
   return ret;
 }
 
@@ -969,5 +1135,60 @@ int ObOptimizer::check_force_default_stat()
   } else if (is_exists_opt && use_default_opt_stat) {
     ctx_.set_use_default_stat();
   }
+  return ret;
+}
+
+int ObOptimizer::check_merge_stmt_is_update_index_rowkey(const ObSQLSessionInfo &session,
+                                                         const ObDMLStmt &stmt,
+                                                         const ObIArray<uint64_t> &index_ids,
+                                                         bool &is_update)
+{
+  int ret = OB_SUCCESS;
+  share::schema::ObSchemaGetterGuard *schema_guard = ctx_.get_schema_guard();
+  const ObTableSchema *table_schema = NULL;
+  const ObMergeStmt &merge_stmt = static_cast<const ObMergeStmt&>(stmt);
+  const ObMergeTableInfo& merge_table_info = merge_stmt.get_merge_table_info();
+  ObSEArray<uint64_t, 4> rowkey_ids;
+  ObSEArray<uint64_t, 4> tmp_rowkey_ids;
+  const ObColumnRefRawExpr* column_expr = nullptr;
+  const ColumnItem* column_item = nullptr;
+  is_update = false;
+  if (OB_ISNULL(schema_guard) ||
+      OB_UNLIKELY(stmt::T_MERGE != stmt.get_stmt_type())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("the schema guard is null", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < index_ids.count(); ++i) {
+    tmp_rowkey_ids.reuse();
+    if (OB_FAIL(schema_guard->get_table_schema(session.get_effective_tenant_id(),
+                                               index_ids.at(i),
+                                               table_schema))) {
+      LOG_WARN("failed to get table schema", K(ret));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpect null", K(ret), K(table_schema));
+    } else if (OB_FAIL(table_schema->get_rowkey_info().get_column_ids(tmp_rowkey_ids))) {
+      LOG_WARN("failed to get column ids", K(ret));
+    } else if (OB_FAIL(append_array_no_dup(rowkey_ids, tmp_rowkey_ids))) {
+      LOG_WARN("failed to append array no dup", K(ret));
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !is_update && i < merge_table_info.assignments_.count(); ++i) {
+    if (OB_ISNULL(column_expr = merge_table_info.assignments_.at(i).column_expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get null column expr", K(ret));
+    } else if (merge_table_info.table_id_ != merge_table_info.loc_table_id_) {
+      if (OB_ISNULL(column_item = stmt.get_column_item_by_id(column_expr->get_table_id(),
+                                                              column_expr->get_column_id()))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get null column item", K(ret));
+      } else {
+        is_update = ObOptimizerUtil::find_item(rowkey_ids, column_item->base_cid_);
+      }
+    } else {
+      is_update = ObOptimizerUtil::find_item(rowkey_ids, column_expr->get_column_id());
+    }
+  }
+
   return ret;
 }

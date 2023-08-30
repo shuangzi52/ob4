@@ -41,8 +41,7 @@ public:
   { return distinct_exprs_; }
   int set_distinct_exprs(const common::ObIArray<ObRawExpr*> &exprs)
   { return append(distinct_exprs_, exprs); }
-  virtual int inner_replace_op_exprs(
-      const common::ObIArray<std::pair<ObRawExpr *, ObRawExpr*>   >&to_replace_exprs) override;
+  virtual int inner_replace_op_exprs(ObRawExprReplacer &replacer) override;
   virtual uint64_t hash(uint64_t seed) const override;
 
   inline void set_hash_type() { algo_ = HASH_AGGREGATE; }
@@ -65,7 +64,7 @@ public:
   inline void set_push_down(const bool is_push_down) { is_push_down_ = is_push_down; }
   inline double get_total_ndv() const { return total_ndv_; }
   inline void set_total_ndv(double total_ndv) { total_ndv_ = total_ndv; }
-  inline bool force_partition_gi() const { return is_partition_wise() && !is_push_down(); }
+  inline bool force_partition_gi() const { return (is_partition_wise() && !is_push_down()) || is_partition_gi_; }
   inline bool force_push_down() const { return force_push_down_; }
   inline void set_force_push_down(bool force_push_down) { force_push_down_ = force_push_down; }
   int get_distinct_output_exprs(ObIArray<ObRawExpr *> &output_exprs);
@@ -73,6 +72,8 @@ public:
                                 ObSqlPlanItem &plan_item) override;
   virtual int print_outline_data(PlanText &plan_text) override;
   virtual int print_used_hint(PlanText &plan_text) override;
+  inline bool is_partition_ig() const { return is_partition_gi_; }
+  inline void set_is_partition_gi(bool v) { is_partition_gi_ = v; }
 
 private:
   common::ObSEArray<ObRawExpr*, 16, common::ModulePageAllocator, true> distinct_exprs_;
@@ -81,6 +82,7 @@ private:
   bool is_push_down_;
   double total_ndv_;
   bool force_push_down_; // control by _aggregation_optimization_settings
+  bool is_partition_gi_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLogDistinct);
 };

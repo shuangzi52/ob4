@@ -18,6 +18,7 @@
 #include "ob_memtable.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 #include "storage/tx/ob_trans_define.h"
+#include "storage/tx/ob_multi_data_source.h"
 #include "share/ob_tenant_mgr.h"
 #include "storage/tx/ob_trans_ctx_mgr.h"
 #include "share/ob_force_print_log.h"
@@ -61,7 +62,7 @@ ObMemtableCtx::ObMemtableCtx()
       callback_free_count_(0),
       is_read_only_(false),
       is_master_(true),
-      read_elr_data_(false),
+      has_row_updated_(false),
       lock_mem_ctx_(ctx_cb_allocator_),
       is_inited_(false)
 {
@@ -132,7 +133,7 @@ void ObMemtableCtx::reset()
     callback_free_count_ = 0;
     callback_alloc_count_ = 0;
     callback_mem_used_ = 0;
-    read_elr_data_ = false;
+    has_row_updated_ = false;
     trans_mem_total_size_ = 0;
     lock_for_read_retry_count_ = 0;
     lock_for_read_elapse_ = 0;
@@ -817,19 +818,19 @@ uint64_t ObMemtableCtx::get_tenant_id() const
   return tenant_id;
 }
 
-void ObMemtableCtx::update_max_submitted_seq_no(const int64_t seq_no)
+void ObMemtableCtx::update_max_submitted_seq_no(const transaction::ObTxSEQ seq_no)
 {
   if (NULL != ATOMIC_LOAD(&ctx_)) {
     static_cast<ObPartTransCtx *>(ctx_)->update_max_submitted_seq_no(seq_no);
   }
 }
 
-int ObMemtableCtx::rollback(const int64_t to_seq_no, const int64_t from_seq_no)
+int ObMemtableCtx::rollback(const transaction::ObTxSEQ to_seq_no, const transaction::ObTxSEQ from_seq_no)
 {
   int ret = OB_SUCCESS;
   ObByteLockGuard guard(lock_);
 
-  if (0 > to_seq_no || 0 > from_seq_no) {
+  if (!to_seq_no.is_valid() || !from_seq_no.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", K(ret), K(from_seq_no), K(to_seq_no));
   } else if (OB_ISNULL(ATOMIC_LOAD(&ctx_))) {
@@ -857,13 +858,15 @@ bool ObMemtableCtx::is_all_redo_submitted()
 int ObMemtableCtx::remove_callbacks_for_fast_commit()
 {
   int ret = OB_SUCCESS;
-  bool has_remove = false;
+  bool meet_generate_cursor = false;
   common::ObTimeGuard timeguard("remove callbacks for fast commit", 10 * 1000);
   ObByteLockGuard guard(lock_);
 
-  if (OB_FAIL(trans_mgr_.remove_callbacks_for_fast_commit(has_remove))) {
+  if (OB_FAIL(trans_mgr_.remove_callbacks_for_fast_commit(
+                log_gen_.get_generate_cursor(),
+                meet_generate_cursor))) {
     TRANS_LOG(WARN, "fail to remove callback for uncommitted txn", K(ret), KPC(this));
-  } else if (has_remove && OB_FAIL(reuse_log_generator_())) {
+  } else if (meet_generate_cursor && OB_FAIL(reuse_log_generator_())) {
     TRANS_LOG(ERROR, "fail to reset log generator", K(ret), KPC(this));
   }
 
@@ -1186,7 +1189,7 @@ int ObMemtableCtx::clear_table_lock_(const bool is_commit,
   return ret;
 }
 
-int ObMemtableCtx::rollback_table_lock_(int64_t seq_no)
+int ObMemtableCtx::rollback_table_lock_(transaction::ObTxSEQ seq_no)
 {
   int ret = OB_SUCCESS;
   if (is_read_only_) {
@@ -1203,6 +1206,8 @@ int ObMemtableCtx::register_multi_source_data_if_need_(
     const bool is_replay)
 {
   int ret = OB_SUCCESS;
+  ObRegisterMdsFlag mds_flag;
+  mds_flag.reset();
   if (is_replay) {
     // replay does not need register multi source data, it is dealt
     // by multi source data itself.
@@ -1224,10 +1229,12 @@ int ObMemtableCtx::register_multi_source_data_if_need_(
     } else if (OB_FAIL(lock_op.serialize(buf, serialize_size, pos))) {
       TRANS_LOG(WARN, "serialize lock op failed", K(ret), K(serialize_size), K(pos));
       // TODO: yanyuan.cxf need seqno to do rollback.
+      // THE MULTI SOURCE BUFFER CAN REGISTER AGAIN IF THE RET CODE IS NOT OB_SUCCESS
     } else if (OB_FAIL(part_ctx->register_multi_data_source(type,
                                                             buf,
                                                             serialize_size,
-                                                            true /* try lock */))) {
+                                                            true /* try lock */,
+                                                            mds_flag))) {
       TRANS_LOG(WARN, "register to multi source data failed", K(ret));
     } else {
       // do nothing

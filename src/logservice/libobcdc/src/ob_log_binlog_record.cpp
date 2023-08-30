@@ -14,6 +14,9 @@
 
 #define USING_LOG_PREFIX OBLOG
 
+#ifdef OB_USE_DRCMSG
+#include <drcmsg/MD.h>                        // ITableMeta
+#endif
 
 #include "ob_log_binlog_record.h"
 #include "ob_log_utils.h"
@@ -25,8 +28,6 @@ namespace oceanbase
 {
 namespace libobcdc
 {
-const char *ObLogBR::COLUMN_CHANGED_LABEL_PTR = "";
-const char *ObLogBR::COLUMN_UNCHANGED_LABEL_PTR = NULL;
 
 ObLogBR::ObLogBR() : ObLogResourceRecycleTask(ObLogResourceRecycleTask::BINLOG_RECORD_TASK),
                      data_(nullptr),
@@ -203,6 +204,7 @@ int ObLogBR::init_data(const RecordType type,
     // put major version(from int32_t to char*) to the forth field
     if (EBEGIN == type) {
       if (OB_ISNULL(major_version_str)) {
+        ret = OB_ERR_UNEXPECTED;
         LOG_ERROR("major version str for EBEGIN statement should not be null!", KR(ret), K(cluster_id),
             K(type), K(trace_id));
       } else {
@@ -241,8 +243,7 @@ int ObLogBR::put_old(IBinlogRecord *br, const bool is_changed)
     // DRC proto
     // mark value of OldCol to empty string, use global unique empty string value
     // value of unchanged OldCol as NULL
-    const char *val = is_changed ? ObLogBR::COLUMN_CHANGED_LABEL_PTR :
-        ObLogBR::COLUMN_UNCHANGED_LABEL_PTR;
+    const char *val = is_changed ? COLUMN_VALUE_IS_EMPTY : COLUMN_VALUE_IS_NULL;
 
     int64_t pos = (NULL == val ? 0 : strlen(val));
 

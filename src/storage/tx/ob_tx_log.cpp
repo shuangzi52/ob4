@@ -25,21 +25,71 @@ using namespace share;
 namespace transaction
 {
 
-bool ObTxLogTypeChecker::need_pre_replay_barrier(const ObTxLogType log_type,
-                                                 const ObTxDataSourceType data_source_type)
+logservice::ObReplayBarrierType
+ObTxLogTypeChecker::need_replay_barrier(const ObTxLogType log_type,
+                                        const ObTxDataSourceType data_source_type)
 {
-  bool need_barrier = false;
 
-  //multi data source trans's redo log
+  logservice::ObReplayBarrierType barrier_flag = logservice::ObReplayBarrierType::NO_NEED_BARRIER;
+
+  // multi data source trans's redo log
   if (ObTxLogType::TX_MULTI_DATA_SOURCE_LOG == log_type) {
-    if (data_source_type == ObTxDataSourceType::CREATE_TABLET
-        || data_source_type == ObTxDataSourceType::REMOVE_TABLET
-        || data_source_type == ObTxDataSourceType::MODIFY_TABLET_BINDING) {
-      need_barrier = true;
+    if (data_source_type == ObTxDataSourceType::CREATE_TABLET_NEW_MDS
+        || data_source_type == ObTxDataSourceType::DELETE_TABLET_NEW_MDS
+        || data_source_type == ObTxDataSourceType::UNBIND_TABLET_NEW_MDS
+        || data_source_type == ObTxDataSourceType::START_TRANSFER_OUT
+        || data_source_type == ObTxDataSourceType::FINISH_TRANSFER_OUT) {
+
+      barrier_flag = logservice::ObReplayBarrierType::PRE_BARRIER;
+
+    } else if (data_source_type == ObTxDataSourceType::FINISH_TRANSFER_IN) {
+
+      barrier_flag = logservice::ObReplayBarrierType::STRICT_BARRIER;
+    }
+  } else if (ObTxLogType::TX_COMMIT_LOG == log_type) {
+    if (data_source_type == ObTxDataSourceType::START_TRANSFER_IN) {
+      barrier_flag = logservice::ObReplayBarrierType::STRICT_BARRIER;
     }
   }
 
-  return need_barrier;
+  return barrier_flag;
+}
+
+int ObTxLogTypeChecker::decide_final_barrier_type(
+    const logservice::ObReplayBarrierType tmp_log_barrier_type,
+    logservice::ObReplayBarrierType &final_barrier_type)
+{
+
+  int ret = OB_SUCCESS;
+  if (logservice::ObReplayBarrierType::NO_NEED_BARRIER == final_barrier_type
+      || logservice::ObReplayBarrierType::INVALID_BARRIER == final_barrier_type) {
+    final_barrier_type = tmp_log_barrier_type;
+
+  } else if (logservice::ObReplayBarrierType::NO_NEED_BARRIER == tmp_log_barrier_type) {
+    // do nothing
+  } else if (logservice::ObReplayBarrierType::PRE_BARRIER == tmp_log_barrier_type) {
+    if (logservice::ObReplayBarrierType::PRE_BARRIER == final_barrier_type
+        || logservice::ObReplayBarrierType::STRICT_BARRIER == final_barrier_type) {
+      // do nothing
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(ERROR, "Unkown final barrier type", K(ret), K(final_barrier_type),
+                K(tmp_log_barrier_type));
+    }
+
+  } else if (logservice::ObReplayBarrierType::STRICT_BARRIER == tmp_log_barrier_type) {
+
+    if (logservice::ObReplayBarrierType::PRE_BARRIER == final_barrier_type) {
+      final_barrier_type = tmp_log_barrier_type;
+    } else if (logservice::ObReplayBarrierType::STRICT_BARRIER == final_barrier_type) {
+      // do nothing
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(ERROR, "Unkown final barrier type", K(ret), K(final_barrier_type),
+                K(tmp_log_barrier_type));
+    }
+  }
+  return ret;
 }
 
 // ============================== Tx Log Header =============================
@@ -185,8 +235,8 @@ OB_TX_SERIALIZE_MEMBER(ObTxActiveInfoLog,
                        /* 11 */ tx_expired_time_,
                        /* 12 */ epoch_,
                        /* 13 */ last_op_sn_,
-                       /* 14 */ first_sn,
-                       /* 15 */ last_sn,
+                       /* 14 */ first_seq_no_,
+                       /* 15 */ last_seq_no_,
                        /* 16 */ cluster_version_,
                        /* 17 */ max_submitted_seq_no_,
                        /* 18 */ xid_);
@@ -266,10 +316,10 @@ int ObTxActiveInfoLog::before_serialize()
     TX_NO_NEED_SER(tx_expired_time_ == 0, 11, compat_bytes_);
     TX_NO_NEED_SER(epoch_ == 0, 12, compat_bytes_);
     TX_NO_NEED_SER(last_op_sn_ == 0, 13, compat_bytes_);
-    TX_NO_NEED_SER(first_sn == 0, 14, compat_bytes_);
-    TX_NO_NEED_SER(last_sn == 0, 15, compat_bytes_);
+    TX_NO_NEED_SER(!first_seq_no_.is_valid(), 14, compat_bytes_);
+    TX_NO_NEED_SER(!last_seq_no_.is_valid(), 15, compat_bytes_);
     TX_NO_NEED_SER(cluster_version_ == 0, 16, compat_bytes_);
-    TX_NO_NEED_SER(max_submitted_seq_no_ == 0, 17, compat_bytes_);
+    TX_NO_NEED_SER(!max_submitted_seq_no_.is_valid(), 17, compat_bytes_);
     TX_NO_NEED_SER(xid_.empty(), 18, compat_bytes_);
   }
 
@@ -546,7 +596,7 @@ void ObTxRedoLog::reset_mutator_buf()
 //      unused_encrypt_info can work. This may be perfected in the future.
 int ObTxRedoLog::ob_admin_dump(memtable::ObMemtableMutatorIterator *iter_ptr,
                                ObAdminMutatorStringArg &arg,
-                               palf::block_id_t block_id,
+                               const char *block_name,
                                palf::LSN lsn,
                                int64_t tx_id,
                                SCN scn,
@@ -582,8 +632,8 @@ int ObTxRedoLog::ob_admin_dump(memtable::ObMemtableMutatorIterator *iter_ptr,
       has_output = true;
     } else {
       if (!has_dumped_tx_id) {
-        databuff_printf(arg.buf_, arg.buf_len_, arg.pos_, "{BlockID: %ld; LSN:%ld, TxID:%ld; SCN:%s",
-                        block_id, lsn.val_, tx_id, to_cstring(scn));
+        databuff_printf(arg.buf_, arg.buf_len_, arg.pos_, "{BlockID: %s; LSN:%ld, TxID:%ld; SCN:%s",
+                        block_name, lsn.val_, tx_id, to_cstring(scn));
       }
       databuff_printf(arg.buf_, arg.buf_len_, arg.pos_,
                       "<TxRedoLog>: {TxCtxInfo: {%s}; MutatorMeta: {%s}; MutatorRows: {",
@@ -663,21 +713,22 @@ int ObTxRedoLog::format_mutator_row_(const memtable::ObMemtableMutatorRow &row,
   uint32_t acc_checksum = 0;
   int64_t version = 0;
   int32_t flag = 0;
-  int64_t seq_no = 0;
+  transaction::ObTxSEQ seq_no;
+  int64_t column_cnt = 0;
   ObStoreRowkey rowkey;
   memtable::ObRowData new_row;
   memtable::ObRowData old_row;
   blocksstable::ObDmlFlag dml_flag = blocksstable::ObDmlFlag::DF_NOT_EXIST;
 
   if (OB_FAIL(row.copy(table_id, rowkey, table_version, new_row, old_row, dml_flag,
-                       modify_count, acc_checksum, version, flag, seq_no))) {
+                       modify_count, acc_checksum, version, flag, seq_no, column_cnt))) {
     TRANS_LOG(WARN, "row_.copy fail", K(ret), K(table_id), K(rowkey), K(table_version), K(new_row),
-              K(old_row), K(dml_flag), K(modify_count), K(acc_checksum), K(version));
+              K(old_row), K(dml_flag), K(modify_count), K(acc_checksum), K(version), K(column_cnt));
   } else {
     arg.log_stat_->new_row_size_ += new_row.size_;
     arg.log_stat_->old_row_size_ += old_row.size_;
     arg.writer_ptr_->dump_key("RowKey");
-    arg.writer_ptr_->dump_string(to_cstring(rowkey));
+    (void)smart_dump_rowkey_(rowkey, arg);
     arg.writer_ptr_->dump_key("TableVersion");
     arg.writer_ptr_->dump_int64(table_version);
 
@@ -708,11 +759,23 @@ int ObTxRedoLog::format_mutator_row_(const memtable::ObMemtableMutatorRow &row,
     arg.writer_ptr_->dump_key("Flag");
     arg.writer_ptr_->dump_int64(flag);
     arg.writer_ptr_->dump_key("SeqNo");
-    arg.writer_ptr_->dump_int64(seq_no);
+    arg.writer_ptr_->dump_int64(seq_no.cast_to_int());
     arg.writer_ptr_->dump_key("NewRowSize");
     arg.writer_ptr_->dump_int64(new_row.size_);
     arg.writer_ptr_->dump_key("OldRowSize");
     arg.writer_ptr_->dump_int64(old_row.size_);
+    arg.writer_ptr_->dump_key("ColumnCnt");
+    arg.writer_ptr_->dump_int64(column_cnt);
+  }
+  return ret;
+}
+
+int ObTxRedoLog::smart_dump_rowkey_(const ObStoreRowkey &rowkey, ObAdminMutatorStringArg &arg)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = rowkey.to_smart_string(arg.buf_ + arg.pos_, arg.buf_len_ - arg.pos_);
+  if (pos > 0) {
+    arg.writer_ptr_->dump_string(arg.buf_ + arg.pos_);
   }
   return ret;
 }
@@ -752,14 +815,18 @@ void ObTxMultiDataSourceLog::reset()
 int ObTxMultiDataSourceLog::fill_MDS_data(const ObTxBufferNode &node)
 {
   int ret = OB_SUCCESS;
-
+#ifndef OB_TX_MDS_LOG_USE_BIT_SEGMENT_BUF
   if (node.get_serialize_size() + data_.get_serialize_size() >= MAX_MDS_LOG_SIZE) {
     ret = OB_SIZE_OVERFLOW;
     TRANS_LOG(WARN, "MDS log is overflow", K(*this), K(node));
   } else {
-    data_.push_back(node);
-  }
+#endif
 
+    data_.push_back(node);
+
+#ifndef OB_TX_MDS_LOG_USE_BIT_SEGMENT_BUF
+  }
+#endif
   return ret;
 }
 
@@ -1007,6 +1074,8 @@ const logservice::ObLogBaseType ObTxLogBlock::DEFAULT_LOG_BLOCK_TYPE =
 const int32_t ObTxLogBlock::DEFAULT_BIG_ROW_BLOCK_SIZE =
     62 * 1024 * 1024; // 62M redo log buf for big row
 
+const int64_t ObTxLogBlock::BIG_SEGMENT_SPILT_SIZE = common::OB_MAX_LOG_ALLOWED_SIZE; //256 * 1024
+
 void ObTxLogBlock::reset()
 {
   fill_buf_.reset();
@@ -1107,8 +1176,10 @@ int ObTxLogBlock::rewrite_barrier_log_block(int64_t replay_hint,
   char *serialize_buf = nullptr;
   logservice::ObLogBaseHeader header(logservice::ObLogBaseType::TRANS_SERVICE_LOG_BASE_TYPE,
                                      barrier_type, replay_hint);
-  if (OB_ISNULL(fill_buf_.get_buf())) {
+  if (OB_ISNULL(fill_buf_.get_buf())
+      || logservice::ObReplayBarrierType::INVALID_BARRIER == barrier_type) {
     ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid arguments", K(ret), K(replay_hint), K(barrier_type), KPC(this));
   } else {
     serialize_buf = fill_buf_.get_buf();
   }
@@ -1121,7 +1192,6 @@ int ObTxLogBlock::rewrite_barrier_log_block(int64_t replay_hint,
   } else if (OB_FAIL(header.serialize(serialize_buf, len_, tmp_pos))) {
     TRANS_LOG(WARN, "serialize log base header error", K(ret));
   }
-
 
   return ret;
 }
@@ -1155,7 +1225,7 @@ int ObTxLogBlock::acquire_segment_log_buf(const char *&submit_buf,
 
   if (OB_ISNULL(big_segment_buf_) || OB_ISNULL(fill_buf_.get_buf())) {
     ret = OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid argument", K(ret), KPC(this));
+    TRANS_LOG(WARN, "invalid argument", K(ret), KPC(big_segment_buf), KPC(this));
   } else if (OB_ISNULL(big_segment_buf_) || fill_buf_.is_use_local_buf()) {
     ret = OB_ERR_UNEXPECTED;
     TRANS_LOG(WARN, " big segment_buf", K(ret), KPC(this));
@@ -1168,7 +1238,7 @@ int ObTxLogBlock::acquire_segment_log_buf(const char *&submit_buf,
     TRANS_LOG(WARN, "push the first log type arg failed", K(ret), K(*this));
   } else if (OB_FAIL(cb_arg_array_.push_back(ObTxCbArg(big_segment_log_type, NULL)))) {
     TRANS_LOG(WARN, "push the second log type arg failed", K(ret), K(*this));
-  } else if (OB_FAIL(tmp_segment_buf->split_one_part(fill_buf_.get_buf(), len_, pos_,
+  } else if (OB_FAIL(tmp_segment_buf->split_one_part(fill_buf_.get_buf(), BIG_SEGMENT_SPILT_SIZE, pos_,
                                                      need_fill_part_scn))) {
     TRANS_LOG(WARN, "acquire a part of big segment failed", K(ret), K(block_header), KPC(this));
   } else if (OB_FALSE_IT(submit_buf = fill_buf_.get_buf())) {
@@ -1230,10 +1300,16 @@ int ObTxLogBlock::deserialize_log_block_header_(int64_t &replay_hint, ObTxLogBlo
   return ret;
 }
 
-int ObTxLogBlock::get_next_log(ObTxLogHeader &header, ObTxBigSegmentBuf *big_segment_buf)
+int ObTxLogBlock::get_next_log(ObTxLogHeader &header,
+                               ObTxBigSegmentBuf *big_segment_buf,
+                               bool *contain_big_segment)
 {
   int ret = OB_SUCCESS;
   int64_t tmp_pos = pos_;
+  if (OB_NOT_NULL(contain_big_segment)) {
+    *contain_big_segment = false;
+  }
+
   if (OB_ISNULL(replay_buf_)) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(ERROR, "invalid argument", K(*this));
@@ -1244,9 +1320,14 @@ int ObTxLogBlock::get_next_log(ObTxLogHeader &header, ObTxBigSegmentBuf *big_seg
       cur_log_type_ = header.get_tx_log_type();
 
       if (ObTxLogType::TX_BIG_SEGMENT_LOG == cur_log_type_) {
+        if (OB_NOT_NULL(contain_big_segment)) {
+          *contain_big_segment = true;
+        }
+
         if (OB_ISNULL(big_segment_buf)) {
-          ret = OB_INVALID_ARGUMENT;
-          TRANS_LOG(WARN, "invalid big_segment_buf", KPC(big_segment_buf));
+          ret = OB_LOG_ALREADY_SPLIT;
+          TRANS_LOG(WARN, "the tx log entry has been split, need big_segment_buf", K(ret),
+                    KPC(big_segment_buf), KPC(this));
         } else if (OB_NOT_NULL(big_segment_buf_)) {
           ret = OB_ERR_UNEXPECTED;
           TRANS_LOG(WARN, "A completed big segment need be serialized", K(ret), KPC(this),
@@ -1273,6 +1354,13 @@ int ObTxLogBlock::get_next_log(ObTxLogHeader &header, ObTxBigSegmentBuf *big_seg
                       KPC(big_segment_buf), KPC(this));
             ret = OB_LOG_TOO_LARGE;
           }
+        }
+
+        if (OB_FAIL(ret)) {
+          if (OB_LOG_TOO_LARGE != ret) {
+            pos_ = tmp_pos;
+          }
+          cur_log_type_ = ObTxLogType::UNKNOWN;
         }
       }
     }
@@ -1344,7 +1432,7 @@ int ObTxLogBlock::update_next_log_pos_()
     if (OB_FAIL(serialization::decode(replay_buf_, len_, tmp_pos, version))) {
       TRANS_LOG(WARN, "deserialize UNIS_VERSION error", K(ret), K(*this), K(tmp_pos), K(version));
     } else if (OB_FAIL(serialization::decode(replay_buf_, len_, tmp_pos, body_size))) {
-      TRANS_LOG(WARN, "deserialize body_size error", K(ret), K(*this), K(tmp_pos), K(version));
+      TRANS_LOG(WARN, "deserialize body_size error", K(ret), K(*this), K(tmp_pos), K(body_size));
     } else if (tmp_pos + body_size > len_) {
       ret = OB_SIZE_OVERFLOW;
       TRANS_LOG(WARN, "has not enough space for deserializing tx_log_body", K(body_size),

@@ -80,7 +80,7 @@ private:
   }
   bool is_retryable(int ret)
   {
-    return OB_NOT_MASTER == ret || OB_NOT_INIT == ret || OB_TIMEOUT == ret || OB_EAGAIN == ret;
+    return OB_NOT_MASTER == ret || OB_NOT_INIT == ret || OB_TIMEOUT == ret || OB_EAGAIN == ret || OB_LS_NOT_EXIST == ret || OB_TABLET_NOT_EXIST == ret;
   }
 private:
   static const int64_t PREFETCH_THRESHOLD = 4;
@@ -100,6 +100,7 @@ class ObTabletAutoincrementService
 public:
   static ObTabletAutoincrementService &get_instance();
   int init();
+  void destroy();
   int get_tablet_cache_interval(const uint64_t tenant_id,
                                 ObTabletCacheInterval &interval);
   int get_autoinc_seq(const uint64_t tenant_id, const common::ObTabletID &tablet_id, uint64_t &autoinc_seq);
@@ -120,33 +121,6 @@ private:
   lib::ObMutex init_node_mutexs_[INIT_NODE_MUTEX_NUM];
 };
 
-class ObTabletAutoincSeqRpcHandler final
-{
-public:
-  static ObTabletAutoincSeqRpcHandler &get_instance();
-  int init();
-  int fetch_tablet_autoinc_seq_cache(
-      const obrpc::ObFetchTabletSeqArg &arg,
-      obrpc::ObFetchTabletSeqRes &res);
-  int batch_get_tablet_autoinc_seq(
-      const obrpc::ObBatchGetTabletAutoincSeqArg &arg,
-      obrpc::ObBatchGetTabletAutoincSeqRes &res);
-  int batch_set_tablet_autoinc_seq(
-      const obrpc::ObBatchSetTabletAutoincSeqArg &arg,
-      obrpc::ObBatchSetTabletAutoincSeqRes &res);
-  int replay_update_tablet_autoinc_seq(
-      const ObLS *ls,
-      const ObTabletID &tablet_id,
-      const uint64_t autoinc_seq,
-      const SCN &replay_scn);
-private:
-  ObTabletAutoincSeqRpcHandler();
-  ~ObTabletAutoincSeqRpcHandler();
-private:
-  static const int64_t BUCKET_LOCK_BUCKET_CNT = 10243L;
-  bool is_inited_;
-  common::ObBucketLock bucket_lock_;
-};
 
 } // end namespace share
 } // end namespace oceanbase

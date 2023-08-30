@@ -36,14 +36,7 @@ public:
     ObP2PDatahubMsgBase &dh_msg_;
     bool need_free_;
   };
-  struct P2PRegenerateCall
-  {
-    P2PRegenerateCall(ObP2PDatahubMsgBase &db_msg) : ret_(OB_SUCCESS), dh_msg_(db_msg) {};
-    ~P2PRegenerateCall() = default;
-    int operator() (common::hash::HashMapPair<ObP2PDhKey, ObP2PDatahubMsgBase *> &entry);
-    int ret_;
-    ObP2PDatahubMsgBase &dh_msg_;
-  };
+
   struct P2PMsgGetCall
   {
     P2PMsgGetCall(ObP2PDatahubMsgBase *&db_msg) : dh_msg_(db_msg), ret_(OB_SUCCESS) {};
@@ -59,6 +52,19 @@ public:
     ~P2PMsgEraseIfCall() = default;
     bool operator() (common::hash::HashMapPair<ObP2PDhKey, ObP2PDatahubMsgBase *> &entry);
     int ret_;
+  };
+
+  struct P2PMsgSetCall
+  {
+    P2PMsgSetCall(ObP2PDhKey &dh_key, ObP2PDatahubMsgBase &db_msg)
+        : dh_key_(dh_key), dh_msg_(db_msg), ret_(OB_SUCCESS), succ_reg_dm_(false) {};
+    ~P2PMsgSetCall() = default;
+    int operator() (const common::hash::HashMapPair<ObP2PDhKey, ObP2PDatahubMsgBase *> &entry);
+    void revert();
+    ObP2PDhKey &dh_key_;
+    ObP2PDatahubMsgBase &dh_msg_;
+    int ret_;
+    bool succ_reg_dm_;
   };
 
 public:

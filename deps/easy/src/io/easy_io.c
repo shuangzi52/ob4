@@ -47,8 +47,8 @@ static void easy_io_print_status(easy_io_t *eio);
 static void easy_signal_handler(int sig);
 static void easy_listen_close(easy_listen_t *l);
 
-int ob_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
-                      void *(*start_routine) (void *), void *arg);
+int ob_pthread_create(void **ptr, void *(*start_routine) (void *), void *arg);
+void ob_pthread_join(void *ptr);
 /**
  * 初始化easy_io
  */
@@ -111,7 +111,7 @@ easy_io_t *easy_eio_create(easy_io_t *eio, int io_thread_count)
     eio->tcp_defer_accept = 1;
     eio->do_signal = 1;
     eio->tcp_keepalive = 1;  // open tcp_keepAlive
-    eio->send_qlen = EASY_CONN_DOING_REQ_CNT * 16;
+    eio->send_qlen = EASY_CONN_DOING_REQ_CNT;
     eio->support_ipv6 = easy_socket_support_ipv6();
     eio->listen_backlog = 1024;
     eio->ssl = NULL;
@@ -275,9 +275,9 @@ int easy_eio_start(easy_io_t *eio)
     easy_list_for_each_entry(tp, &eio->thread_pool_list, list_node) {
         easy_thread_pool_for_each(th, tp, 0) {
             int err = 0;
-            if ((err = ob_pthread_create(&(th->tid), NULL, th->on_start, (void *)th))) {
+            if ((err = ob_pthread_create(&(th->tid), th->on_start, (void *)th))) {
                 ret = EASY_ERROR;
-                th->tid = 0;
+                th->tid = NULL;
                 easy_error_log("easy_io_start, pthread_create error: %d(%d), idx: %d", err, errno, th->idx);
             }
         }
@@ -302,27 +302,18 @@ int easy_eio_wait(easy_io_t *eio)
 {
     easy_baseth_t           *th;
     easy_thread_pool_t      *tp;
-
     // 等待thread
     easy_spin_lock(&eio->lock);
     easy_list_for_each_entry(tp, &eio->thread_pool_list, list_node) {
         easy_spin_unlock(&eio->lock);
         easy_thread_pool_for_each(th, tp, 0) {
-            if (th->tid && pthread_join(th->tid, NULL) == EDEADLK) {
-                easy_fatal_log("easy_io_wait fatal, eio=%p, tid=%lx\n", eio, th->tid);
-                abort();
-            }
-
-            th->tid = 0;
+            ob_pthread_join(th->tid);
+            th->tid = NULL;
         }
         easy_spin_lock(&eio->lock);
-        easy_info_log("easy_io_wait join monitor, tp=0x%lx tid=%lx\n", tp, tp->monitor_tid);
-        if (tp->monitor_tid && pthread_join(tp->monitor_tid, NULL) == EDEADLK) {
-            easy_fatal_log("easy_io_wait fatal, eio=%p, tid=%lx\n", eio, tp->monitor_tid);
-            abort();
-        }
-
-        tp->monitor_tid = 0;
+        easy_info_log("easy_io_wait join monitor, tp=0x%lx tid=%p\n", tp, tp->monitor_tid);
+        ob_pthread_join(tp->monitor_tid);
+        tp->monitor_tid = NULL;
 
     }
     easy_spin_unlock(&eio->lock);

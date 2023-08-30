@@ -19,6 +19,7 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "ob_storage_ha_dag.h"
 #include "storage/compaction/ob_tablet_merge_ctx.h"
+#include "storage/memtable/ob_multi_source_data.h"
 
 namespace oceanbase
 {
@@ -30,27 +31,27 @@ struct ObBackfillTXCtx
 public:
   ObBackfillTXCtx();
   virtual ~ObBackfillTXCtx();
-  int get_tablet_id(common::ObTabletID &tablet_id);
+  int get_tablet_info(ObTabletBackfillInfo &tablet_info);
   bool is_valid() const;
   void reset();
   int build_backfill_tx_ctx(
       const share::ObTaskId &task_id,
       const share::ObLSID &ls_id,
       const share::SCN log_sync_scn,
-      const common::ObIArray<common::ObTabletID> &tablet_id_array);
+      const common::ObIArray<ObTabletBackfillInfo> &tablet_info_array);
   bool is_empty() const;
   int check_is_same(
       const ObBackfillTXCtx &backfill_tx_ctx,
       bool &is_same) const;
-  int get_tablet_id_array(common::ObIArray<common::ObTabletID> &tablet_id_array) const;
+  int get_tablet_info_array(common::ObIArray<ObTabletBackfillInfo> &tablet_info_array) const;
   int64_t hash() const;
 
   VIRTUAL_TO_STRING_KV(
       K_(task_id),
       K_(ls_id),
       K_(log_sync_scn),
-      K_(tablet_id_index),
-      K_(tablet_id_array));
+      K_(tablet_info_index),
+      K_(tablet_info_array));
 public:
   share::ObTaskId task_id_;
   share::ObLSID ls_id_;
@@ -59,8 +60,8 @@ private:
   bool inner_is_valid_() const;
 private:
   common::SpinRWLock lock_;
-  int64_t tablet_id_index_;
-  common::ObArray<common::ObTabletID> tablet_id_array_;
+  int64_t tablet_info_index_;
+  common::ObArray<ObTabletBackfillInfo> tablet_info_array_;
   DISALLOW_COPY_AND_ASSIGN(ObBackfillTXCtx);
 };
 
@@ -69,7 +70,7 @@ class ObTabletBackfillTXDag : public ObStorageHADag
 public:
   ObTabletBackfillTXDag();
   virtual ~ObTabletBackfillTXDag();
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
   virtual bool operator == (const share::ObIDag &other) const override;
@@ -78,7 +79,7 @@ public:
   int init(
       const share::ObTaskId &dag_net_id,
       const share::ObLSID &ls_id,
-      const common::ObTabletID &tablet_id,
+      const storage::ObTabletBackfillInfo &tablet_info,
       ObIHADagNetCtx *ha_dag_net_ctx,
       ObBackfillTXCtx *backfill_tx_ctx);
   virtual int generate_next_dag(share::ObIDag *&dag);
@@ -89,7 +90,7 @@ protected:
   bool is_inited_;
   share::ObTaskId dag_net_id_;
   share::ObLSID ls_id_;
-  common::ObTabletID tablet_id_;
+  ObTabletBackfillInfo tablet_info_;
   ObBackfillTXCtx *backfill_tx_ctx_;
   ObTabletHandle tablet_handle_;
   DISALLOW_COPY_AND_ASSIGN(ObTabletBackfillTXDag);
@@ -104,21 +105,29 @@ public:
   int init(
       const share::ObTaskId &dag_net_id,
       const share::ObLSID &ls_id,
-      const common::ObTabletID &tablet_id);
+      const ObTabletBackfillInfo &tablet_info);
   virtual int process() override;
-  VIRTUAL_TO_STRING_KV(K("ObTabletBackfillTXTask"), KP(this), KPC(ha_dag_net_ctx_));
+  VIRTUAL_TO_STRING_KV(K("ObTabletBackfillTXTask"), KP(this), KPC(ha_dag_net_ctx_), K_(tablet_info));
 private:
   int generate_backfill_tx_task_();
   int generate_table_backfill_tx_task_(
       ObFinishTabletBackfillTXTask *finish_tablet_backfill_tx_task,
-      common::ObIArray<ObITable *> &table_array);
-
+      common::ObIArray<ObTableHandleV2> &table_array);
+  int get_backfill_tx_memtables_(
+      ObTablet *tablet,
+      common::ObIArray<ObTableHandleV2> &table_array);
+  int get_backfill_tx_minor_sstables_(
+      ObTablet *tablet,
+      common::ObIArray<ObTableHandleV2> &minor_sstables);
+  int get_all_backfill_tx_tables_(
+      ObTablet *tablet,
+      common::ObIArray<ObTableHandleV2> &table_array);
 private:
   bool is_inited_;
   ObBackfillTXCtx *backfill_tx_ctx_;
   ObIHADagNetCtx *ha_dag_net_ctx_;
   share::ObLSID ls_id_;
-  common::ObTabletID tablet_id_;
+  ObTabletBackfillInfo tablet_info_;
   DISALLOW_COPY_AND_ASSIGN(ObTabletBackfillTXTask);
 };
 
@@ -136,9 +145,14 @@ public:
   VIRTUAL_TO_STRING_KV(K("ObTabletBackfillTXTask"), KP(this), KPC(ha_dag_net_ctx_));
 private:
   int prepare_merge_ctx_();
+  int check_need_merge_(bool &need_merge);
   int do_backfill_tx_();
   int prepare_partition_merge_();
   int update_merge_sstable_();
+  int read_msd_from_memtable_(ObUpdateTableStoreParam &param);
+  int traverse_frozen_memtable_(
+      const memtable::MultiSourceDataUnitType &type,
+      memtable::ObIMultiSourceDataUnit *msd);
 
 private:
   bool is_inited_;
@@ -152,6 +166,7 @@ private:
   common::ObArenaAllocator allocator_;
   compaction::ObTabletMergeCtx tablet_merge_ctx_;
   compaction::ObPartitionMerger *merger_;
+  int64_t transfer_seq_;
   DISALLOW_COPY_AND_ASSIGN(ObTabletTableBackfillTXTask);
 };
 
@@ -179,7 +194,7 @@ class ObFinishBackfillTXDag : public ObStorageHADag
 public:
   ObFinishBackfillTXDag();
   virtual ~ObFinishBackfillTXDag();
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual bool operator == (const share::ObIDag &other) const override;
   virtual int64_t hash() const override;
@@ -188,15 +203,11 @@ public:
   int init(
       const share::ObTaskId &task_id,
       const share::ObLSID &ls_id,
-      const share::SCN log_sync_scn,
+      const share::SCN &log_sync_scn,
+      common::ObArray<ObTabletBackfillInfo> &tablet_info_array,
       ObIHADagNetCtx *ha_dag_net_ctx);
   ObBackfillTXCtx *get_backfill_tx_ctx() { return &backfill_tx_ctx_; }
   INHERIT_TO_STRING_KV("ObStorageHADag", ObStorageHADag, KP(this));
-protected:
-  int prepare_backfill_tx_ctx_(
-      const share::ObTaskId &task_id,
-      const share::ObLSID &ls_id,
-      const share::SCN log_sync_scn);
 
 protected:
   bool is_inited_;

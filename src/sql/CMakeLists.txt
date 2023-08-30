@@ -63,6 +63,7 @@ ob_set_subtarget(ob_sql das
   das/ob_das_id_cache.cpp
   das/ob_das_task_result.cpp
   das/ob_das_spatial_index_lookup_op.cpp
+  das/ob_das_retry_ctrl.cpp
 )
 
 ob_set_subtarget(ob_sql dtl
@@ -211,6 +212,7 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_context_executor.cpp
   engine/cmd/ob_table_direct_insert_ctx.cpp
   engine/cmd/ob_table_direct_insert_service.cpp
+
 )
 
 ob_set_subtarget(ob_sql engine_dml
@@ -641,6 +643,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_extract_xml.cpp
   engine/expr/ob_expr_xmlcast.cpp
   engine/expr/ob_expr_update_xml.cpp
+  engine/expr/ob_expr_temp_table_ssid.cpp
 )
 
 ob_set_subtarget(ob_sql engine_join
@@ -1189,7 +1192,6 @@ ob_set_subtarget(ob_sql session
   session/ob_sess_info_verify.cpp
 )
 
-
 ob_set_subtarget(ob_sql udr
   udr/ob_udr_struct.cpp
   udr/ob_udr_sql_service.cpp
@@ -1219,7 +1221,6 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
 endif()
 
 target_link_libraries(ob_sql PUBLIC ob_base)
-target_compile_definitions(ob_sql PUBLIC SQL_COMPILATION)
 
 add_library(ob_sql_static
   STATIC

@@ -69,6 +69,7 @@ public:
   int fill_comment(char *buf, const int64_t buf_len) const override;
   int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   bool is_valid() const override { return param_.is_valid(); }
+  bool is_ha_dag_net() const override { return true; }
   ObLSBackupCleanDagNetInitParam &get_param() { return param_;} 
   INHERIT_TO_STRING_KV("share::ObIDagNet", share::ObIDagNet, K_(param));
 private:
@@ -94,12 +95,13 @@ public:
   virtual bool operator == (const ObIDag &other) const override;
   virtual int64_t hash() const override;
   virtual int init(share::ObIDagNet *dag_net);
-  virtual int fill_comment(char *buf, const int64_t buf_len) const;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual lib::Worker::CompatMode get_compat_mode() const override
   { return lib::Worker::CompatMode::MYSQL; }
   virtual uint64_t get_consumer_group_id() const override
   { return consumer_group_id_; }
+  virtual bool is_ha_dag() const override { return true; }
   int create_first_task();
 
   INHERIT_TO_STRING_KV("ObIDag", ObIDag, KP(this), K_(param), K_(result));

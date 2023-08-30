@@ -131,7 +131,8 @@ public:
                                   const uint64_t index_table_id,
                                   const ObIndexStatus status,
                                   const int64_t new_schema_version,
-                                  common::ObISQLClient &sql_client);
+                                  common::ObISQLClient &sql_client,
+                                  const common::ObString *ddl_stmt_str);
 
   // TODO: merge these two API
   int sync_aux_schema_version_for_history(common::ObISQLClient &sql_client,
@@ -291,7 +292,8 @@ private:
   int add_sequence(const uint64_t tenant_id,
                    const uint64_t table_id,
                    const uint64_t column_id,
-                   const uint64_t auto_increment);
+                   const uint64_t auto_increment,
+                   const int64_t truncate_version);
   int add_transition_point_val(share::ObDMLSqlSplicer &dml,
                                const ObTableSchema &table);
   int add_interval_range_val(share::ObDMLSqlSplicer &dml,

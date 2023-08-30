@@ -53,14 +53,7 @@ public:
   void destroy();
   void reset();
   bool is_inited() const { return is_inited_; }
-  bool is_valid() const
-  {
-    return is_inited_
-        && ls_id_.is_valid()
-        && tablet_id_.is_valid()
-        && nullptr != log_handler_
-        && max_saved_version_ >= 0;
-  }
+  int64_t get_max_column_cnt() const { return max_column_cnt_; }
 
   // follower
   int replay_schema_log(const share::SCN &scn, const char *buf, const int64_t size, int64_t &pos);
@@ -73,7 +66,7 @@ public:
 
   ObStorageSchemaRecorder(const ObStorageSchemaRecorder&) = delete;
   ObStorageSchemaRecorder& operator=(const ObStorageSchemaRecorder&) = delete;
-  TO_STRING_KV(K_(is_inited), K_(ls_id), K_(tablet_id));
+  INHERIT_TO_STRING_KV("ObIStorageClogRecorder", ObIStorageClogRecorder, K_(ls_id), K_(tablet_id));
 
 private:
   virtual int inner_replay_clog(
@@ -121,7 +114,7 @@ private:
   share::ObLSID ls_id_;
   ObTabletID tablet_id_;
   int64_t table_id_;
-
+  int64_t max_column_cnt_;
 };
 
 } // storage

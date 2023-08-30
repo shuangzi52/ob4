@@ -77,6 +77,7 @@ int ObPxTaskProcess::check_inner_stat()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("phy plan ctx is NULL", K(ret), K(exec_ctx));
   } else if (OB_ISNULL(arg_.get_sqc_handler())) {
+    ret = OB_ERR_UNEXPECTED;
     LOG_WARN("sqc hanlder is null", K(ret));
   } else {
     // 为了尽快确定任务超时，启动 task 的超时时间很短，10ms 左右
@@ -123,8 +124,10 @@ void ObPxTaskProcess::run()
 
 int ObPxTaskProcess::process()
 {
-  ObActiveSessionGuard::get_stat().in_px_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_px_execution);
   int ret = OB_SUCCESS;
+  common::ob_setup_default_tsi_warning_buffer();
+  common::ob_reset_tsi_warning_buffer();
   enqueue_timestamp_ = ObTimeUtility::current_time();
   process_timestamp_ = enqueue_timestamp_;
   ObExecRecord exec_record;
@@ -227,7 +230,6 @@ int ObPxTaskProcess::process()
     ObSQLUtils::handle_audit_record(false, EXECUTE_DIST, *session);
   }
   release();
-  ObActiveSessionGuard::get_stat().in_px_execution_ = false;
   return ret;
 }
 
@@ -439,6 +441,8 @@ int ObPxTaskProcess::do_process()
     if (OB_SUCC(ret)) {
       if (nullptr != arg_.op_spec_root_) {
         const ObPxSqcMeta &sqc_meta = arg_.sqc_handler_->get_sqc_init_arg().sqc_;
+        // show monitoring information from qc
+        LOG_DEBUG("receive monitoring information", K(sqc_meta.get_monitoring_info()));
         ObExtraServerAliveCheck qc_alive_checker(sqc_meta.get_qc_addr(),
           arg_.exec_ctx_->get_my_session()->get_process_query_time());
         ObExtraServerAliveCheck::Guard check_guard(*arg_.exec_ctx_, qc_alive_checker);
@@ -451,9 +455,9 @@ int ObPxTaskProcess::do_process()
       }
     }
   }
-  if (OB_NOT_NULL(arg_.exec_ctx_)) {
-    DAS_CTX(*arg_.exec_ctx_).get_location_router().refresh_location_cache(true, ret);
-  }
+
+  // for forward warning msg and user error msg
+  (void)record_user_error_msg(ret);
   // for transaction
   (void)record_tx_desc();
   // for exec feedback info
@@ -466,6 +470,10 @@ int ObPxTaskProcess::do_process()
   // Task 和 Sqc 在两个不同线程中时，task 需要和 sqc 通信
   if (NULL != arg_.sqc_task_ptr_) {
     arg_.sqc_task_ptr_->set_result(ret);
+    if (OB_NOT_NULL(arg_.exec_ctx_)) {
+      int das_retry_rc = DAS_CTX(*arg_.exec_ctx_).get_location_router().get_last_errno();
+      arg_.sqc_task_ptr_->set_das_retry_rc(das_retry_rc);
+    }
     if (OB_SUCC(ret)) {
       // nop
     } else if (IS_INTERRUPTED()) {
@@ -474,12 +482,41 @@ int ObPxTaskProcess::do_process()
                && ObVirtualTableErrorWhitelist::should_ignore_vtable_error(ret)) {
       // 忽略虚拟表错误
     } else {
-      (void) ObInterruptUtil::interrupt_qc(arg_.task_, ret);
+      (void) ObInterruptUtil::interrupt_qc(arg_.task_, ret, arg_.exec_ctx_);
     }
   }
 
   LOG_TRACE("notify SQC task exit", K(dfo_id), K(sqc_id), K(task_id), K(ret));
 
+  return ret;
+}
+
+int ObPxTaskProcess::record_user_error_msg(int retcode)
+{
+  int ret = OB_SUCCESS;
+  CK (OB_NOT_NULL(arg_.sqc_task_ptr_));
+  if (OB_SUCC(ret)) {
+    ObPxUserErrorMsg &rcode =  arg_.sqc_task_ptr_->get_err_msg();
+    rcode.rcode_ = retcode;
+    common::ObWarningBuffer *wb = common::ob_get_tsi_warning_buffer();
+    if (wb) {
+      if (retcode != common::OB_SUCCESS) {
+        (void)snprintf(rcode.msg_, common::OB_MAX_ERROR_MSG_LEN, "%s", wb->get_err_msg());
+      }
+      //always add warning buffer
+      bool not_null = true;
+      for (uint32_t idx = 0; OB_SUCC(ret) && not_null && idx < wb->get_readable_warning_count(); idx++) {
+        const common::ObWarningBuffer::WarningItem *item = wb->get_warning_item(idx);
+        if (item != NULL) {
+          if (OB_FAIL(rcode.warnings_.push_back(*item))) {
+            RPC_OBRPC_LOG(WARN, "Failed to add warning", K(ret));
+          }
+        } else {
+          not_null = false;
+        }
+      }
+    }
+  }
   return ret;
 }
 
@@ -508,6 +545,8 @@ int ObPxTaskProcess::record_tx_desc()
   CK (OB_NOT_NULL(cur_exec_ctx = arg_.exec_ctx_));
   CK (OB_NOT_NULL(cur_session = cur_exec_ctx->get_my_session()));
   if (OB_SUCC(ret) && !arg_.sqc_task_ptr_->is_use_local_thread()) {
+    // move session's tx_desc to task, accumulate when sqc report
+    ObSQLSessionInfo::LockGuard guard(cur_session->get_thread_data_lock());
     transaction::ObTxDesc *&cur_tx_desc = cur_session->get_tx_desc();
     if (OB_NOT_NULL(cur_tx_desc)) {
       transaction::ObTxDesc *&task_tx_desc = arg_.sqc_task_ptr_->get_tx_desc();
@@ -574,13 +613,18 @@ int ObPxTaskProcess::OpPreparation::apply(ObExecContext &ctx,
       } else {
         input->set_worker_id(task_id_);
         input->set_px_sequence_id(task_->px_int_id_.px_interrupt_id_.first_);
+        if (OB_NOT_NULL(ctx.get_my_session())) {
+          input->set_rf_max_wait_time(ctx.get_my_session()->get_runtime_filter_wait_time_ms());
+        }
         if (ObGranuleUtil::pwj_gi(gi->gi_attri_flag_)) {
           pw_gi_spec_ = gi;
           on_set_tscs_ = true;
         }
       }
     }
-  } else if (PHY_TABLE_SCAN == op.type_ && on_set_tscs_) {
+  } else if ((PHY_TABLE_SCAN == op.type_ ||
+              PHY_ROW_SAMPLE_SCAN == op.type_ ||
+              PHY_BLOCK_SAMPLE_SCAN == op.type_) && on_set_tscs_) {
     if (OB_ISNULL(pw_gi_spec_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("gi is null", K(ret));

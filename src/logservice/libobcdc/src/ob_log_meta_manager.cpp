@@ -64,9 +64,9 @@
       if (OB_FAIL(tmp_uk_info.cstr(tmp_uk_info_str))) { \
         LOG_ERROR("get tmp_uk_info str fail", KR(ret), K(tmp_uk_info)); \
       } else if (OB_ISNULL(tmp_uk_info_str)) { \
-        LOG_ERROR("tmp_uk_info_str is invalid", K(tmp_uk_info_str), K(tmp_uk_info), \
-            K(valid_uk_column_count), K(index_table_schema->get_table_name())); \
         ret = OB_ERR_UNEXPECTED; \
+        LOG_ERROR("tmp_uk_info_str is invalid", KR(ret), K(tmp_uk_info_str), K(tmp_uk_info), \
+            K(valid_uk_column_count), K(index_table_schema->get_table_name())); \
       } else { \
         if (valid_uk_table_count > 0) { \
           ret = uk_info.append(","); \
@@ -90,6 +90,25 @@ namespace oceanbase
 {
 namespace libobcdc
 {
+void ObLogMetaManager::set_column_encoding_(const common::ObObjType &col_type,
+     const common::ObCharsetType &cs_type,
+     IColMeta *meta)
+{
+  if (1 == TCONF.enable_compatible_charset) {
+    if (cs_type > ObCharsetType::CHARSET_BINARY) {
+      SET_ENCODING(meta, cs_type);
+    } else if (ob_is_string_or_lob_type(col_type) ||
+        ob_is_enum_or_set_type(col_type) ||
+        ob_is_json(col_type)) {
+      SET_ENCODING(meta, cs_type);
+    } else {
+      meta->setEncoding(DEFAULT_ENCODING);
+    }
+  } else {
+    SET_ENCODING(meta, cs_type);
+  }
+}
+
 ObLogMetaManager::ObLogMetaManager() : inited_(false),
                                        enable_output_hidden_primary_key_(false),
                                        obj2str_helper_(NULL),
@@ -241,12 +260,12 @@ int ObLogMetaManager::get_table_meta(
             }
           } else if (OB_ISNULL(table_schema)) {
             // tenant has been dropped
-            LOG_WARN("table_schema is null, tenant may be dropped", K(table_schema),
+            ret = OB_TENANT_HAS_BEEN_DROPPED;
+            LOG_WARN("table_schema is null, tenant may be dropped", KR(ret), K(table_schema),
                 "tenant_id", simple_table_schema->get_tenant_id(),
                 K(global_schema_version),
                 "table_id", simple_table_schema->get_table_id(),
                 "table_name", simple_table_schema->get_table_name(), KPC(simple_table_schema));
-            ret = OB_TENANT_HAS_BEEN_DROPPED;
           } else if (OB_FAIL(get_usr_def_col_from_table_schema_(*table_schema, usr_def_col))) {
             LOG_ERROR("get_usr_def_col_from_table_schema failed", K(tenant_id), K(global_schema_version),
                 K(table_schema), K(usr_def_col));
@@ -306,12 +325,12 @@ int ObLogMetaManager::get_table_meta(
           LOG_ERROR("get_table_meta from tenant_dict_info failed", KR(ret), K(tenant_id), K(table_id));
         } else if (OB_ISNULL(table_schema)) {
           // tenant has been dropped
-          LOG_WARN("table_schema is null, tenant may be dropped", K(table_schema),
+          ret = OB_TENANT_HAS_BEEN_DROPPED;
+          LOG_WARN("table_schema is null, tenant may be dropped", KR(ret), K(table_schema),
               "tenant_id", simple_table_schema->get_tenant_id(),
               K(global_schema_version),
               "table_id", simple_table_schema->get_table_id(),
               "table_name", simple_table_schema->get_table_name(), KPC(simple_table_schema));
-          ret = OB_TENANT_HAS_BEEN_DROPPED;
         } else if (OB_FAIL(add_and_get_table_meta_(meta_info, table_schema, table_schema->get_column_id_arr_order_by_table_define(),
             *tenant_info, table_meta, stop_flag))) {
           // caller deal with error code OB_TENANT_HAS_BEEN_DROPPED
@@ -1169,7 +1188,8 @@ int ObLogMetaManager::set_column_meta_(
       col_meta->setSigned(signed_flag);
       col_meta->setIsPK(column_schema.is_original_rowkey_column());
       col_meta->setNotNull(! column_schema.is_nullable());
-      SET_ENCODING(col_meta, column_schema.get_charset_type());
+
+      set_column_encoding_(col_type, column_schema.get_charset_type(), col_meta);
 
       if (column_schema.is_xmltype()) {
         SET_ENCODING(col_meta, CS_TYPE_UTF8MB4_GENERAL_CI);
@@ -1300,9 +1320,9 @@ int ObLogMetaManager::set_primary_keys_(ITableMeta *table_meta,
           }
           // require cstr is valid
           else if (OB_ISNULL(pk_info_str) || OB_ISNULL(pks_str)) {
-            LOG_ERROR("pk_info_str or pks_str is invalid", K(pk_info_str), K(pks_str), K(pk_info),
-                K(pks), K(valid_pk_num));
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("pk_info_str or pks_str is invalid", KR(ret), K(pk_info_str), K(pks_str), K(pk_info),
+                K(pks), K(valid_pk_num));
           } else {
             table_meta->setPkinfo(pk_info_str);
             table_meta->setPKs(pks_str);
@@ -1850,10 +1870,10 @@ int ObLogMetaManager::set_unique_keys_from_all_index_table_(
           LOG_ERROR("get index table schema fail", KR(ret), K(simple_index_infos.at(index).table_id_));
         }
       } else if (OB_ISNULL(index_table_schema)) {
-        LOG_ERROR("get index table schema fail", "table_id", table_schema.get_table_id(),
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("get index table schema fail", KR(ret), "table_id", table_schema.get_table_id(),
             "table_name", table_schema.get_table_name(),
             "index_table_id", simple_index_infos.at(index).table_id_, K(index_table_count), K(index));
-        ret = OB_ERR_UNEXPECTED;
       }
       // Handling uniquely indexed tables
       else if (index_table_schema->is_unique_index()) {

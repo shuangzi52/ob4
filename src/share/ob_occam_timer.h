@@ -229,7 +229,7 @@ public:
           try_delete_this_task_if_there_is_no_handle = true;
         }
       }
-  #ifdef UNIITTEST_DEBUG
+  #ifdef UNITTEST_DEBUG
       ob_usleep(10_ms);
   #endif
       // try delete task if:
@@ -263,7 +263,7 @@ public:
       ObOccamTimerTask *task = this;
       int64_t schedule_time = ObClockGenerator::getRealClock();
       TaskWrapper commit_task(func_shared_ptr_, task, need_delete, schedule_time);
-#ifdef UNIITTEST_DEBUG
+#ifdef UNITTEST_DEBUG
       OCCAM_LOG(DEBUG, "print size of", K(sizeof(commit_task)));
 #endif
       switch (task_priority_) {
@@ -527,7 +527,7 @@ class ObOccamTimer
 {
 public:
   ObOccamTimer() : total_running_task_count_(0), precision_(0), is_running_(false) {}
-  ~ObOccamTimer() { stop_and_wait(); }
+  ~ObOccamTimer() { destroy(); }
   int init_and_start(ObOccamThreadPool &pool, const int64_t precision, const char *name)
   {
     TIMEGUARD_INIT(OCCAM, 100_ms);
@@ -551,7 +551,7 @@ public:
   int init_and_start(const int64_t worker_number,
                      const int64_t precision,
                      const char *name,
-                     const int64_t queue_size_square_of_2 = 14)
+                     const int64_t queue_size_square_of_2 = 10)
   {
     TIMEGUARD_INIT(OCCAM, 100_ms);
     int ret = OB_SUCCESS;
@@ -572,7 +572,7 @@ public:
     }
     return OB_SUCCESS;
   }
-  void stop_and_wait()
+  void stop()
   {
     ATOMIC_STORE(&is_running_, false);
     int64_t last_print_time = 0;
@@ -583,6 +583,32 @@ public:
         OCCAM_LOG(INFO, "OccamTimr waiting running task finished",
                     K(ATOMIC_LOAD(&total_running_task_count_)), KP(this));
       }
+    }
+    if (timer_shared_ptr_.is_valid()) {
+      timer_shared_ptr_->stop();
+    }
+    if (thread_pool_shared_ptr_.is_valid()) {
+      thread_pool_shared_ptr_->stop();
+    }
+  }
+  void wait()
+  {
+    if (timer_shared_ptr_.is_valid()) {
+      timer_shared_ptr_->wait();
+    }
+    if (thread_pool_shared_ptr_.is_valid()) {
+      thread_pool_shared_ptr_->wait();
+    }
+  }
+  void destroy()
+  {
+    stop();
+    wait();
+    if (thread_pool_shared_ptr_.is_valid()) {
+      thread_pool_shared_ptr_->destroy();
+    }
+    if (timer_shared_ptr_.is_valid()) {
+      timer_shared_ptr_->destroy();
     }
   }
   bool is_running() const { return ATOMIC_LOAD(&is_running_); };

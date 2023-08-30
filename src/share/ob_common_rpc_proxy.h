@@ -136,6 +136,7 @@ public:
   RPC_S(PR5 accept_plan_baseline, obrpc::OB_RS_ACCEPT_PLAN_BASELINE, (ObModifyPlanBaselineArg));
   RPC_S(PRD cancel_evolve_task, obrpc::OB_RS_CANCEL_EVOLVE_TASK, (ObModifyPlanBaselineArg));
   RPC_S(PR5 admin_load_baseline, obrpc::OB_ADMIN_LOAD_BASELINE, (ObLoadPlanBaselineArg));
+  RPC_S(PR5 admin_load_baseline_v2, obrpc::OB_ADMIN_LOAD_BASELINE_V2, (ObLoadPlanBaselineArg), ObLoadBaselineRes);
   // RPC_S(PRD drop_plan_baseline, obrpc::OB_DROP_PLAN_BASELINE, (ObDropPlanBaselineArg));
 
   //----End of definitions for managing plan_baselines----
@@ -187,11 +188,10 @@ public:
   RPC_S(PRD split_resource_pool, obrpc::OB_SPLIT_RESOURCE_POOL, (ObSplitResourcePoolArg));
   RPC_S(PRD merge_resource_pool, obrpc::OB_MERGE_RESOURCE_POOL, (ObMergeResourcePoolArg));
   RPC_S(PRD alter_resource_tenant, obrpc::OB_ALTER_RESOURCE_TENANT, (ObAlterResourceTenantArg));
-
-  RPC_S(PRD root_minor_freeze, obrpc::OB_ROOT_MINOR_FREEZE, (ObRootMinorFreezeArg));
   RPC_S(PRD update_index_status, obrpc::OB_UPDATE_INDEX_TABLE_STATUS, (ObUpdateIndexStatusArg));
 
   // define system admin rpc (alter system ...)
+  RPC_S(PR5 root_minor_freeze, obrpc::OB_ROOT_MINOR_FREEZE, (ObRootMinorFreezeArg));
   RPC_S(PR5 admin_switch_replica_role, obrpc::OB_ADMIN_SWITCH_REPLICA_ROLE, (ObAdminSwitchReplicaRoleArg));
   RPC_S(PR5 admin_switch_rs_role, obrpc::OB_ADMIN_SWITCH_RS_ROLE, (ObAdminSwitchRSRoleArg));
   RPC_S(PR5 admin_drop_replica, obrpc::OB_ADMIN_DROP_REPLICA, (ObAdminDropReplicaArg));
@@ -246,9 +246,6 @@ public:
   RPC_S(PR5 abort_redef_table, obrpc::OB_ABORT_REDEF_TABLE, (obrpc::ObAbortRedefTableArg));
   RPC_S(PR5 update_ddl_task_active_time, obrpc::OB_UPDATE_DDL_TASK_ACTIVE_TIME, (obrpc::ObUpdateDDLTaskActiveTimeArg));
 
-  RPC_S(PR5 backup_ls_data_res, OB_BACKUP_LS_DATA_RES, (ObBackupTaskRes));
-  RPC_S(PR5 delete_backup_ls_task_res, OB_DELETE_BACKUP_LS_TASK_RES, (ObBackupTaskRes));
-
   RPC_S(PR5 disaster_recovery_task_reply, OB_DISASTER_RECOVERY_TASK_REPLY, (ObDRTaskReplyResult));
   RPC_S(PR5 backup_compl_log_res, obrpc::OB_BACKUP_COMPL_LOG_RES, (ObBackupTaskRes));
 
@@ -265,7 +262,7 @@ public:
   RPC_S(PR5 get_recycle_schema_versions, OB_GET_RECYCLE_SCHEMA_VERSIONS, (obrpc::ObGetRecycleSchemaVersionsArg), obrpc::ObGetRecycleSchemaVersionsResult);
 
   // backup and restore
-  RPC_S(PRD physical_restore_tenant, OB_PHYSICAL_RESTORE_TENANT, (obrpc::ObPhysicalRestoreTenantArg));
+  RPC_S(PRD physical_restore_tenant, OB_PHYSICAL_RESTORE_TENANT, (obrpc::ObPhysicalRestoreTenantArg), obrpc::Int64);
   RPC_S(PRD rebuild_index_in_restore, OB_REBUILD_INDEX_IN_RESTORE, (obrpc::ObRebuildIndexInRestoreArg));
   RPC_S(PR5 archive_log, obrpc::OB_ARCHIVE_LOG, (ObArchiveLogArg));
   RPC_S(PRD backup_database, obrpc::OB_BACKUP_DATABASE, (ObBackupDatabaseArg)); // use ddl thread
@@ -296,6 +293,12 @@ public:
   RPC_S(PR5 admin_sync_rewrite_rules, obrpc::OB_ADMIN_SYNC_REWRITE_RULES, (ObSyncRewriteRuleArg));
   //----End of Definitions for sync rewrite rules----
 
+#ifdef OB_BUILD_ARBITRATION
+  RPC_S(PR5 admin_add_arbitration_service, obrpc::OB_ADMIN_ADD_ARBITRATION_SERVICE, (ObAdminAddArbitrationServiceArg));
+  RPC_S(PR5 admin_remove_arbitration_service, obrpc::OB_ADMIN_REMOVE_ARBITRATION_SERVICE, (ObAdminRemoveArbitrationServiceArg));
+  RPC_S(PR5 admin_replace_arbitration_service, obrpc::OB_ADMIN_REPLACE_ARBITRATION_SERVICE, (ObAdminReplaceArbitrationServiceArg));
+  RPC_S(PR5 remove_cluster_info_from_arb_server, obrpc::OB_REMOVE_CLUSTER_INFO_FROM_ARB_SERVER, (ObRemoveClusterInfoFromArbServerArg));
+#endif
   //----Definitions for managing row level security----
   RPC_S(PRD handle_rls_policy_ddl, obrpc::OB_HANDLE_RLS_POLICY_DDL, (ObRlsPolicyDDLArg));
   RPC_S(PRD handle_rls_group_ddl, obrpc::OB_HANDLE_RLS_GROUP_DDL, (ObRlsGroupDDLArg));
@@ -304,6 +307,9 @@ public:
 
   RPC_S(PRD recompile_all_views_batch, obrpc::OB_RECOMPILE_ALL_VIEWS_BATCH, (ObRecompileAllViewsBatchArg));
   RPC_S(PRD try_add_dep_infos_for_synonym_batch, obrpc::OB_TRY_ADD_DEP_INFOS_FOR_SYNONYM_BATCH, (ObTryAddDepInofsForSynonymBatchArg));
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_S(PR5 get_root_key, obrpc::OB_GET_ROOT_KEY, (obrpc::ObRootKeyArg), obrpc::ObRootKeyResult);
+#endif
 public:
   void set_rs_mgr(share::ObRsMgr &rs_mgr)
   {

@@ -322,6 +322,20 @@ def check_schema_status(query_cur, timeout):
   sql = """select if (a.cnt = b.cnt, 1, 0) as passed from (select count(*) as cnt from oceanbase.__all_virtual_server_schema_info where refreshed_schema_version > 1 and refreshed_schema_version % 8 = 0) as a join (select count(*) as cnt from oceanbase.__all_server join oceanbase.__all_tenant) as b"""
   check_until_timeout(query_cur, sql, 1, timeout)
 
+# 4. check major finish
+def check_major_merge(query_cur, timeout):
+  need_check = 0
+  (desc, results) = query_cur.exec_query("""select distinct value from  GV$OB_PARAMETERs where name = 'enable_major_freeze';""")
+  if len(results) != 1:
+    need_check = 1
+  elif results[0][0] != 'True':
+    need_check = 1
+  if need_check == 1:
+    sql = """select count(1) from CDB_OB_MAJOR_COMPACTION where (GLOBAL_BROADCAST_SCN > LAST_SCN or STATUS != 'IDLE')"""
+    check_until_timeout(query_cur, sql, 0, timeout)
+    sql2 = """select /*+ query_timeout(1000000000) */ count(1) from __all_virtual_tablet_compaction_info where max_received_scn > finished_scn and max_received_scn > 0"""
+    check_until_timeout(query_cur, sql2, 0, timeout)
+
 def check_until_timeout(query_cur, sql, value, timeout):
   times = timeout / 10
   while times >= 0:
@@ -342,7 +356,7 @@ def check_until_timeout(query_cur, sql, value, timeout):
     time.sleep(10)
 
 # 开始健康检查
-def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, zone = ''):
+def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, need_check_major_status, zone = ''):
   try:
     conn = mysql.connector.connect(user = my_user,
                                    password = my_passwd,
@@ -360,6 +374,8 @@ def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, zone
       check_paxos_replica(query_cur, timeout)
       check_schema_status(query_cur, timeout)
       check_server_version_by_zone(query_cur, zone)
+      if True == need_check_major_status:
+        check_major_merge(query_cur, timeout)
     except Exception, e:
       logging.exception('run error')
       raise e
@@ -394,7 +410,7 @@ if __name__ == '__main__':
       zone = get_opt_zone()
       logging.info('parameters from cmd: host=\"%s\", port=%s, user=\"%s\", password=\"%s\", log-file=\"%s\", timeout=%s, zone=\"%s\"', \
           host, port, user, password, log_filename, timeout, zone)
-      do_check(host, port, user, password, upgrade_params, timeout, zone)
+      do_check(host, port, user, password, upgrade_params, timeout, False, zone) # need_check_major_status = False
     except mysql.connector.Error, e:
       logging.exception('mysql connctor error')
       raise e

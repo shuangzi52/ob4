@@ -654,11 +654,6 @@ int ObExprGeneratorImpl::visit_simple_op(ObNonTerminalRawExpr &expr)
           rownum_op->set_op_id(static_cast<ObSysFunRawExpr&>(expr).get_op_id());
           break;
         }
-        case T_FUN_SYS_NULLIF: {
-          ObExprNullif *nullif_expr = static_cast<ObExprNullif *> (op);
-          ret = visit_nullif_expr(expr, nullif_expr);
-          break;
-        }
         case T_FUN_SYS_CAST: {
           ObExprCast *cast_op = static_cast<ObExprCast*>(op);
           const bool is_implicit = expr.has_flag(IS_INNER_ADDED_EXPR);
@@ -849,6 +844,7 @@ inline int ObExprGeneratorImpl::visit_in_expr(ObOpRawExpr &expr, ObExprInOrNotIn
       bool param_all_same_cs_type = true;
       bool param_all_is_ext = true;
       bool param_all_same_cs_level = true;
+      bool param_all_can_vectorize = param_all_const;
       ObObjType first_obj_type = param1->get_param_expr(0)->get_data_type();
       ObObjType cur_obj_type = ObMaxType;
       ObCollationType first_obj_cs_type = param1->get_param_expr(0)->get_collation_type();
@@ -864,6 +860,7 @@ inline int ObExprGeneratorImpl::visit_in_expr(ObOpRawExpr &expr, ObExprInOrNotIn
           first_obj_type = cur_obj_type;
           first_obj_cs_type = cur_obj_cs_type;
         }
+        param_all_can_vectorize &= param1->get_param_expr(i)->is_static_const_expr();
         if (ObNullType != first_obj_type && ObNullType != cur_obj_type) {
           param_all_const &= param1->get_param_expr(i)->is_static_const_expr();
           param_all_same_type &= (first_obj_type == cur_obj_type);
@@ -879,7 +876,7 @@ inline int ObExprGeneratorImpl::visit_in_expr(ObOpRawExpr &expr, ObExprInOrNotIn
                                         : (param_all_same_cs_type &= param_all_same_cs_level));
       in_op->set_param_is_ext_type_oracle(param_all_is_ext);
       //now only support c1 in (1,2,3,4,5...) to vecotrized
-      if (param_all_const && !expr.get_param_expr(0)->is_const_or_param_expr()) {
+      if (param_all_can_vectorize && expr.get_param_expr(0)->is_vectorize_result()) {
         in_op->set_param_can_vectorized();
       }
     }
@@ -1481,6 +1478,7 @@ int ObExprGeneratorImpl::visit_pl_assoc_index_expr(ObOpRawExpr &expr,
     pl_assoc_index->set_row_dimension(ObExprOperator::NOT_ROW_DIMENSION);
     pl_assoc_index->set_out_of_range_set_err(assoc_index_expr.get_out_of_range_set_err());
     pl_assoc_index->set_parent_expr_type(assoc_index_expr.get_parent_type());
+    pl_assoc_index->set_is_index_by_varchar(assoc_index_expr.is_index_by_varchar());
   }
   return ret;
 }
@@ -1523,13 +1521,8 @@ int ObExprGeneratorImpl::visit(ObOpRawExpr &expr)
       } else if (T_OBJ_ACCESS_REF == expr.get_expr_type()) {
         ObExprObjAccess *obj_access_op = static_cast<ObExprObjAccess *>(op);
         const ObObjAccessRawExpr &obj_access_expr = static_cast<ObObjAccessRawExpr &>(expr);
-        if (OB_ISNULL(reinterpret_cast<void*>(obj_access_expr.get_get_attr_func_addr()))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("func addr is NULL", K(obj_access_expr), K(obj_access_expr.get_var_indexs()), K(ret));
-        } else {
-          obj_access_op->set_real_param_num(static_cast<int32_t>(obj_access_expr.get_param_count()));
-          OZ(obj_access_op->get_info().from_raw_expr(obj_access_expr));
-        }
+        obj_access_op->set_real_param_num(static_cast<int32_t>(obj_access_expr.get_param_count()));
+        OZ(obj_access_op->get_info().from_raw_expr(obj_access_expr));
       } else if (T_OP_MULTISET == expr.get_expr_type()) {
         ObExprMultiSet *ms_op = static_cast<ObExprMultiSet *>(op);
         const ObMultiSetRawExpr &ms_expr = static_cast<ObMultiSetRawExpr &>(expr);

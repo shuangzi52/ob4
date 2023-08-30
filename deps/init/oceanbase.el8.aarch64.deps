@@ -27,6 +27,7 @@ devdeps-ncurses-static-6.2-72022100815.el8.aarch64.rpm
 devdeps-boost-1.74.0-22022110914.el8.aarch64.rpm
 devdeps-s2geometry-0.9.0-42022111116.el8.aarch64.rpm
 devdeps-icu-69.1-72022112416.el8.aarch64.rpm
+devdeps-cos-c-sdk-5.0.16-52023070517.el8.aarch64.rpm
 
 [tools]
 obdevtools-binutils-2.30-12022100413.el8.aarch64.rpm
@@ -43,5 +44,5 @@ devdeps-rocksdb-6.22.1.1-52022100420.el8.aarch64.rpm
 
 [test-utils]
 ob-deploy-1.6.0-41.el8.aarch64.rpm target=community
-obclient-2.0.2-3.el8.aarch64.rpm target=community
-libobclient-2.0.2-2.el8.aarch64.rpm target=community
+obclient-2.2.2-1.el8.aarch64.rpm target=community
+libobclient-2.2.2-3.el8.aarch64.rpm target=community

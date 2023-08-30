@@ -173,7 +173,6 @@ int ObSingleRowGetter::init_dml_access_ctx(
   if (skip_read_lob) {
     query_flag.skip_read_lob_ = ObQueryFlag::OBSF_MASK_SKIP_READ_LOB;
   }
-  //TODO (yanfeng) trans_version_range值后续由上层传入
   trans_version_range.snapshot_version_ = store_ctx.mvcc_acc_ctx_.get_snapshot_version().get_val_for_tx();
   trans_version_range.base_version_ = 0;
   trans_version_range.multi_version_start_ = 0;
@@ -205,7 +204,7 @@ int ObSingleRowGetter::init_dml_access_param(ObRelativeTable &relative_table,
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(access_param_.init_dml_access_param(relative_table,
-                                                    tablet_->get_full_read_info(),
+                                                    tablet_->get_rowkey_read_info(),
                                                     *schema_param,
                                                     &output_projector_))) {
       LOG_WARN("init dml access param failed", K(ret));

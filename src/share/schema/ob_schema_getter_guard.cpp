@@ -87,7 +87,7 @@ ObSchemaMgrInfo::ObSchemaMgrInfo(const ObSchemaMgrInfo &other)
 }
 
 ObSchemaGetterGuard::ObSchemaGetterGuard()
-  : local_allocator_(SET_USE_500(ObModIds::OB_SCHEMA_MGR_INFO_ARRAY)),
+  : local_allocator_(SET_USE_500(ObModIds::OB_SCHEMA_MGR_INFO_ARRAY, ObCtxIds::SCHEMA_SERVICE)),
     schema_service_(NULL),
     session_id_(0),
     tenant_id_(OB_INVALID_TENANT_ID),
@@ -103,7 +103,7 @@ ObSchemaGetterGuard::ObSchemaGetterGuard()
 }
 
 ObSchemaGetterGuard::ObSchemaGetterGuard(const ObSchemaMgrItem::Mod mod)
-  : local_allocator_(SET_USE_500(ObModIds::OB_SCHEMA_MGR_INFO_ARRAY)),
+  : local_allocator_(SET_USE_500(ObModIds::OB_SCHEMA_MGR_INFO_ARRAY, ObCtxIds::SCHEMA_SERVICE)),
     schema_service_(NULL),
     session_id_(0),
     tenant_id_(OB_INVALID_TENANT_ID),
@@ -329,16 +329,14 @@ int ObSchemaGetterGuard::check_has_local_unique_index(
   return ret;
 }
 
-int ObSchemaGetterGuard::check_has_global_unique_index(
-    const uint64_t tenant_id,
-    const uint64_t table_id,
-    bool &has_global_unique_index)
+int ObSchemaGetterGuard::get_all_unique_index(const uint64_t tenant_id,
+                                              const uint64_t table_id,
+                                              ObIArray<uint64_t> &unique_index_ids)
 {
   int ret = OB_SUCCESS;
   const ObTableSchema *table_schema = NULL;
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
   const ObSimpleTableSchemaV2 *index_schema = NULL;
-  has_global_unique_index = false;
   if (OB_FAIL(get_table_schema(tenant_id, table_id, table_schema))) {
     LOG_WARN("failed to get table schema", KR(ret), K(tenant_id), K(table_id));
   } else if (OB_ISNULL(table_schema)) {
@@ -357,9 +355,10 @@ int ObSchemaGetterGuard::check_has_global_unique_index(
                KR(ret), K(tenant_id), K(index_id));
     } else if (OB_UNLIKELY(index_schema->is_final_invalid_index())) {
       //invalid index status, need ingore
-    } else if (index_schema->is_global_unique_index_table()) {
-      has_global_unique_index = true;
-      break;
+    } else if ((index_schema->is_local_unique_index_table() ||
+               index_schema->is_global_unique_index_table()) &&
+               OB_FAIL(unique_index_ids.push_back(index_id))) {
+      LOG_WARN("failed to push back local unique index", K(ret));
     }
   }
   return ret;
@@ -2663,13 +2662,16 @@ int ObSchemaGetterGuard::verify_db_read_only(const uint64_t tenant_id,
 {
   int ret = OB_SUCCESS;
   const ObString &db_name = need_priv.db_;
+  const ObPrivSet &priv_set = need_priv.priv_set_;
   const ObDatabaseSchema *db_schema =  NULL;
+  const ObPrivSet &read_only_privs = OB_PRIV_SELECT | OB_PRIV_SHOW_VIEW | OB_PRIV_SHOW_DB |
+                                     OB_PRIV_READ;
   if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
   } else if (OB_FAIL(get_database_schema(tenant_id, db_name, db_schema))) {
     LOG_WARN("get database schema failed", KR(ret), K(tenant_id), K(db_name));
   } else if (NULL != db_schema) {
-    if (db_schema->is_read_only()) {
+    if (db_schema->is_read_only() && OB_PRIV_HAS_OTHER(priv_set, read_only_privs)) {
       ret = OB_ERR_DB_READ_ONLY;
       LOG_USER_ERROR(OB_ERR_DB_READ_ONLY, db_name.length(), db_name.ptr());
       LOG_WARN("database is read only, can't not execute this statment",
@@ -3111,7 +3113,6 @@ int ObSchemaGetterGuard::check_db_access(
   int ret = OB_SUCCESS;
   uint64_t tenant_id = session_priv.tenant_id_;
   const ObSchemaMgr *mgr = NULL;
-  ObPrivSet need_priv = OB_PRIV_SHOW_DB;
   if (!session_priv.is_valid() || 0 == db.length()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid arguments", K(session_priv), KR(ret));
@@ -3119,7 +3120,7 @@ int ObSchemaGetterGuard::check_db_access(
     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
   } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
     LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
-  } else if (!OB_TEST_PRIVS(session_priv.user_priv_set_, need_priv)) {
+  } else {
     const ObPrivMgr &priv_mgr = mgr->priv_mgr_;
     ObOriginalDBKey db_priv_key(session_priv.tenant_id_,
                                 session_priv.user_id_,
@@ -3219,11 +3220,16 @@ int ObSchemaGetterGuard::check_db_show(const ObSessionPrivInfo &session_priv,
   uint64_t tenant_id = session_priv.tenant_id_;
   allow_show = true;
   ObPrivSet db_priv_set = 0;
+  ObPrivSet need_priv = OB_PRIV_SHOW_DB;
   if (sql::ObSchemaChecker::is_ora_priv_check()) {
   } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
-  } else if (OB_SUCCESS != (can_show = check_db_access(session_priv, db,
-                                                       db_priv_set, false))) {
+  } else if (!session_priv.is_valid() || 0 == db.length()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid arguments", K(session_priv), KR(ret));
+  } else if (OB_TEST_PRIVS(session_priv.user_priv_set_, need_priv)) {
+    /* user priv level has show_db */
+  } else if (OB_SUCCESS != (can_show = check_db_access(session_priv, db, db_priv_set, false))) {
     allow_show = false;
   }
   return ret;
@@ -3374,7 +3380,7 @@ int ObSchemaGetterGuard::check_single_table_priv(const ObSessionPrivInfo &sessio
           if (OB_FAIL(get_user_info(tenant_id, session_priv.user_id_, user_info))) {
             LOG_WARN("failed to get user info", KR(ret), K(tenant_id), K(session_priv.user_id_));
           } else if (NULL == user_info) {
-            ret = OB_ERR_UNEXPECTED;
+            ret = OB_USER_NOT_EXIST;
             LOG_WARN("user info is null", KR(ret), K(session_priv.user_id_));
           } else {
             const ObSEArray<uint64_t, 8> &role_id_array = user_info->get_role_id_array();
@@ -3471,7 +3477,12 @@ int ObSchemaGetterGuard::check_db_priv(const ObSessionPrivInfo &session_priv,
       const ObUserInfo *user_info = NULL;
       //bool is_grant_role = false;
       OZ (get_user_info(tenant_id, session_priv.user_id_, user_info), session_priv.user_id_);
-      CK (OB_NOT_NULL(user_info));
+      if (OB_SUCC(ret)) {
+        if (NULL == user_info) {
+          ret = OB_USER_NOT_EXIST;
+          LOG_WARN("user info is null", KR(ret), K(session_priv.user_id_));
+        }
+      }
       if (OB_SUCC(ret)) {
         const ObSEArray<uint64_t, 8> &role_id_array = user_info->get_role_id_array();
         for (int i = 0; OB_SUCC(ret) && i < role_id_array.count(); ++i) {
@@ -4475,7 +4486,7 @@ int ObSchemaGetterGuard::get_schema_version(
         GET_SCHEMA_VERSION(directory, ObDirectorySchema);
         break;
       }
-    case MOCK_FK_PARENT_TABLE_SHCEMA : {
+    case MOCK_FK_PARENT_TABLE_SCHEMA : {
         const ObSimpleMockFKParentTableSchema *schema = NULL;
         const ObSchemaMgr *mgr = NULL;
         if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
@@ -5353,6 +5364,38 @@ GET_SIMPLE_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DEFINE(database)
 GET_SIMPLE_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DEFINE(tablegroup)
 # undef GET_SIMPLE_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DEFINE
 
+int ObSchemaGetterGuard::get_primary_table_schema_in_tablegroup(
+    const uint64_t tenant_id,
+    const uint64_t tablegroup_id,
+    const ObSimpleTableSchemaV2 *&primary_table_schema)
+{
+  int ret = OB_SUCCESS;
+  primary_table_schema = NULL;
+  const ObSchemaMgr *mgr = NULL;
+  if (!check_inner_stat()) {
+    ret = OB_INNER_STAT_ERROR;
+    LOG_WARN("inner stat error", KR(ret));
+  } else if (OB_INVALID_ID == tenant_id
+      || OB_INVALID_ID == tablegroup_id) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(tablegroup_id));
+  } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
+    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
+  } else if (OB_FAIL(get_schema_mgr(tenant_id, mgr))) {
+    if (OB_TENANT_NOT_EXIST == ret) {
+      ret = ignore_tenant_not_exist_error(tenant_id) ? OB_SUCCESS : ret;
+    }
+    if (OB_FAIL(ret)) {
+      LOG_WARN("fail to get schema mgr", KR(ret), K(tenant_id));
+    }
+  } else if (OB_ISNULL(mgr)) {
+    ret = OB_SCHEMA_EAGAIN;
+    LOG_WARN("get simple schema in lazy mode not supported", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(mgr->get_primary_table_schema_in_tablegroup(tenant_id, tablegroup_id, primary_table_schema))) {
+    LOG_WARN("get primary table schema in tablegroup failed", KR(ret), K(tenant_id), K(tablegroup_id));
+  }
+  return ret;
+}
 
 int ObSchemaGetterGuard::get_simple_tenant_schemas(
     ObIArray<const ObSimpleTenantSchema *> &tenant_schemas) const
@@ -8083,7 +8126,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schemas_in_database(
       if (OB_ISNULL(simple_schemas.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("NULL ptr", K(ret));
-      } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA,
+      } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA,
                                     simple_schemas.at(i)->get_tenant_id(),
                                     simple_schemas.at(i)->get_mock_fk_parent_table_id(),
                                     full_schema,
@@ -8160,7 +8203,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schema_with_name(
   } else if (NULL == simple_mock_fk_parent_table) {
     mock_fk_parent_table_schema = NULL;
     LOG_DEBUG("mock_fk_parent_table schema not exist", K(tenant_id), K(database_id), K(name));
-  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
+  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
                                    mock_fk_parent_table_schema, simple_mock_fk_parent_table->get_schema_version()))) {
     LOG_WARN("get mock_fk_parent_table schema failed", K(ret), KPC(simple_mock_fk_parent_table));
   }
@@ -8179,7 +8222,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schema_with_id(
   } else if (NULL == simple_mock_fk_parent_table) {
     mock_fk_parent_table_schema = NULL;
     LOG_DEBUG("mock_fk_parent_table not exist", K(mock_fk_parent_table_id));
-  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
+  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
                                    mock_fk_parent_table_schema, simple_mock_fk_parent_table->get_schema_version()))) {
     LOG_WARN("get mock_fk_parent_table schema failed", K(ret), KPC(simple_mock_fk_parent_table));
   }

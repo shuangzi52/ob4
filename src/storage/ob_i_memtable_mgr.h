@@ -15,6 +15,7 @@
 
 #include "lib/lock/ob_spin_rwlock.h"
 #include "lib/lock/ob_qsync_lock.h"
+#include "ob_tablet_id.h"
 #include "storage/ob_i_table.h"
 #include "storage/memtable/ob_multi_source_data.h"
 
@@ -243,14 +244,6 @@ public:
     return OB_SUCCESS;
   }
 
-  virtual int get_multi_source_data_unit(
-      memtable::ObIMultiSourceDataUnit *const multi_source_data_unit,
-      ObIAllocator *allocator = nullptr) const;
-
-  virtual int get_memtable_for_multi_source_data_unit(
-      ObTableHandleV2 &handle,
-      const memtable::MultiSourceDataUnitType type) const;
-
   int release_memtables(const share::SCN &scn);
   // force release all memtables
   // WARNING: this will release all the ref of memtable, make sure you will not use it again.
@@ -265,6 +258,8 @@ public:
   int get_newest_clog_checkpoint_scn(share::SCN &clog_checkpoint_scn);
 
   int get_newest_snapshot_version(share::SCN &snapshot_version);
+
+  common::ObTabletID get_tablet_id() const { return tablet_id_; }
 
   OB_INLINE int64_t dec_ref() { return ATOMIC_SAF(&ref_cnt_, 1 /* just sub 1 */); }
   OB_INLINE int64_t get_ref() const { return ATOMIC_LOAD(&ref_cnt_); }

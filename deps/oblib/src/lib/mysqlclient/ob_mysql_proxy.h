@@ -17,6 +17,9 @@
 #include "lib/mysqlclient/ob_mysql_result.h"
 #include "lib/mysqlclient/ob_mysql_statement.h"
 #include "lib/mysqlclient/ob_mysql_connection_pool.h"
+#ifdef OB_BUILD_DBLINK
+#include "lib/oracleclient/ob_oracle_oci_connection.h"
+#endif
 
 namespace oceanbase
 {
@@ -166,31 +169,61 @@ class ObDbLinkProxy : public ObCommonSqlProxy
 public:
   virtual bool is_oracle_mode() const override { return true; }
   virtual int init(sqlclient::ObDbLinkConnectionPool *pool);
-  int create_dblink_pool(uint64_t tenant_id, uint64_t dblink_id, sqlclient::DblinkDriverProto dblink_type, const ObAddr &server,
+  int create_dblink_pool(const sqlclient::dblink_param_ctx &param_ctx,
+                         const ObAddr &server,
                          const ObString &db_tenant, const ObString &db_user,
                          const ObString &db_pass, const ObString &db_name,
                          const common::ObString &conn_str,
-                         const common::ObString &cluster_str,
-                         const sqlclient::dblink_param_ctx &param_ctx);
-  int acquire_dblink(uint64_t dblink_id,
-                     sqlclient::DblinkDriverProto dblink_type,
-                     const sqlclient::dblink_param_ctx &param_ctx,
-                     sqlclient::ObISQLConnection *&dblink_conn,
-                     uint32_t sessid = 0,
-                     int64_t sql_request_level = 0,
-                     const char *set_sql_mode_cstr = NULL);
-  int release_dblink(/*uint64_t dblink_id,*/sqlclient::DblinkDriverProto dblink_type, sqlclient::ObISQLConnection *dblink_conn, uint32_t sessid = 0);
+                         const common::ObString &cluster_str);
+  int acquire_dblink(const sqlclient::dblink_param_ctx &param_ctx,
+                     sqlclient::ObISQLConnection *&dblink_conn);
+  int release_dblink(sqlclient::DblinkDriverProto dblink_type, sqlclient::ObISQLConnection *dblink_conn);
   int dblink_read(sqlclient::ObISQLConnection *dblink_conn, ReadResult &result, const char *sql);
   int dblink_write(sqlclient::ObISQLConnection *dblink_conn, int64_t &affected_rows, const char *sql);
+  int dblink_execute_proc(sqlclient::ObISQLConnection *dblink_conn);
+  int dblink_execute_proc(const uint64_t tenant_id,
+                          sqlclient::ObISQLConnection *dblink_conn,
+                          ObIAllocator &allocator,
+                          ParamStore &params,
+                          ObString &sql,
+                          const share::schema::ObRoutineInfo &routine_info,
+                          const common::ObIArray<const pl::ObUserDefinedType *> &udts,
+                          const ObTimeZoneInfo *tz_info);
+  int dblink_prepare(sqlclient::ObISQLConnection *dblink_conn, const char *sql);
+  int dblink_bind_basic_type_by_pos(sqlclient::ObISQLConnection *dblink_conn,
+                                    uint64_t position,
+                                    void *param,
+                                    int64_t param_size,
+                                    int32_t datatype,
+                                    int32_t &indicator);
+  int dblink_bind_array_type_by_pos(sqlclient::ObISQLConnection *dblink_conn,
+                                    uint64_t position,
+                                    void *array,
+                                    int32_t *indicators,
+                                    int64_t ele_size,
+                                    int32_t ele_datatype,
+                                    uint64_t array_size,
+                                    uint32_t *out_valid_array_size);
+  int dblink_get_server_major_version(sqlclient::ObISQLConnection *dblink_conn,
+                                      int64_t &major_version);
+  int dblink_get_package_udts(common::sqlclient::ObISQLConnection *dblink_conn,
+                              ObIAllocator &alloctor,
+                              const common::ObString &database_name,
+                              const common::ObString &package_name,
+                              common::ObIArray<pl::ObUserDefinedType *> &udts,
+                              uint64_t dblink_id,
+                              uint64_t &next_object_id);
   int rollback(sqlclient::ObISQLConnection *dblink_conn);
   int switch_dblink_conn_pool(sqlclient::DblinkDriverProto type, sqlclient::ObISQLConnectionPool *&dblink_conn_pool);
   int set_dblink_pool_charset(uint64_t dblink_id);
   inline sqlclient::ObDbLinkConnectionPool *get_dblink_conn_pool() { return link_pool_; }
-  static int execute_init_sql(sqlclient::ObISQLConnection *dblink_conn, int link_type,
-                              const char *set_sql_mode_cstr = NULL);
+  int clean_dblink_connection(uint64_t tenant_id);
+  static int execute_init_sql(const sqlclient::dblink_param_ctx &param_ctx,
+                              sqlclient::ObISQLConnection *dblink_conn);
 private:
-  int prepare_enviroment(sqlclient::ObISQLConnection *dblink_conn, int link_type,
-                         const char *set_sql_mode_cstr = NULL);
+  int prepare_enviroment(const sqlclient::dblink_param_ctx &param_ctx,
+                         sqlclient::ObISQLConnection *dblink_conn);
+private:
   sqlclient::ObDbLinkConnectionPool *link_pool_;
 };
 

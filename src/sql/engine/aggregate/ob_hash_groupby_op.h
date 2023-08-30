@@ -117,7 +117,7 @@ class ObGroupRowHashTable : public ObExtendHashTable<ObGroupRowItem>
 public:
   ObGroupRowHashTable() : ObExtendHashTable(), eval_ctx_(nullptr), cmp_funcs_(nullptr) {}
 
-  OB_INLINE const ObGroupRowItem *get(const ObGroupRowItem &item) const;
+  OB_INLINE const ObGroupRowItem *get(const ObGroupRowItem &item);
   OB_INLINE void prefetch(const ObBatchRows &brs, uint64_t *hash_vals) const;
   int init(ObIAllocator *allocator,
           lib::ObMemAttr &mem_attr,
@@ -134,11 +134,12 @@ private:
   static const int64_t HASH_BUCKET_PREFETCH_MAGIC_NUM = 4 * 1024;
 };
 
-OB_INLINE const ObGroupRowItem *ObGroupRowHashTable::get(const ObGroupRowItem &item) const
+OB_INLINE const ObGroupRowItem *ObGroupRowHashTable::get(const ObGroupRowItem &item)
 {
   ObGroupRowItem *res = NULL;
   int ret = OB_SUCCESS;
   bool result = false;
+  ++probe_cnt_;
   if (OB_UNLIKELY(NULL == buckets_)) {
     // do nothing
   } else {
@@ -517,7 +518,10 @@ private:
 private:
   int by_pass_prepare_one_batch(const int64_t batch_size);
   int by_pass_get_next_permutation(int64_t &nth_group, bool &last_group, bool &insert_group_ht);
-  int by_pass_get_next_permutation_batch(int64_t &nth_group, bool &last_group, const ObBatchRows *child_brs, bool &insert_group_ht);
+  int by_pass_get_next_permutation_batch(int64_t &nth_group, bool &last_group,
+                                         const ObBatchRows *child_brs,
+                                         ObBatchRows &my_brs,
+                                         bool &insert_group_ht);
   int init_by_pass_op();
   // Alloc one batch group_row_item at a time
   static const int64_t BATCH_GROUP_ITEM_SIZE = 16;

@@ -47,8 +47,8 @@ bool TEST_IS_DUP = true;
 bool TEST_IS_SUB2PC = false;
 int64_t TEST_EPOCH = 1315;
 int64_t TEST_LAST_OP_SN = 1315;
-int64_t TEST_FIRST_SCN = 1315;
-int64_t TEST_LAST_SCN = 1315;
+auto TEST_FIRST_SCN = ObTxSEQ(1315, 0);
+auto TEST_LAST_SCN = ObTxSEQ(1315, 0);
 uint64_t TEST_ORG_CLUSTER_ID = 1208;
 common::ObString TEST_TRCE_INFO("trace_info_test");
 LogOffSet TEST_LOG_OFFSET(10);
@@ -57,7 +57,7 @@ int64_t TEST_CHECKSUM = 29890209;
 int64_t TEST_SCHEMA_VERSION = 372837;
 int64_t TEST_TX_EXPIRED_TIME = 12099087;
 int64_t TEST_LOG_ENTRY_NO = 1233;
-int64_t TEST_MAX_SUBMITTED_SEQ_NO = 12345;
+auto TEST_MAX_SUBMITTED_SEQ_NO = ObTxSEQ(12345, 0);
 LSKey TEST_LS_KEY;
 ObXATransID TEST_XID;
 
@@ -158,7 +158,7 @@ TEST_F(TestObTxLog, tx_log_body_except_redo)
   ObTxBufferNodeArray TEST_TX_BUFFER_NODE_ARRAY;
   ObString str("TEST CASE");
   ObTxBufferNode node;
-  node.init(ObTxDataSourceType::LS_TABLE, str);
+  node.init(ObTxDataSourceType::LS_TABLE, str, share::SCN(), nullptr);
   TEST_TX_BUFFER_NODE_ARRAY.push_back(node);
 
   ObTxCommitInfoLog fill_commit_state(TEST_ADDR,
@@ -241,8 +241,8 @@ TEST_F(TestObTxLog, tx_log_body_except_redo)
   EXPECT_EQ(TEST_TX_EXPIRED_TIME, replay_active_state.get_tx_expired_time());
   EXPECT_EQ(TEST_EPOCH, replay_active_state.get_epoch());
   EXPECT_EQ(TEST_LAST_OP_SN, replay_active_state.get_last_op_sn());
-  EXPECT_EQ(TEST_FIRST_SCN, replay_active_state.get_first_scn());
-  EXPECT_EQ(TEST_LAST_SCN, replay_active_state.get_last_scn());
+  EXPECT_EQ(TEST_FIRST_SCN, replay_active_state.get_first_seq_no());
+  EXPECT_EQ(TEST_LAST_SCN, replay_active_state.get_last_seq_no());
   EXPECT_EQ(TEST_CLUSTER_VERSION, replay_active_state.get_cluster_version());
 
   ObTxCommitInfoLogTempRef commit_state_temp_ref;
@@ -296,7 +296,7 @@ TEST_F(TestObTxLog, tx_log_body_redo)
   ObTxBufferNodeArray TEST_TX_BUFFER_NODE_ARRAY;
   ObString str("TEST CASE");
   ObTxBufferNode node;
-  node.init(ObTxDataSourceType::LS_TABLE, str);
+  node.init(ObTxDataSourceType::LS_TABLE, str, share::SCN(), nullptr);
   TEST_TX_BUFFER_NODE_ARRAY.push_back(node);
 
   ObTxCommitInfoLog fill_commit_state(TEST_ADDR,
@@ -414,7 +414,7 @@ TEST_F(TestObTxLog, test_compat_bytes)
   ObTxBufferNodeArray TEST_TX_BUFFER_NODE_ARRAY;
   ObString str("TEST CASE");
   ObTxBufferNode node;
-  node.init(ObTxDataSourceType::LS_TABLE, str);
+  node.init(ObTxDataSourceType::LS_TABLE, str, share::SCN(), nullptr);
   TEST_TX_BUFFER_NODE_ARRAY.push_back(node);
 
   ObTxCommitInfoLog fill_commit_info(TEST_ADDR,
@@ -542,9 +542,9 @@ TEST_F(TestObTxLog, test_default_log_deserialize)
   replay_member_cnt++;
   EXPECT_EQ(fill_active_state.get_last_op_sn(), replay_active_state.get_last_op_sn());
   replay_member_cnt++;
-  EXPECT_EQ(fill_active_state.get_first_scn(), replay_active_state.get_first_scn());
+  EXPECT_EQ(fill_active_state.get_first_seq_no(), replay_active_state.get_first_seq_no());
   replay_member_cnt++;
-  EXPECT_EQ(fill_active_state.get_last_scn(), replay_active_state.get_last_scn());
+  EXPECT_EQ(fill_active_state.get_last_seq_no(), replay_active_state.get_last_seq_no());
   replay_member_cnt++;
   EXPECT_EQ(fill_active_state.get_cluster_version(), replay_active_state.get_cluster_version());
   replay_member_cnt++;
@@ -741,8 +741,8 @@ void test_big_commit_info_log(int64_t log_size)
   }
 
   int64_t TOTAL_PART_COUNT =
-      fill_commit_state.get_serialize_size() / common::OB_MAX_LOG_ALLOWED_SIZE;
-  if (fill_commit_state.get_serialize_size() % common::OB_MAX_LOG_ALLOWED_SIZE > 0) {
+      fill_commit_state.get_serialize_size() / ObTxLogBlock::BIG_SEGMENT_SPILT_SIZE;
+  if (fill_commit_state.get_serialize_size() % ObTxLogBlock::BIG_SEGMENT_SPILT_SIZE > 0) {
     TOTAL_PART_COUNT++;
   }
   TRANS_LOG(INFO, "TOTAL PART COUNT", K(TOTAL_PART_COUNT), K(part_count));

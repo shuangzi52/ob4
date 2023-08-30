@@ -222,7 +222,6 @@ public:
   virtual int inner_add_cache_obj(ObILibCacheCtx &ctx,
                                   ObILibCacheKey *key,
                                   ObILibCacheObject *cache_obj) override;
-  virtual int before_cache_evicted() override;
   void destroy();
   void set_baseline_key(ObBaselineKey &key) { baseline_key_ = key; }
   ObBaselineKey &get_baseline_key() { return baseline_key_; }
@@ -314,6 +313,11 @@ struct ObSpmCacheCtx : public ObILibCacheCtx
   {
     return (STAT_ACCEPT_EVOLUTION_PLAN == spm_stat_) || (STAT_ACCEPT_BASELINE_PLAN == spm_stat_);
   }
+  bool is_spm_in_process()
+  {
+    return is_retry_for_spm_ ||
+           (spm_stat_ > STAT_INVALID && spm_stat_ < STAT_MAX);
+  }
   
   ObBaselineKey bl_key_;
   SpmMode handle_cache_mode_;
@@ -357,6 +361,23 @@ public:
   // new plan statistics
   uint64_t new_plan_hash_;
   ObEvolutionStat new_stat_;
+};
+
+struct EvoResultUpdateTask
+{
+public:
+  EvoResultUpdateTask()
+  : key_(),
+    plan_hash_(),
+    plan_stat_()
+  {}
+  ~EvoResultUpdateTask() {}
+  int init_task(common::ObIAllocator& allocator, const EvolutionTaskResult& evo_task_result);
+  TO_STRING_KV(K_(key), K_(plan_hash), K_(plan_stat));
+public:
+  ObBaselineKey key_;
+  common::ObSEArray<uint64_t, 4> plan_hash_;
+  common::ObSEArray<ObEvolutionStat, 4> plan_stat_;
 };
 
 } // namespace sql end

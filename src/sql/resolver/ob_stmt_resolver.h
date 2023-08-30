@@ -119,6 +119,7 @@ public:
     } else if (OB_FAIL(params_.stmt_factory_->create_stmt(stmt))) {
       SQL_RESV_LOG(WARN, "create stmt failed", K(ret));
     } else if (OB_ISNULL(stmt)) {
+      ret = common::OB_ERR_UNEXPECTED;
       SQL_RESV_LOG(WARN, "create stmt success, but stmt is null");
     } else {
       stmt_ = stmt;
@@ -129,9 +130,6 @@ public:
       stmt_->get_query_ctx()->set_sql_stmt_coll_type(get_obj_print_params(params_.session_info_).cs_type_);
       if (OB_FAIL(stmt_->set_stmt_id())) {
         SQL_RESV_LOG(WARN, "fail to set stmt id", K(ret));
-      } else if (OB_FAIL(init_stmt())) {
-        stmt = NULL;
-        SQL_RESV_LOG(ERROR, "init stmt failed", K(ret));
       }
     }
     return stmt;
@@ -154,7 +152,6 @@ public:
 
 protected:
   int normalize_table_or_database_names(common::ObString &name);
-  virtual int init_stmt() { return common::OB_SUCCESS; }
 
 private:
   // disallow copy

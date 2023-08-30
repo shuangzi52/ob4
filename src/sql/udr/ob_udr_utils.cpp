@@ -1,14 +1,20 @@
-// Copyright 2015-2016 Alibaba Inc. All Rights Reserved.
-// Author:
-//     LuoFan
-// Normalizer:
-//     LuoFan
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SQL_QRR
 #include "sql/ob_sql.h"
 #include "share/config/ob_server_config.h"
 #include "sql/resolver/ob_resolver_utils.h"
+#include "sql/ob_sql_utils.h"
 #include "sql/udr/ob_udr_analyzer.h"
 #include "sql/udr/ob_udr_mgr.h"
 #include "sql/udr/ob_udr_utils.h"
@@ -20,6 +26,7 @@ namespace sql
 
 int ObUDRUtils::match_udr_item(const ObString &pattern,
                                const ObSQLSessionInfo &session_info,
+                               ObExecContext &ectx,
                                ObIAllocator &allocator,
                                ObUDRItemMgr::UDRItemRefGuard &guard,
                                PatternConstConsList *cst_cons_list)
@@ -48,6 +55,9 @@ int ObUDRUtils::match_udr_item(const ObString &pattern,
     } else if (guard.is_valid()) {
       LOG_TRACE("succ to match rewrite rule item", KPC(guard.get_ref_obj()));
     }
+  }
+  if (OB_FAIL(ret) && !ObSQLUtils::check_need_disconnect_parser_err(ret)) {
+    ectx.set_need_disconnect(false);
   }
   return ret;
 }
@@ -187,7 +197,7 @@ int ObUDRUtils::clac_dynamic_param_store(const DynamicParamInfoArray& dynamic_pa
       ParseNode *raw_param = NULL;
       ObPCParam *pc_param = NULL;
       if (dynamic_param_info.raw_param_idx_ >= raw_params.count()) {
-        ret = OB_ERR_UNEXPECTED;
+        ret = OB_ERR_PARSER_SYNTAX;
         LOG_WARN("invalid idx", K(dynamic_param_info.raw_param_idx_), K(raw_params.count()));
       } else if (OB_ISNULL(pc_param = raw_params.at(dynamic_param_info.raw_param_idx_))) {
         ret = OB_ERR_UNEXPECTED;
@@ -197,7 +207,7 @@ int ObUDRUtils::clac_dynamic_param_store(const DynamicParamInfoArray& dynamic_pa
         LOG_WARN("node is null", K(ret));
       } else if (T_QUESTIONMARK == raw_param->type_) {
         if (pc_ctx.mode_ != PC_PS_MODE || raw_param->value_ >= pc_ctx.fp_result_.parameterized_params_.count()) {
-          ret = OB_ERR_UNEXPECTED;
+          ret = OB_ERR_PARSER_SYNTAX;
           LOG_WARN("invalid argument", K(ret), K(raw_param->value_), K(dynamic_param_info.raw_param_idx_),
           K(pc_ctx.mode_), K(pc_ctx.fp_result_.parameterized_params_.count()));
         } else if (OB_FAIL(param_store.push_back(*pc_ctx.fp_result_.parameterized_params_.at(raw_param->value_)))) {
@@ -239,17 +249,14 @@ int ObUDRUtils::match_udr_and_refill_ctx(const ObString &pattern,
                                          ObUDRItemMgr::UDRItemRefGuard &item_guard)
 {
   int ret = OB_SUCCESS;
-  bool enable_udr = false;
   is_match_udr = false;
+  bool enable_udr = sql_ctx.get_enable_user_defined_rewrite();
   ObSQLSessionInfo &session = result.get_session();
-  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(session.get_effective_tenant_id()));
-  if (tenant_config.is_valid()) {
-    enable_udr = tenant_config->enable_user_defined_rewrite_rules;
-  }
+  ObExecContext &ectx = result.get_exec_context();
   if (enable_udr && !(pc_ctx.is_inner_sql() || PC_PL_MODE == pc_ctx.mode_)) {
     ObIAllocator &allocator = result.get_mem_pool();
     PatternConstConsList cst_cons_list;
-    if (OB_FAIL(match_udr_item(pattern, session, allocator, item_guard, &cst_cons_list))) {
+    if (OB_FAIL(match_udr_item(pattern, session, ectx, allocator, item_guard, &cst_cons_list))) {
       LOG_WARN("failed to match user defined rewrite rule", K(ret));
     } else if (!cst_cons_list.empty()
       && OB_FAIL(cons_udr_const_cons_list(cst_cons_list, pc_ctx))) {

@@ -20,7 +20,6 @@
 #include "mtlenv/mock_tenant_module_env.h"
 #include "storage/init_basic_struct.h"
 #include "storage/tablet/ob_tablet_iterator.h"
-#include "observer/ob_safe_destroy_thread.h"
 #include "share/partition_table/fake_part_property_getter.h"
 #include "share/ob_define.h"
 
@@ -208,18 +207,17 @@ public:
   virtual ~TestLSRestoreHandler() = default;
   static void SetUpTestCase()
   {
-    SAFE_DESTROY_INSTANCE.init();
-    SAFE_DESTROY_INSTANCE.start();
     ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
   }
   static void TearDownTestCase()
   {
-    SAFE_DESTROY_INSTANCE.stop();
-    SAFE_DESTROY_INSTANCE.wait();
-    SAFE_DESTROY_INSTANCE.destroy();
     MockTenantModuleEnv::get_instance().destroy();
   }
 
+  void SetUp()
+  {
+    ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
+  }
   static void create_ls()
   {
     ObCreateLSArg arg;
@@ -565,7 +563,7 @@ TEST_F(TestLSRestoreHandler, wait_state)
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->update_state_handle_());
   EXPECT_EQ(ObLSRestoreStatus::Status::WAIT_RESTORE_TABLETS_META, ls->get_ls_restore_handler()->state_handler_->ls_restore_status_);
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->state_handler_->do_restore());
-  EXPECT_EQ(ObLSRestoreStatus::Status::QUICK_RESTORE, ls->ls_meta_.restore_status_);
+  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_TO_CONSISTENT_SCN, ls->ls_meta_.restore_status_);
   // leader in wait quick restore
   ls->get_ls_restore_handler()->state_handler_ = nullptr;
   ls->ls_meta_.restore_status_ = ObLSRestoreStatus::Status::WAIT_QUICK_RESTORE;
@@ -615,12 +613,12 @@ TEST_F(TestLSRestoreHandler, wait_state)
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->update_state_handle_());
   EXPECT_EQ(ObLSRestoreStatus::Status::WAIT_RESTORE_TABLETS_META, ls->get_ls_restore_handler()->state_handler_->ls_restore_status_);
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->state_handler_->do_restore());
-  EXPECT_EQ(ObLSRestoreStatus::Status::QUICK_RESTORE, ls->ls_meta_.restore_status_);
+  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_TO_CONSISTENT_SCN, ls->ls_meta_.restore_status_);
 
   leader_status = ObLSRestoreStatus::Status::WAIT_QUICK_RESTORE;
   ls->ls_meta_.restore_status_ = ObLSRestoreStatus::Status::WAIT_RESTORE_TABLETS_META;
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->state_handler_->do_restore());
-  EXPECT_EQ(ObLSRestoreStatus::Status::QUICK_RESTORE, ls->ls_meta_.restore_status_);
+  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_TO_CONSISTENT_SCN, ls->ls_meta_.restore_status_);
 
   leader_status = ObLSRestoreStatus::Status::RESTORE_TABLETS_META;
   ls->ls_meta_.restore_status_ = ObLSRestoreStatus::Status::WAIT_RESTORE_TABLETS_META;

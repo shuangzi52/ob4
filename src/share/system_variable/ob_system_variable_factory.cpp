@@ -279,6 +279,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "ob_trx_timeout",
   "optimizer_capture_sql_plan_baselines",
   "optimizer_dynamic_sampling",
+  "optimizer_features_enable",
   "optimizer_use_sql_plan_baselines",
   "parallel_degree_limit",
   "parallel_degree_policy",
@@ -514,6 +515,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_OB_TRX_TIMEOUT,
   SYS_VAR_OPTIMIZER_CAPTURE_SQL_PLAN_BASELINES,
   SYS_VAR_OPTIMIZER_DYNAMIC_SAMPLING,
+  SYS_VAR_OPTIMIZER_FEATURES_ENABLE,
   SYS_VAR_OPTIMIZER_USE_SQL_PLAN_BASELINES,
   SYS_VAR_PARALLEL_DEGREE_LIMIT,
   SYS_VAR_PARALLEL_DEGREE_POLICY,
@@ -824,7 +826,8 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_ID[] = {
   "runtime_filter_type",
   "runtime_filter_wait_time_ms",
   "runtime_filter_max_in_num",
-  "runtime_bloom_filter_max_size"
+  "runtime_bloom_filter_max_size",
+  "optimizer_features_enable"
 };
 
 bool ObSysVarFactory::sys_var_name_case_cmp(const char *name1, const ObString &name2)
@@ -939,8 +942,9 @@ const ObString ObSysVarFactory::get_sys_var_name_by_id(ObSysVarClassType sys_var
   return sys_var_name;
 }
 
-ObSysVarFactory::ObSysVarFactory()
-  : allocator_(ObModIds::OB_COMMON_SYS_VAR_FAC), all_sys_vars_created_(false)
+ObSysVarFactory::ObSysVarFactory(const int64_t tenant_id)
+  : allocator_(ObMemAttr(tenant_id, ObModIds::OB_COMMON_SYS_VAR_FAC)),
+    all_sys_vars_created_(false)
 {
   MEMSET(store_, 0, sizeof(store_));
   MEMSET(store_buf_, 0, sizeof(store_buf_));
@@ -1224,6 +1228,7 @@ int ObSysVarFactory::create_all_sys_vars()
         + sizeof(ObSysVarRuntimeFilterWaitTimeMs)
         + sizeof(ObSysVarRuntimeFilterMaxInNum)
         + sizeof(ObSysVarRuntimeBloomFilterMaxSize)
+        + sizeof(ObSysVarOptimizerFeaturesEnable)
         ;
     void *ptr = NULL;
     if (OB_ISNULL(ptr = allocator_.alloc(total_mem_size))) {
@@ -3318,6 +3323,15 @@ int ObSysVarFactory::create_all_sys_vars()
       } else {
         store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_RUNTIME_BLOOM_FILTER_MAX_SIZE))] = sys_var_ptr;
         ptr = (void *)((char *)ptr + sizeof(ObSysVarRuntimeBloomFilterMaxSize));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarOptimizerFeaturesEnable())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarOptimizerFeaturesEnable", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_OPTIMIZER_FEATURES_ENABLE))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarOptimizerFeaturesEnable));
       }
     }
 
@@ -5879,6 +5893,17 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
       } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarRuntimeBloomFilterMaxSize())) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_ERROR("fail to new ObSysVarRuntimeBloomFilterMaxSize", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_OPTIMIZER_FEATURES_ENABLE: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarOptimizerFeaturesEnable)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarOptimizerFeaturesEnable)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarOptimizerFeaturesEnable())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarOptimizerFeaturesEnable", K(ret));
       }
       break;
     }

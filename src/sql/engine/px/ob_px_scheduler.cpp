@@ -40,6 +40,7 @@
 #include "sql/engine/px/ob_px_sqc_proxy.h"
 #include "storage/tx/ob_trans_service.h"
 #include "share/detect/ob_detect_manager_utils.h"
+#include "sql/engine/join/ob_join_filter_op.h"
 
 namespace oceanbase
 {
@@ -172,7 +173,7 @@ int ObPxMsgProc::on_sqc_init_msg(ObExecContext &ctx, const ObPxInitSqcResultMsg 
   } else {
     if (OB_SUCCESS != pkt.rc_) {
       ret = pkt.rc_;
-      update_error_code(coord_info_.first_error_code_, pkt.rc_);
+      ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_, pkt.rc_, pkt.err_msg_);
       LOG_WARN("fail init sqc, please check remote server log for details",
                "remote_server", sqc->get_exec_addr(), K(pkt), KP(ret));
     } else if (pkt.task_count_ <= 0) {
@@ -380,13 +381,15 @@ int ObPxMsgProc::on_sqc_finish_msg(ObExecContext &ctx,
    * 发送这个finish消息的sqc（包括它的worker）其实已经结束了，需要将它
    * 但是因为出错了，后续的调度流程不需要继续了，后面流程会进行错误处理。
    */
-  update_error_code(coord_info_.first_error_code_, pkt.rc_);
+  ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_, pkt.rc_, pkt.err_msg_);
   if (OB_SUCC(ret)) {
     if (OB_FAIL(pkt.rc_)) {
+      DAS_CTX(ctx).get_location_router().save_cur_exec_status(pkt.rc_);
       LOG_WARN("sqc fail, abort qc", K(pkt), K(ret), "sqc_addr", sqc->get_exec_addr());
     } else {
       // pkt rc_ == OB_SUCCESS
       // 处理 dml + px 框架下的affected row
+      DAS_CTX(ctx).get_location_router().save_cur_exec_status(pkt.das_retry_rc_);
       if (OB_ISNULL(ctx.get_physical_plan_ctx())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("phy plan ctx is null", K(ret));
@@ -569,7 +572,7 @@ int ObPxTerminateMsgProc::on_sqc_init_msg(ObExecContext &ctx, const ObPxInitSqcR
     if (pkt.rc_ != OB_SUCCESS) {
       LOG_DEBUG("receive error code from sqc init msg", K(coord_info_.first_error_code_), K(pkt.rc_));
     }
-    update_error_code(coord_info_.first_error_code_, pkt.rc_);
+    ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_, pkt.rc_, pkt.err_msg_);
   }
 
   if (OB_SUCC(ret)) {
@@ -638,7 +641,7 @@ int ObPxTerminateMsgProc::on_sqc_finish_msg(ObExecContext &ctx, const ObPxFinish
     if (pkt.rc_ != OB_SUCCESS) {
       LOG_DEBUG("receive error code from sqc finish msg", K(coord_info_.first_error_code_), K(pkt.rc_));
     }
-    update_error_code(coord_info_.first_error_code_, pkt.rc_);
+    ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_, pkt.rc_, pkt.err_msg_);
 
     NG_TRACE_EXT(sqc_finish,
                  OB_ID(dfo_id), sqc->get_dfo_id(),
@@ -716,72 +719,40 @@ int ObPxTerminateMsgProc::startup_msg_loop(ObExecContext &ctx)
   return ret;
 }
 
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &ctx,
-    const ObBarrierPieceMsg &pkt)
+int RuntimeFilterDependencyInfo::describe_dependency(ObDfo *root_dfo)
 {
-  int ret = common::OB_SUCCESS;
-  UNUSED(ctx);
-  UNUSED(pkt);
+  int ret = OB_SUCCESS;
+  // for each rf create op, find its pair rf use op,
+  // then get the lowest common ancestor of them, mark force_bushy of the dfo which the ancestor belongs to.
+  for (int64_t i = 0; i < rf_create_ops_.count() && OB_SUCC(ret); ++i) {
+    const ObJoinFilterSpec *create_op = static_cast<const ObJoinFilterSpec *>(rf_create_ops_.at(i));
+    for (int64_t j = 0; j < rf_use_ops_.count() && OB_SUCC(ret); ++j) {
+      const ObJoinFilterSpec *use_op = static_cast<const ObJoinFilterSpec *>(rf_use_ops_.at(j));
+      if (create_op->get_filter_id() == use_op->get_filter_id()) {
+        const ObOpSpec *ancestor_op = nullptr;
+        ObDfo *op_dfo = nullptr;;
+        if (OB_FAIL(LowestCommonAncestorFinder::find_op_common_ancestor(create_op, use_op, ancestor_op))) {
+          LOG_WARN("failed to find op common ancestor");
+        } else if (OB_ISNULL(ancestor_op)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("op common ancestor not found");
+        } else if (OB_FAIL(LowestCommonAncestorFinder::get_op_dfo(ancestor_op, root_dfo, op_dfo))) {
+          LOG_WARN("failed to find op common ancestor");
+        } else if (OB_ISNULL(op_dfo)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("the dfo of ancestor_op not found");
+        } else {
+          // Once the DFO which the ancestor belongs to has set the flag "force_bushy",
+          // the DfoTreeNormalizer will not attempt to transform a right-deep DFO tree
+          // into a left-deep DFO tree. Consequently, the "join filter create" operator
+          // can be scheduled earlier than the "join filter use" operator.
+          op_dfo->set_force_bushy(true);
+        }
+        break;
+      }
+    }
+  }
   return ret;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &ctx,
-    const ObWinbufPieceMsg &pkt)
-{
-  int ret = common::OB_SUCCESS;
-  UNUSED(ctx);
-  UNUSED(pkt);
-  return ret;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &ctx,
-    const ObDynamicSamplePieceMsg &pkt)
-{
-  int ret = common::OB_SUCCESS;
-  UNUSED(ctx);
-  UNUSED(pkt);
-  return ret;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &ctx,
-    const ObRollupKeyPieceMsg &pkt)
-{
-  int ret = common::OB_SUCCESS;
-  UNUSED(ctx);
-  UNUSED(pkt);
-  return ret;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &,
-    const ObRDWFPieceMsg &)
-{
-  return common::OB_SUCCESS;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &,
-    const ObInitChannelPieceMsg &)
-{
-  return common::OB_SUCCESS;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &,
-    const ObReportingWFPieceMsg &)
-{
-  return common::OB_SUCCESS;
-}
-
-int ObPxTerminateMsgProc::on_piece_msg(
-    ObExecContext &,
-    const ObOptStatsGatherPieceMsg &)
-{
-  return common::OB_SUCCESS;
 }
 
 int ObPxCoordInfo::init()

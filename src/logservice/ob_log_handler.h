@@ -82,12 +82,19 @@ public:
                                  const palf::AccessMode &access_mode,
                                  const share::SCN &ref_scn) = 0;
   virtual int get_access_mode(int64_t &mode_version, palf::AccessMode &access_mode) const = 0;
+  virtual int get_append_mode_initial_scn(SCN &ref_scn) const = 0;
   virtual int seek(const palf::LSN &lsn, palf::PalfBufferIterator &iter) = 0;
   virtual int seek(const palf::LSN &lsn, palf::PalfGroupBufferIterator &iter) = 0;
   virtual int seek(const share::SCN &scn, palf::PalfGroupBufferIterator &iter) = 0;
   virtual int set_initial_member_list(const common::ObMemberList &member_list,
                                       const int64_t paxos_replica_num,
                                       const common::GlobalLearnerList &learner_list) = 0;
+#ifdef OB_BUILD_ARBITRATION
+  virtual int set_initial_member_list(const common::ObMemberList &member_list,
+                                      const common::ObMember &arb_member,
+                                      const int64_t paxos_replica_num,
+                                      const common::GlobalLearnerList &learner_list) = 0;
+#endif
   virtual int set_region(const common::ObRegion &region) = 0;
   virtual int set_election_priority(palf::election::ElectionPriority *priority) = 0;
   virtual int reset_election_priority() = 0;
@@ -106,6 +113,8 @@ public:
                                                      int64_t &paxos_replica_num,
                                                      common::GlobalLearnerList &learner_list) const = 0;
   virtual int get_global_learner_list(common::GlobalLearnerList &learner_list) const = 0;
+  virtual int get_leader_config_version(palf::LogConfigVersion &config_version) const = 0;
+  //  get leader from election, used only for non_palf_leader rebuilding.
   virtual int get_election_leader(common::ObAddr &addr) const = 0;
   virtual int change_replica_num(const common::ObMemberList &member_list,
                                  const int64_t curr_replica_num,
@@ -114,31 +123,51 @@ public:
   virtual int force_set_as_single_replica() = 0;
   virtual int add_member(const common::ObMember &member,
                          const int64_t paxos_replica_num,
+                         const palf::LogConfigVersion &config_version,
                          const int64_t timeout_us) = 0;
   virtual int remove_member(const common::ObMember &member,
                             const int64_t paxos_replica_num,
                             const int64_t timeout_us) = 0;
   virtual int replace_member(const common::ObMember &added_member,
                              const common::ObMember &removed_member,
+                             const palf::LogConfigVersion &config_version,
                              const int64_t timeout_us) = 0;
   virtual int add_learner(const common::ObMember &added_learner, const int64_t timeout_us) = 0;
   virtual int remove_learner(const common::ObMember &removed_learner, const int64_t timeout_us) = 0;
-  virtual int replace_learner(const common::ObMember &added_learner,
-                             const common::ObMember &removed_learner,
-                             const int64_t timeout_us) = 0;
+  virtual int replace_learners(const common::ObMemberList &added_learners,
+                               const common::ObMemberList &removed_learners,
+                               const int64_t timeout_us) = 0;
+  virtual int replace_member_with_learner(const common::ObMember &added_member,
+                                          const common::ObMember &removed_member,
+                                          const palf::LogConfigVersion &config_version,
+                                          const int64_t timeout_us) = 0;
   virtual int switch_learner_to_acceptor(const common::ObMember &learner,
                                          const int64_t paxos_replica_num,
+                                         const palf::LogConfigVersion &config_version,
                                          const int64_t timeout_us) = 0;
   virtual int switch_acceptor_to_learner(const common::ObMember &member,
                                          const int64_t paxos_replica_num,
                                          const int64_t timeout_us) = 0;
+#ifdef OB_BUILD_ARBITRATION
+  virtual int add_arbitration_member(const common::ObMember &added_member,
+                                     const int64_t timeout_us) = 0;
+  virtual int remove_arbitration_member(const common::ObMember &removed_member,
+                                        const int64_t timeout_us) = 0;
+  virtual int degrade_acceptor_to_learner(const palf::LogMemberAckInfoList &degrade_servers,
+                                          const int64_t timeout_us) = 0;
+  virtual int upgrade_learner_to_acceptor(const palf::LogMemberAckInfoList &upgrade_servers,
+                                          const int64_t timeout_us) = 0;
+#endif
+  virtual int try_lock_config_change(const int64_t lock_owner, const int64_t timeout_us) = 0;
+  virtual int unlock_config_change(const int64_t lock_owner, const int64_t timeout_us) = 0;
+  virtual int get_config_change_lock_stat(int64_t &lock_owner, bool &is_locked) = 0;
   virtual int get_palf_base_info(const palf::LSN &base_lsn, palf::PalfBaseInfo &palf_base_info) = 0;
   virtual int is_in_sync(bool &is_log_sync, bool &is_need_rebuild) const = 0;
   virtual int enable_sync() = 0;
   virtual int disable_sync() = 0;
   virtual bool is_sync_enabled() const = 0;
   virtual int advance_base_info(const palf::PalfBaseInfo &palf_base_info, const bool is_rebuild) = 0;
-  virtual int is_valid_member(const common::ObAddr &addr, bool &is_valid) const = 0;
+  virtual int get_member_gc_stat(const common::ObAddr &addr, bool &is_valid_member, obrpc::LogMemberGCStat &stat) const = 0;
   virtual void wait_append_sync() = 0;
   virtual int enable_replay(const palf::LSN &initial_lsn, const share::SCN &initial_scn) = 0;
   virtual int disable_replay() = 0;
@@ -217,6 +246,11 @@ public:
   // @retval
   //   OB_SUCCESS
   int get_access_mode(int64_t &mode_version, palf::AccessMode &access_mode) const override final;
+  // @description: get ref_scn of APPEND mode
+  // @return
+  // - OB_SUCCESS
+  // - OB_STATE_NOT_MATCH: current access mode is not APPEND
+  int get_append_mode_initial_scn(share::SCN &initial_scn) const override final;
   // @brief change AccessMode of palf.
   // @param[in] const int64_t &mode_version: mode_version corresponding to AccessMode,
   // can be gotted by get_access_mode
@@ -263,6 +297,20 @@ public:
   int set_initial_member_list(const common::ObMemberList &member_list,
                               const int64_t paxos_replica_num,
                               const common::GlobalLearnerList &learner_list) override final;
+#ifdef OB_BUILD_ARBITRATION
+  // @brief set the initial member list of paxos group which contains arbitration replica
+  // @param[in] ObMemberList, the initial member list, do not include arbitration replica
+  // @param[in] ObMember, the arbitration replica
+  // @param[in] int64_t, the paxos relica num(including arbitration replica)
+  // @param[in] GlobalLearnerList, the initial learner list
+  // @retval
+  //    return OB_SUCCESS if success
+  //    else return other errno
+  int set_initial_member_list(const common::ObMemberList &member_list,
+                              const common::ObMember &arb_member,
+                              const int64_t paxos_replica_num,
+                              const common::GlobalLearnerList &learner_list) override final;
+#endif
   int set_region(const common::ObRegion &region) override final;
   int set_election_priority(palf::election::ElectionPriority *priority) override final;
   int reset_election_priority() override final;
@@ -277,6 +325,7 @@ public:
   // - OB_INVALID_ARGUMENT
   // - OB_ENTRY_NOT_EXIST: there is no log in disk
   // - OB_ERR_OUT_OF_LOWER_BOUND: scn is too old, log files may have been recycled
+  // - OB_NEED_RETRY: the block is being flashback, need retry.
   // - others: bug
   int locate_by_scn_coarsely(const share::SCN &scn, palf::LSN &result_lsn) override final;
 
@@ -288,6 +337,7 @@ public:
   // - OB_SUCCESS; locate_by_lsn_coarsely success
   // - OB_INVALID_ARGUMENT
   // - OB_ERR_OUT_OF_LOWER_BOUND: lsn is too small, log files may have been recycled
+  // - OB_NEED_RETRY: the block is being flashback, need retry.
   // - others: bug
   int locate_by_lsn_coarsely(const palf::LSN &lsn, share::SCN &result_scn) override final;
   // @brief, set the recycable lsn, palf will ensure that the data before recycable lsn readable.
@@ -320,7 +370,7 @@ public:
   // @brief, get global learner list of this paxos group
   // @param[out] common::GlobalLearnerList&
   int get_global_learner_list(common::GlobalLearnerList &learner_list) const override final;
-  // @brief, get leader from election, used for non_palf_leader rebuilding
+  // @brief, get leader from election, used only for non_palf_leader rebuilding
   // @param[out] addr: address of leader
   // retval:
   //   OB_SUCCESS
@@ -354,6 +404,15 @@ public:
   // @brief, check if log sync is enabled
   bool is_sync_enabled() const override final;
 
+  // @brief: get config_version
+  // @return
+  // - OB_SUCCESS: get config_version successfully
+  // - OB_NOT_INIT: is not inited
+  // - OB_NOT_RUNNING: is in stopped state
+  // - OB_NOT_MASTER: this replica is not master
+  // - other: bug
+  int get_leader_config_version(palf::LogConfigVersion &config_version) const;
+
   // @brief: a special config change interface, change replica number of paxos group
   // @param[in] common::ObMemberList: current memberlist, for pre-check
   // @param[in] const int64_t curr_replica_num: current replica num, for pre-check
@@ -368,6 +427,7 @@ public:
                          const int64_t curr_replica_num,
                          const int64_t new_replica_num,
                          const int64_t timeout_us) override final;
+
   // @brief: force set self as single replica.
   // @return
   // - OB_SUCCESS: change_replica_num successfully
@@ -377,14 +437,17 @@ public:
   // @brief, add a member to paxos group, can be called in any member
   // @param[in] common::ObMember &member: member which will be added
   // @param[in] const int64_t paxos_replica_num: replica number of paxos group after adding 'member'
+  // @param[in] const palf::LogConfigVersion &config_version: config_version for leader checking
   // @param[in] const int64_t timeout_us: add member timeout, us
   // @return
   // - OB_SUCCESS: add member successfully
   // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: add member timeout
+  // - OB_NOT_MASTER: not master
+  // - OB_STATE_NOT_MATCH: leader has switched
   // - other: bug
   int add_member(const common::ObMember &member,
                  const int64_t paxos_replica_num,
+                 const palf::LogConfigVersion &config_version,
                  const int64_t timeout_us) override final;
 
   // @brief, remove a member from paxos group, can be called in any member
@@ -401,8 +464,9 @@ public:
                     const int64_t timeout_us) override final;
 
   // @brief, replace old_member with new_member, can be called in any member
-  // @param[in] const common::ObMember &added_member: member wil be added
+  // @param[in] const common::ObMember &added_member: member will be added
   // @param[in] const common::ObMember &removed_member: member will be removed
+  // @param[in] const palf::LogConfigVersion &config_version: config_version for leader checking
   // @param[in] const int64_t timeout_us
   // @return
   // - OB_SUCCESS: replace member successfully
@@ -411,6 +475,7 @@ public:
   // - other: bug
   int replace_member(const common::ObMember &added_member,
                      const common::ObMember &removed_member,
+                     const palf::LogConfigVersion &config_version,
                      const int64_t timeout_us) override final;
 
   // @brief: add a learner(read only replica) in this cluster
@@ -423,18 +488,33 @@ public:
   int add_learner(const common::ObMember &added_learner,
                   const int64_t timeout_us) override final;
 
-  // @brief, replace removed_learner with added_learner, can be called in any member
-  // @param[in] const common::ObMember &added_learner: learner wil be added
-  // @param[in] const common::ObMember &removed_learner: learner will be removed
+  // @brief, replace removed_learners with added_learners, can be called in any member
+  // @param[in] const common::ObMemberList &added_learners: learners will be added
+  // @param[in] const common::ObMemberList &removed_learners: learners will be removed
   // @param[in] const int64_t timeout_us
   // @return
   // - OB_SUCCESS: replace learner successfully
   // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
   // - OB_TIMEOUT: replace learner timeout
   // - other: bug
-  int replace_learner(const common::ObMember &added_learner,
-                      const common::ObMember &removed_learner,
-                      const int64_t timeout_us) override final;
+  int replace_learners(const common::ObMemberList &added_learners,
+                       const common::ObMemberList &removed_learners,
+                       const int64_t timeout_us) override final;
+
+  // @brief, replace removed_member with learner, can be called in any member
+  // @param[in] const common::ObMember &added_member: member will be added
+  // @param[in] const common::ObMember &removed_member: member will be removed
+  // @param[in] const palf::LogConfigVersion &config_version: config_version for leader checking
+  // @param[in] const int64_t timeout_us
+  // @return
+  // - OB_SUCCESS: replace member successfully
+  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
+  // - OB_TIMEOUT: replace member timeout
+  // - other: bug
+  int replace_member_with_learner(const common::ObMember &added_member,
+                                  const common::ObMember &removed_member,
+                                  const palf::LogConfigVersion &config_version,
+                                  const int64_t timeout_us) override final;
 
   // @brief: remove a learner(read only replica) in this cluster
   // @param[in] const common::ObMember &removed_learner: learner will be removed
@@ -450,6 +530,7 @@ public:
   // @param[in] const common::ObMember &learner: learner will be switched to acceptor
   // @param[in] const int64_t new_replica_num: replica number of paxos group after switching
   //            learner to acceptor (similar to add_member)
+  // @param[in] const palf::LogConfigVersion &config_version: config_version for leader checking
   // @param[in] const int64_t timeout_us
   // @return
   // - OB_SUCCESS
@@ -457,6 +538,7 @@ public:
   // - OB_TIMEOUT: switch_learner_to_acceptor timeout
   int switch_learner_to_acceptor(const common::ObMember &learner,
                                  const int64_t new_replica_num,
+                                 const palf::LogConfigVersion &config_version,
                                  const int64_t timeout_us) override final;
 
   // @brief: switch an acceptor(full replica) to learner(read only replica) in this cluster
@@ -472,11 +554,97 @@ public:
                                  const int64_t new_replica_num,
                                  const int64_t timeout_us) override final;
 
+#ifdef OB_BUILD_ARBITRATION
+  // @brief, add an arbitration member to paxos group
+  // @param[in] common::ObMember &member: arbitration member which will be added
+  // @param[in] const int64_t timeout_us: add member timeout, us
+  // @return
+  // - OB_SUCCESS: add arbitration member successfully
+  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
+  // - OB_TIMEOUT: add arbitration member timeout
+  // - other: bug
+  int add_arbitration_member(const common::ObMember &added_member,
+                             const int64_t timeout_us) override final;
+
+  // @brief, remove an arbitration member from paxos group
+  // @param[in] common::ObMember &member: arbitration member which will be removed
+  // @param[in] const int64_t timeout_us: remove member timeout, us
+  // @return
+  // - OB_SUCCESS: remove arbitration member successfully
+  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
+  // - OB_TIMEOUT: remove arbitration member timeout
+  // - other: bug
+  int remove_arbitration_member(const common::ObMember &arb_member,
+                                const int64_t timeout_us) override final;
+  // @brief: degrade an acceptor(full replica) to learner(special read only replica) in this cluster
+  // @param[in] const common::ObMemberList &member_list: acceptors will be degraded to learner
+  // @param[in] const int64_t timeout_us
+  // @return
+  // - OB_SUCCESS
+  // - OB_INVALID_ARGUMENT: invalid argument
+  // - OB_TIMEOUT: timeout
+  // - OB_NOT_MASTER: not leader
+  // - OB_EAGAIN: need retry
+  // - OB_OP_NOT_ALLOW: can not do degrade because of pre check fails
+  //      if last_ack_ts of any server in LogMemberAckInfoList has changed, can not degrade
+  int degrade_acceptor_to_learner(const palf::LogMemberAckInfoList &degrade_servers, const int64_t timeout_us) override final;
+
+  // @brief: upgrade a learner(special read only replica) to acceptor(full replica) in this cluster
+  // @param[in] const common::ObMemberList &learner_list: learners will be upgraded to acceptors
+  // @param[in] const int64_t timeout_us
+  // @return
+  // - OB_SUCCESS
+  // - OB_INVALID_ARGUMENT: invalid argument
+  // - OB_TIMEOUT: timeout
+  // - OB_NOT_MASTER: not leader
+  // - OB_EAGAIN: need retry
+  // - OB_OB_NOT_ALLOW: can not do upgrade because of pre check fails
+  //      if lsn of any server in LogMemberAckInfoList is less than match_lsn in palf, can not upgrade
+  int upgrade_learner_to_acceptor(const palf::LogMemberAckInfoList &upgrade_servers, const int64_t timeout_us) override final;
+#endif
+
+  //---------config change lock related--------//
+  //@brief: try lock config change which will forbidden changing on memberlist
+  // @param[in] const int64_ lock_owner: owner of locking_config_change operation
+  // @param[in] const int64_t timeout_us
+  //@return
+  // -- OB_NOT_INIT           not_init
+  // -- OB_SUCCESS            successfull lock
+  // -- OB_TRY_LOCK_CONFIG_CHANGE_CONFLICT   failed to lock because of locked by others
+  // -- OB_TIMEOUT              timeout, may lock successfully or not
+  // -- OB_EAGAIN               other config change operation is going on,need retry later
+  // -- OB_NOT_MASTER           this replica is not leader, not refresh location and retry with actual leader
+  // -- OB_STATE_NOT_MATCH        lock_owner is smaller than previous lock_owner
+  int try_lock_config_change(const int64_t lock_owner, const int64_t timeout_us);
+
+  //@brief: unlock config change which will allow changing on memberlist
+  // @param[in] const int64_ lock_owner: expected owner of config_change
+  // @param[in] const int64_t timeout_us
+  //@return
+  // -- OB_NOT_INIT           not_init
+  // -- OB_SUCCESS            successfull unlock
+  // -- OB_TIMEOUT            timeout, may unlock successfully or not
+  // -- OB_EAGAIN             other config change operation is going on,need retry later
+  // -- OB_NOT_MASTER         this replica is not leader, need refresh location and retry with actual leader
+  // -- OB_STATE_NOT_MATCH    lock_owner is smaller than previous lock_owner,or lock_owner is bigger than previous lock_owner
+  int unlock_config_change(const int64_t lock_owner, const int64_t timeout_us);
+
+  //@brief: get config change lock stat
+  //@return
+  //ret:
+  // -- OB_NOT_INIT           not_init
+  // -- OB_SUCCESS            success
+  // -- OB_NOT_MASTER         this replica is not leader, not refresh location and retry with actual leader
+  // -- OB_EAGAIN             is_locking or unlocking
+  // lock_owner: owner of config_change_lock
+  // is_locked:  whether config_change_lock is locked
+  int get_config_change_lock_stat(int64_t &lock_owner, bool &is_locked);
 
   // @breif, check request server is in self member list
   // @param[in] const common::ObAddr, request server.
-  // @param[out] bool&, whether in self member list.
-  int is_valid_member(const common::ObAddr &addr, bool &is_valid) const override final;
+  // @param[out] is_valid_member&, whether in member list or  learner list.
+  // @param[out] obrpc::LogMemberGCStat&, gc stat like learner in migrating.
+  int get_member_gc_stat(const common::ObAddr &addr, bool &is_valid_member, obrpc::LogMemberGCStat &stat) const override final;
   // @breif, wait cb append onto apply service Qsync
   // protect submit log and push cb in Qsync guard
   void wait_append_sync() override final;
@@ -515,15 +683,22 @@ public:
   int unregister_rebuild_cb() override final;
   int diagnose(LogHandlerDiagnoseInfo &diagnose_info) const;
   int diagnose_palf(palf::PalfDiagnoseInfo &diagnose_info) const;
-  TO_STRING_KV(K_(role), K_(proposal_id), KP(palf_env_), K(is_in_stop_state_), K(is_inited_));
+
+  TO_STRING_KV(K_(role), K_(proposal_id), KP(palf_env_), K(is_in_stop_state_), K(is_inited_), K(id_));
   int offline() override final;
   int online(const palf::LSN &lsn, const share::SCN &scn) override final;
   bool is_offline() const override final;
 private:
   static constexpr int64_t MIN_CONN_TIMEOUT_US = 5 * 1000 * 1000;     // 5s
+  typedef common::TCRWLock::WLockGuardWithTimeout WLockGuardWithTimeout;
 private:
   int submit_config_change_cmd_(const LogConfigChangeCmd &req);
-  int get_leader_max_scn_(share::SCN &max_scn) const;
+  int submit_config_change_cmd_(const LogConfigChangeCmd &req,
+                                LogConfigChangeCmdResp &resp);
+#ifdef OB_BUILD_ARBITRATION
+  int create_arb_member_(const common::ObMember &arb_member, const int64_t timeout_us);
+  int delete_arb_member_(const common::ObMember &arb_member, const int64_t timeout_us);
+#endif
   DISALLOW_COPY_AND_ASSIGN(ObLogHandler);
 private:
   common::ObAddr self_;
@@ -532,14 +707,12 @@ private:
   ObLogApplyService *apply_service_;
   ObLogReplayService *replay_service_;
   ObRoleChangeService *rc_service_;
-  ObSpinLock deps_lock_;
+  // Note: using TCRWLock for using WLockGuardWithTimeout
+  common::TCRWLock deps_lock_;
   mutable palf::PalfLocationCacheCb *lc_cb_;
   mutable obrpc::ObLogServiceRpcProxy *rpc_proxy_;
   common::ObQSync ls_qs_;
   ObMiniStat::ObStatItem append_cost_stat_;
-  mutable bool cached_is_log_sync_;
-  mutable int64_t last_check_sync_ts_;
-  mutable int64_t last_renew_loc_ts_;
   bool is_offline_;
   mutable int64_t get_max_decided_scn_debug_time_;
 };

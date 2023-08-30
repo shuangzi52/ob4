@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_partition_merge_task.h"
@@ -36,6 +43,7 @@ ObDirectLoadPartitionMergeTask::ObDirectLoadPartitionMergeTask()
     is_stop_(false),
     is_inited_(false)
 {
+  allocator_.set_tenant_id(MTL_ID());
 }
 
 ObDirectLoadPartitionMergeTask::~ObDirectLoadPartitionMergeTask()
@@ -149,9 +157,8 @@ int ObDirectLoadPartitionMergeTask::collect_obj(const ObDatumRow &datum_row)
   if (merge_param_->is_heap_table_ ) {
     for (int64_t i = 0; OB_SUCC(ret) && i < merge_param_->table_data_desc_.column_count_; i++) {
       const ObStorageDatum &datum = datum_row.storage_datums_[i + extra_rowkey_cnt + 1];
-      const common::ObCmpFunc &cmp_func = merge_param_->datum_utils_->get_cmp_funcs().at(
-                                                            i + extra_rowkey_cnt + 1).get_cmp_func();
       const ObColDesc &col_desc = merge_param_->col_descs_->at(i + 1);
+      const ObCmpFunc &cmp_func = merge_param_->cmp_funcs_->at(i + 1).get_cmp_func();
       ObOptOSGColumnStat *col_stat = column_stat_array_.at(i);
       bool is_valid = ObColumnStatParam::is_valid_opt_col_type(col_desc.col_type_.get_type());
       if (col_stat != nullptr && is_valid) {
@@ -163,8 +170,8 @@ int ObDirectLoadPartitionMergeTask::collect_obj(const ObDatumRow &datum_row)
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < merge_param_->rowkey_column_num_; i++) {
       const ObStorageDatum &datum = datum_row.storage_datums_[i];
-      const common::ObCmpFunc &cmp_func = merge_param_->datum_utils_->get_cmp_funcs().at(i).get_cmp_func();
       const ObColDesc &col_desc = merge_param_->col_descs_->at(i);
+      const ObCmpFunc &cmp_func = merge_param_->cmp_funcs_->at(i).get_cmp_func();
       ObOptOSGColumnStat *col_stat = column_stat_array_.at(i);
       bool is_valid = ObColumnStatParam::is_valid_opt_col_type(col_desc.col_type_.get_type());
       if (col_stat != nullptr && is_valid) {
@@ -175,8 +182,8 @@ int ObDirectLoadPartitionMergeTask::collect_obj(const ObDatumRow &datum_row)
     }
     for (int64_t i = merge_param_->rowkey_column_num_; OB_SUCC(ret) && i < merge_param_->table_data_desc_.column_count_; i++) {
       const ObStorageDatum &datum = datum_row.storage_datums_[i + extra_rowkey_cnt];
-      const common::ObCmpFunc &cmp_func = merge_param_->datum_utils_->get_cmp_funcs().at(i + extra_rowkey_cnt).get_cmp_func();
       const ObColDesc &col_desc = merge_param_->col_descs_->at(i);
+      const ObCmpFunc &cmp_func = merge_param_->cmp_funcs_->at(i).get_cmp_func();
       ObOptOSGColumnStat *col_stat = column_stat_array_.at(i);
       bool is_valid = ObColumnStatParam::is_valid_opt_col_type(col_desc.col_type_.get_type());
       if (col_stat != nullptr && is_valid) {
@@ -825,7 +832,8 @@ int ObDirectLoadPartitionHeapTableMultipleMergeTask::construct_row_iter(
  */
 
 ObDirectLoadPartitionHeapTableMultipleAggregateMergeTask::RowIterator::RowIterator()
-  : origin_iter_(nullptr),
+  : allocator_("TLD_RowIter"),
+    origin_iter_(nullptr),
     rowkey_column_num_(0),
     store_column_count_(0),
     heap_table_array_(nullptr),
@@ -862,6 +870,7 @@ int ObDirectLoadPartitionHeapTableMultipleAggregateMergeTask::RowIterator::init(
     LOG_WARN("invalid args", KR(ret), K(merge_param), K(tablet_id), KP(origin_table),
              KP(heap_table_array));
   } else {
+    allocator_.set_tenant_id(MTL_ID());
     range_.set_whole_range();
     if (OB_FAIL(origin_table->scan(range_, allocator_, origin_iter_))) {
       LOG_WARN("fail to scan origin table", KR(ret));

@@ -99,6 +99,7 @@ public:
   virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   virtual int clear_dag_net_ctx() override;
   virtual int deal_with_cancel() override;
+  bool is_ha_dag_net() const override { return true; }
 
   ObLSRestoreCtx *get_ls_restore_ctx() { return ctx_; }
   common::ObInOutBandwidthThrottle *get_bandwidth_throttle() { return bandwidth_throttle_; }
@@ -119,6 +120,7 @@ private:
   backup::ObBackupMetaIndexStoreWrapper meta_index_store_;
   backup::ObBackupMetaIndexStoreWrapper second_meta_index_store_;
   backup::ObBackupIndexKVCache *kv_cache_;
+  //TODO(muwei.ym) put bandwidth_throttle, svr_rpc_proxy, and storage_rpc into ctx 4.3
   common::ObInOutBandwidthThrottle *bandwidth_throttle_;
   obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
   storage::ObStorageRpc *storage_rpc_;
@@ -128,11 +130,12 @@ private:
 class ObLSRestoreDag : public ObStorageHADag
 {
 public:
-  explicit ObLSRestoreDag(const ObStorageHADagType sub_type);
+  explicit ObLSRestoreDag(const share::ObDagType::ObDagTypeEnum &dag_type);
   virtual ~ObLSRestoreDag();
   ObLSRestoreCtx *get_ctx() const { return static_cast<ObLSRestoreCtx *>(ha_dag_net_ctx_); }
   virtual bool operator == (const share::ObIDag &other) const override;
   virtual int64_t hash() const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
 
   INHERIT_TO_STRING_KV("ObStorageHADag", ObStorageHADag, KP(this))
   DISALLOW_COPY_AND_ASSIGN(ObLSRestoreDag);
@@ -145,7 +148,6 @@ public:
   virtual ~ObInitialLSRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
 
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObLSRestoreDag", ObLSRestoreDag, KP(this));
@@ -181,7 +183,6 @@ public:
   virtual ~ObStartLSRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
 
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObLSRestoreDag", ObLSRestoreDag, KP(this));
@@ -190,6 +191,7 @@ protected:
   DISALLOW_COPY_AND_ASSIGN(ObStartLSRestoreDag);
 };
 
+class ObICopyLSViewInfoReader;
 class ObStartLSRestoreTask : public share::ObITask
 {
 public:
@@ -202,9 +204,14 @@ private:
   int deal_with_local_ls_();
   int update_ls_meta_();
   int generate_tablets_restore_dag_();
-  int choose_src_();
-  int choose_leader_src_();
-  int choose_follower_src_();
+
+  int update_ls_meta_and_create_all_tablets_();
+  int create_tablet_(
+      const ObMigrationTabletParam &tablet_meta,
+      ObLS *ls);
+  void set_tablet_to_restore(ObMigrationTabletParam &tablet_meta);
+  int alloc_copy_ls_view_reader_(ObICopyLSViewInfoReader *&reader);
+  void free_copy_ls_view_reader_(ObICopyLSViewInfoReader *&reader);
   int generate_tablet_id_array_(
       const ObIArray<common::ObTabletID> &tablet_id_array);
 private:
@@ -223,7 +230,6 @@ public:
   virtual ~ObSysTabletsRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
 
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObLSRestoreDag", ObLSRestoreDag, KP(this));
@@ -265,7 +271,6 @@ public:
   virtual ~ObDataTabletsMetaRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
 
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObLSRestoreDag", ObLSRestoreDag, KP(this), KPC(ha_dag_net_ctx_));
@@ -307,8 +312,8 @@ public:
   virtual int64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
   virtual int generate_next_dag(share::ObIDag *&dag);
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
 
   int init(
       const common::ObIArray<common::ObTabletID> &tablet_id_array,
@@ -353,7 +358,6 @@ public:
   virtual ~ObFinishLSRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
 
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObLSRestoreDag", ObLSRestoreDag, KP(this), KPC(ha_dag_net_ctx_));

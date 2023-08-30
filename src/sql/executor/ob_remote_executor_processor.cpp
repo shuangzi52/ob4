@@ -212,7 +212,7 @@ int ObRemoteBaseExecuteP<T>::auto_start_phy_trans()
     LOG_ERROR("plan_ctx or my_session is NULL", K(ret), K(plan_ctx), K(my_session));
   } else {
     // 远程单partition并且是autocommit的情况下才运行start_trans和start_stmt
-    bool in_trans = my_session->is_in_transaction();
+    // bool in_trans = my_session->is_in_transaction();
     bool ac = true;
     my_session->set_early_lock_release(plan_ctx->get_phy_plan()->stat_.enable_early_lock_release_);
     if (OB_FAIL(my_session->get_autocommit(ac))) {
@@ -223,6 +223,7 @@ int ObRemoteBaseExecuteP<T>::auto_start_phy_trans()
     // NOTE: autocommit modfied by PL cannot sync to remote,
     // use has_start_stmt to test transaction prepared on original node
     if (false == my_session->has_start_stmt()) {
+      ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
       //start Tx on remote node, we need release txDesc deserilized by session
       if (OB_NOT_NULL(my_session->get_tx_desc())) {
         MTL(transaction::ObTransService*)->release_tx(*my_session->get_tx_desc());
@@ -646,7 +647,6 @@ int ObRemoteBaseExecuteP<T>::execute_with_sql(ObRemoteTask &task)
 
   // 设置诊断功能环境
   if (OB_SUCC(ret)) {
-    ObReqTimeGuard req_timeinfo_guard;
     ObSessionStatEstGuard stat_est_guard(session->get_effective_tenant_id(), session->get_sessid());
     // 初始化ObTask的执行环节
     //
@@ -717,7 +717,7 @@ int ObRemoteBaseExecuteP<T>::execute_with_sql(ObRemoteTask &task)
                NULL, session->get_effective_tenant_id())) {
           ret = OB_ERR_REMOTE_SCHEMA_NOT_FULL;
         }
-        DAS_CTX(exec_ctx_).get_location_router().refresh_location_cache(true, ret);
+        DAS_CTX(exec_ctx_).get_location_router().refresh_location_cache_by_errno(true, ret);
       }
       //监控项统计结束
       exec_end_timestamp_ = ObTimeUtility::current_time();
@@ -834,10 +834,19 @@ int ObRpcRemoteExecuteP::init()
   int ret = OB_SUCCESS;
   if (OB_FAIL(base_init())) {
     LOG_WARN("init remote base execute context failed", K(ret));
-  } else if (OB_FAIL(result_.init())) {
-    LOG_WARN("fail to init result", K(ret));
-  } else {
-    arg_.set_deserialize_param(exec_ctx_, phy_plan_);
+  }
+  if (OB_SUCC(ret)) {
+    uint64_t mtl_id = MTL_ID();
+    mtl_id = (mtl_id == OB_INVALID_TENANT_ID ?
+                        OB_SERVER_TENANT_ID :
+                        mtl_id);
+
+    result_.set_tenant_id(mtl_id);
+    if (OB_FAIL(result_.init())) {
+      LOG_WARN("fail to init result", K(ret));
+    } else {
+      arg_.set_deserialize_param(exec_ctx_, phy_plan_);
+    }
   }
   return ret;
 }
@@ -1026,15 +1035,19 @@ int ObRpcRemoteSyncExecuteP::init()
   ObRemoteTask &task = arg_;
   if (OB_FAIL(base_init())) {
     LOG_WARN("init remote base execute context failed", K(ret));
-  } else if (OB_FAIL(result_.init())) {
-    LOG_WARN("fail to init result", K(ret));
-  } else if (OB_FAIL(exec_ctx_.create_physical_plan_ctx())) {
-    LOG_WARN("create physical plan ctx failed", K(ret));
-  } else {
-    ObPhysicalPlanCtx *plan_ctx = exec_ctx_.get_physical_plan_ctx();
-    plan_ctx->get_remote_sql_info().ps_params_ = &plan_ctx->get_param_store_for_update();
-    task.set_remote_sql_info(&plan_ctx->get_remote_sql_info());
-    task.set_exec_ctx(&exec_ctx_);
+  }
+  if (OB_SUCC(ret)) {
+    result_.set_tenant_id(MTL_ID());
+    if (OB_FAIL(result_.init())) {
+      LOG_WARN("fail to init result", K(ret));
+    } else if (OB_FAIL(exec_ctx_.create_physical_plan_ctx())) {
+      LOG_WARN("create physical plan ctx failed", K(ret));
+    } else {
+      ObPhysicalPlanCtx *plan_ctx = exec_ctx_.get_physical_plan_ctx();
+      plan_ctx->get_remote_sql_info().ps_params_ = &plan_ctx->get_param_store_for_update();
+      task.set_remote_sql_info(&plan_ctx->get_remote_sql_info());
+      task.set_exec_ctx(&exec_ctx_);
+    }
   }
   return ret;
 }

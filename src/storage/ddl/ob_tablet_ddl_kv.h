@@ -49,7 +49,7 @@ class ObBlockMetaTree
 public:
   ObBlockMetaTree();
   virtual ~ObBlockMetaTree();
-  int init(const share::ObLSID &ls_id,
+  int init(ObTablet &tablet,
            const ObITable::TableKey &table_key,
            const share::SCN &ddl_start_scn,
            const int64_t data_format_version);
@@ -112,19 +112,21 @@ class ObDDLKV : public blocksstable::ObSSTable
 public:
   ObDDLKV();
   virtual ~ObDDLKV();
-  int init(const share::ObLSID &ls_id,
-           const common::ObTabletID &tablet_id,
+  virtual void inc_ref() override;
+  virtual int64_t dec_ref() override;
+  virtual int64_t get_ref() const override { return ObITable::get_ref(); }
+  int init(ObTablet &tablet,
            const share::SCN &ddl_start_scn,
            const int64_t snapshot_version,
            const share::SCN &last_freezed_scn,
            const int64_t data_format_version);
   void reset();
-  int set_macro_block(const ObDDLMacroBlock &macro_block);
+  int set_macro_block(ObTablet &tablet, const ObDDLMacroBlock &macro_block);
 
   int freeze(const share::SCN &freeze_scn);
   bool is_freezed() const { return ATOMIC_LOAD(&is_freezed_); }
-  int close();
-  int prepare_sstable();
+  int close(ObTablet &tablet);
+  int prepare_sstable(const bool need_check = true);
   bool is_closed() const { return is_closed_; }
   share::SCN get_min_scn() const { return min_scn_; }
   share::SCN get_freeze_scn() const { return freeze_scn_; }
@@ -135,7 +137,7 @@ public:
   void dec_pending_cnt();
   bool is_pending() const { return ATOMIC_LOAD(&pending_cnt_) > 0; }
   int wait_pending();
-  TO_STRING_KV(K_(is_inited), K_(ls_id), K_(tablet_id), K_(ddl_start_scn), K_(snapshot_version),
+  INHERIT_TO_STRING_KV("ObSSTable", ObSSTable, K_(is_inited), K_(ls_id), K_(tablet_id), K_(ddl_start_scn), K_(snapshot_version),
       K_(is_freezed), K_(is_closed),
       K_(last_freezed_scn), K_(min_scn), K_(max_scn), K_(freeze_scn),
       K_(pending_cnt), K_(data_format_version), K_(ref_cnt),
@@ -143,7 +145,7 @@ public:
 private:
   int insert_block_meta_tree(const ObDDLMacroHandle &macro_handle,
                              blocksstable::ObDataMacroBlockMeta *data_macro_meta);
-  int init_sstable_param(const share::ObLSID &ls_id,
+  int init_sstable_param(ObTablet &tablet,
                          const ObITable::TableKey &table_key,
                          const share::SCN &ddl_start_scn,
                          ObTabletCreateSSTableParam &sstable_param);

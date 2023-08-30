@@ -16,7 +16,6 @@
 #define protected public
 #define private public
 #include "mtlenv/mock_tenant_module_env.h"
-#include "observer/ob_safe_destroy_thread.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 #include "storage/ls/ob_ls.h"
 #include "storage/ls/ob_ls_tx_service.h"
@@ -78,6 +77,7 @@ TestTableLockFlush::TestTableLockFlush()
 
 void TestTableLockFlush::SetUp()
 {
+  ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
   tenant_id_ = MTL_ID();
 }
 void TestTableLockFlush::TearDown()
@@ -85,16 +85,11 @@ void TestTableLockFlush::TearDown()
 void TestTableLockFlush::SetUpTestCase()
 {
   EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
-  SAFE_DESTROY_INSTANCE.init();
-  SAFE_DESTROY_INSTANCE.start();
   ObServerCheckpointSlogHandler::get_instance().is_started_ = true;
 }
 
 void TestTableLockFlush::TearDownTestCase()
 {
-  SAFE_DESTROY_INSTANCE.stop();
-  SAFE_DESTROY_INSTANCE.wait();
-  SAFE_DESTROY_INSTANCE.destroy();
   MockTenantModuleEnv::get_instance().destroy();
 }
 
@@ -133,7 +128,7 @@ static void mock_store_ctx(ObStoreCtx &store_ctx,
   store_ctx.mvcc_acc_ctx_.init_write(part_ctx,
                                      part_ctx.mt_ctx_,
                                      tx_desc.tx_id_,
-                                     19999,
+                                     ObTxSEQ(19999, 0),
                                      tx_desc,
                                      tx_guard,
                                      snapshot,
@@ -370,8 +365,8 @@ TEST_F(TestTableLockFlush, restore_tx_ctx)
   mock_store_ctx(ob_store_ctx, ctx1, txDesc, ls);
   ob_store_ctx.ls_ = ls;
   ob_store_ctx.ls_id_ = ls->get_ls_id();
-  ob_store_ctx.mvcc_acc_ctx_.tx_table_guard_.tx_table_ = (ObTxTable*)0x1;
-  ob_store_ctx.mvcc_acc_ctx_.tx_table_guard_.epoch_ = ObTxTable::INVALID_READ_EPOCH;
+  ob_store_ctx.mvcc_acc_ctx_.tx_table_guards_.tx_table_guard_.tx_table_ = (ObTxTable*)0x1;
+  ob_store_ctx.mvcc_acc_ctx_.tx_table_guards_.tx_table_guard_.epoch_ = ObTxTable::INVALID_READ_EPOCH;
   ob_store_ctx.mvcc_acc_ctx_.abs_lock_timeout_ = 5000;
   ob_store_ctx.mvcc_acc_ctx_.tx_ctx_ = &ctx1;
   ob_store_ctx.mvcc_acc_ctx_.tx_desc_ = &txDesc;

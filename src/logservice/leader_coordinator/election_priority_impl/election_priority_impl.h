@@ -161,7 +161,11 @@ public:
   // 主动刷新选举优先级的方法
   virtual int refresh();
   // 在priority间进行比较的方法
-  virtual int compare_with(const palf::election::ElectionPriority &rhs, int &result, ObStringHolder &reason) const;
+  virtual int compare_with(const palf::election::ElectionPriority &rhs,
+                           const uint64_t compare_version,
+                           const bool decentralized_voting,
+                           int &result,
+                           ObStringHolder &reason) const;
   virtual int get_size_of_impl_type() const;
   virtual void placement_new_impl(void *ptr) const;
   // fatal failure跳过RCS直接切主

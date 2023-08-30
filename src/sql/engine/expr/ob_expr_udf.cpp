@@ -131,6 +131,8 @@ int ObExprUDF::calc_result_typeN(ObExprResType &type,
       type.set_meta(result_type_.get_obj_meta());
       if (type.get_type() == ObRawType) {
         type.set_collation_level(CS_LEVEL_NUMERIC);
+      } else if (type.is_string_or_lob_locator_type() && udf_package_id_ == T_OBJ_XML) {
+        type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
       }
       if (!type.is_ext()) {
         if (lib::is_oracle_mode()) {
@@ -139,6 +141,9 @@ int ObExprUDF::calc_result_typeN(ObExprResType &type,
           type.set_length(OB_MAX_VARCHAR_LENGTH);
         }
       }
+    }
+    if (OB_SUCC(ret) && lib::is_mysql_mode()) {
+      type_ctx.set_cast_mode(type_ctx.get_cast_mode() & ~CM_WARN_ON_FAIL);
     }
   }
   return ret;
@@ -200,7 +205,8 @@ int ObExprUDF::process_in_params(const ObObj *objs_stack,
                                  const ObIArray<ObUDFParamDesc> &params_desc,
                                  const ObIArray<ObExprResType> &params_type,
                                  ParamStore& iparams,
-                                 ObIAllocator &allocator)
+                                 ObIAllocator &allocator,
+                                 ObIArray<ObObj> *deep_in_objs)
 {
   int ret = OB_SUCCESS;
   CK (0 == param_num || OB_NOT_NULL(objs_stack));
@@ -216,6 +222,9 @@ int ObExprUDF::process_in_params(const ObObj *objs_stack,
         if (need_deep_copy_in_parameter(
             objs_stack, param_num, params_desc, params_type, objs_stack[i])) {
           OZ (pl::ObUserDefinedType::deep_copy_obj(allocator, objs_stack[i], param, true));
+          if (OB_NOT_NULL(deep_in_objs)) {
+            OZ (deep_in_objs->push_back(param));
+          }
         } else {
           param.set_extend(objs_stack[i].get_ext(),
                          objs_stack[i].get_meta().get_extend_type(), objs_stack[i].get_val_len());
@@ -369,6 +378,8 @@ int ObExprUDF::process_out_params(const ObObj *objs_stack,
           OZ (deep_copy_obj(*pkg_allocator, obj, obj));
         }
       }
+      OZ (ObSPIService::spi_update_package_change_info(&plctx, params_desc.at(i).get_package_id(),
+                                                       params_desc.at(i).get_index()));
     }
   }
   return ret;
@@ -474,6 +485,7 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
     }
 
     ObObj *objs = nullptr;
+    ObSEArray<ObObj, 2> deep_in_objs;
     if (expr.arg_cnt_ > 0) {
       objs = static_cast<ObObj *> (allocator.alloc(expr.arg_cnt_ * sizeof(ObObj)));
       if (OB_ISNULL(objs)) {
@@ -482,7 +494,7 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
       }
       OZ (fill_obj_stack(expr, ctx, objs));
       OZ (process_in_params(
-        objs, expr.arg_cnt_, info->params_desc_, info->params_type_, *udf_params, alloc));
+        objs, expr.arg_cnt_, info->params_desc_, info->params_type_, *udf_params, alloc, &deep_in_objs));
     }
 
     if (OB_SUCC(ret) && info->is_udt_cons_) {
@@ -493,12 +505,12 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
       CK (0 < udf_params->count());
       OZ (ns.init_complex_obj(alloc, pl_type, udf_params->at(0), false, false));
     }
-
     try {
       int64_t package_id = info->is_udt_udf_ ?
            share::schema::ObUDTObjectType::mask_object_id(info->udf_package_id_)
            : info->udf_package_id_;
-      OZ(pl_engine->execute(ctx.exec_ctx_,
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(pl_engine->execute(ctx.exec_ctx_,
                             info->is_called_in_sql_ ? allocator
                                                     : alloc,
                             package_id,
@@ -511,13 +523,31 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
                             false,
                             true,
                             info->loc_,
-                            info->is_called_in_sql_),
-
-                            info->udf_id_,
-                            info->udf_package_id_,
-                            info->is_udt_udf_,
-                            tmp_result,
-                            package_id);
+                            info->is_called_in_sql_))) {
+        LOG_WARN("fail to execute udf", K(ret), K(info), K(package_id), K(tmp_result));
+        if (info->is_called_in_sql_ && OB_NOT_NULL(ctx.exec_ctx_.get_pl_ctx())) {
+          ctx.exec_ctx_.get_pl_ctx()->reset_obj_range_to_end(cur_obj_count);
+        }
+        bool has_out_param = false;
+        for (int64_t i = 0; !has_out_param && i < info->params_desc_.count(); ++i) {
+          if (info->params_desc_.at(i).is_out()) {
+            has_out_param = true;
+          }
+        }
+        if (has_out_param) {
+          int tmp = process_out_params(objs,
+                                      expr.arg_cnt_,
+                                      *udf_params,
+                                      alloc,
+                                      ctx.exec_ctx_,
+                                      info->nocopy_params_,
+                                      info->params_desc_,
+                                      info->params_type_);
+          if (OB_SUCCESS != tmp) {
+            LOG_WARN("fail to process out param", K(tmp), K(ret));
+          }
+        }
+      }
     } catch(...) {
       throw;
     }
@@ -528,12 +558,15 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
           && tmp_result.get_meta().get_extend_type() != pl::PL_REF_CURSOR_TYPE) {
         OZ (pl::ObUserDefinedType::deep_copy_obj(alloc, tmp_result, result, true));
         OZ (pl::ObUserDefinedType::destruct_obj(tmp_result, ctx.exec_ctx_.get_my_session()));
-        CK (OB_NOT_NULL(ctx.exec_ctx_.get_pl_ctx()));
-        OX (ctx.exec_ctx_.get_pl_ctx()->reset_obj_range_to_end(cur_obj_count));
-        OZ (ctx.exec_ctx_.get_pl_ctx()->add(result));
+        if (OB_NOT_NULL(ctx.exec_ctx_.get_pl_ctx())) {
+          ctx.exec_ctx_.get_pl_ctx()->reset_obj_range_to_end(cur_obj_count);
+          OZ (ctx.exec_ctx_.get_pl_ctx()->add(result));
+        }
       } else {
         result = tmp_result;
-        OX (ctx.exec_ctx_.get_pl_ctx()->reset_obj_range_to_end(cur_obj_count));
+        if (OB_NOT_NULL(ctx.exec_ctx_.get_pl_ctx())) {
+          ctx.exec_ctx_.get_pl_ctx()->reset_obj_range_to_end(cur_obj_count);
+        }
       }
     } else {
       result = tmp_result;
@@ -547,6 +580,7 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
     }
 
     if (OB_READ_NOTHING == ret && info->is_called_in_sql_ && lib::is_oracle_mode()) {
+      result.set_null();
       ret = OB_SUCCESS;
     }
     if (OB_SUCC(ret)
@@ -603,6 +637,15 @@ int ObExprUDF::eval_udf(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
 
       if (OB_SUCC(ret) && info->is_udt_cons_) {
         OZ (pl::ObUserDefinedType::destruct_obj(udf_params->at(0), ctx.exec_ctx_.get_my_session()));
+      }
+    }
+    if (deep_in_objs.count() > 0) {
+      int tmp = OB_SUCCESS;
+      for (int64_t i = 0; i < deep_in_objs.count(); ++i) {
+        tmp = pl::ObUserDefinedType::destruct_obj(deep_in_objs.at(i), ctx.exec_ctx_.get_my_session());
+        if (OB_SUCCESS != tmp) {
+          LOG_WARN("fail to destruct obj of in param", K(tmp));
+        }
       }
     }
     if (need_end_stmt) {

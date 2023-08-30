@@ -25,6 +25,7 @@
 #include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_scheduler_config.h"
 #include "share/ob_table_range.h"
+#include "common/errsim_module/ob_errsim_module_type.h"
 
 namespace oceanbase
 {
@@ -34,6 +35,7 @@ struct ObTabletCompactionProgress;
 struct ObDiagnoseTabletCompProgress;
 class ObMergeDagHash;
 struct ObTabletMergeDagParam;
+struct ObIBasicInfoParam;
 }
 namespace share
 {
@@ -90,40 +92,40 @@ public:
   enum ObITaskType
   {
     TASK_TYPE_UT = 0,
-    TASK_TYPE_MACROMERGE= 1,
-    TASK_TYPE_INDEX_FINISH= 2,
-    TASK_TYPE_MAIN_FINISH=3,
-    TASK_TYPE_MINOR_MERGE=4,
-    TASK_TYPE_INDEX_PERPARE=5,
+    TASK_TYPE_MACROMERGE = 1,
+    TASK_TYPE_INDEX_FINISH = 2,
+    TASK_TYPE_MAIN_FINISH = 3,
+    TASK_TYPE_MINOR_MERGE = 4,
+    TASK_TYPE_INDEX_PERPARE = 5,
     TASK_TYPE_INDEX_LOCAL_SORT = 6,
     TASK_TYPE_INDEX_MERGE = 7,
-    TASK_TYPE_NORMAL_MINOR_MERGE=8,
-    TASK_TYPE_BUILD_INDEX_NORMAL_MERGE=9,
-    TASK_TYPE_UNIQUE_INDEX_CHECKING=10,
-    TASK_TYPE_REPORT_INDEX_STATUS=11,
-    TASK_TYPE_MERGE_PREPARE_TASK=12,
-    TASK_TYPE_INDEX_MERGE_TO_LATEST_FINISH=13,
-    TASK_TYPE_COMPACT_TO_LASTEST=14,
+    TASK_TYPE_NORMAL_MINOR_MERGE = 8,
+    TASK_TYPE_BUILD_INDEX_NORMAL_MERGE = 9,
+    TASK_TYPE_UNIQUE_INDEX_CHECKING = 10,
+    TASK_TYPE_REPORT_INDEX_STATUS = 11,
+    TASK_TYPE_MERGE_PREPARE_TASK = 12,
+    TASK_TYPE_INDEX_MERGE_TO_LATEST_FINISH = 13,
+    TASK_TYPE_COMPACT_TO_LASTEST = 14,
     TASK_TYPE_SSTABLE_MERGE_PREPARE = 15,
     TASK_TYPE_SSTABLE_MERGE_FINISH = 16,
-    TASK_TYPE_SPLIT_PREPARE_TASK=17,
-    TASK_TYPE_SPLIT_TASK=18,
-    TASK_TYPE_SPLIT_FINISH_TASK=19,
-    TASK_TYPE_UNIQUE_CHECKING_PREPARE=20,
-    TASK_TYPE_SIMPLE_UNIQUE_CHECKING=21,
+    TASK_TYPE_SPLIT_PREPARE_TASK = 17,
+    TASK_TYPE_SPLIT_TASK = 18,
+    TASK_TYPE_SPLIT_FINISH_TASK = 19,
+    TASK_TYPE_UNIQUE_CHECKING_PREPARE = 20,
+    TASK_TYPE_SIMPLE_UNIQUE_CHECKING = 21,
     TASK_TYPE_MIGRATE_PREPARE = 22,
     TASK_TYPE_MIGRATE_COPY_LOGIC = 23,
     TASK_TYPE_MIGRATE_FINISH_LOGIC = 24,
     TASK_TYPE_MIGRATE_COPY_PHYSICAL = 25,
     TASK_TYPE_MIGRATE_FINISH_PHYSICAL = 26,
     TASK_TYPE_MIGRATE_FINISH = 27,
-    TASK_TYPE_FAKE  = 28,
-    TASK_TYPE_MIGRATE_ENABLE_REPLAY  = 29,
+    TASK_TYPE_FAKE = 28,
+    TASK_TYPE_MIGRATE_ENABLE_REPLAY = 29,
     TASK_TYPE_MAJOR_MERGE_FINISH = 30,
     TASK_TYPE_GROUP_MIGRATE = 31,
     TASK_TYPE_SQL_BUILD_INDEX = 32, // build index by sql plan.
-    TASK_TYPE_SERVER_PREPROCESS =33,
-    TASK_TYPE_FAST_RECOVERY =34,
+    TASK_TYPE_SERVER_PREPROCESS = 33,
+    TASK_TYPE_FAST_RECOVERY = 34,
     TASK_TYPE_MIGRATE_POST_PREPARE = 35,
     TASK_TYPE_FAST_MIGRATE_ASYNC_TASK = 36,
     TASK_TYPE_VALIDATE_BACKUP = 37,
@@ -140,6 +142,9 @@ public:
     TASK_TYPE_BACKUP_CLEAN = 48,
     TASK_TYPE_DDL_KV_DUMP = 49,
     TASK_TYPE_DDL_KV_MERGE = 50,
+    TASK_TYPE_TRANSFER_BACKFILL_TX = 51,
+    TASK_TYPE_TRANSFER_REPLACE_TABLE = 52,
+    TASK_TYPE_MDS_TABLE_MERGE = 53,
     TASK_TYPE_MAX,
   };
 
@@ -265,8 +270,8 @@ public:
   {
     return DAG_STATUS_FINISH == dag_status || DAG_STATUS_ABORT == dag_status;
   }
-  bool has_set_stop() { return is_stop_; }
-  void set_stop() { is_stop_ = true; }
+  bool has_set_stop() { return ATOMIC_LOAD(&is_stop_); }
+  void set_stop() { ATOMIC_SET(&is_stop_, true); }
   ObIDagNet *get_dag_net() const { return dag_net_; }
   void set_dag_net(ObIDagNet &dag_net)
   {
@@ -287,8 +292,7 @@ public:
     lib::ObMutexGuard guard(lock_);
     return task_list_.get_size();
   }
-  virtual void gene_basic_warning_info(ObDagWarningInfo &info);
-  virtual void gene_warning_info(ObDagWarningInfo &info);
+  virtual int gene_warning_info(ObDagWarningInfo &info, ObIAllocator &allocator);
   virtual bool ignore_warning() { return false; }
   virtual bool check_can_retry();
   void set_max_retry_times(const uint32_t max_retry_times)
@@ -335,6 +339,9 @@ public:
 
   virtual int generate_next_dag(ObIDag *&next_dag) { UNUSED(next_dag); return common::OB_ITER_END; }
   virtual int set_result(const int32_t result) { UNUSED(result); return common::OB_SUCCESS; }
+  int fill_comment(char *buf, const int64_t buf_len);
+
+  virtual bool is_ha_dag() const = 0;
 
   DECLARE_VIRTUAL_TO_STRING;
   DISABLE_COPY_ASSIGN(ObIDag);
@@ -342,7 +349,7 @@ public:
   virtual bool operator == (const ObIDag &other) const = 0;
   virtual int64_t hash() const = 0;
   virtual int hash(uint64_t &hash_val) const { hash_val = hash(); return OB_SUCCESS; }
-  virtual int fill_comment(char *buf, const int64_t buf_len) const = 0;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const = 0;
   virtual int init_by_param(const ObIDagInitParam *param)
   {
     UNUSED(param);
@@ -353,6 +360,10 @@ public:
   virtual lib::Worker::CompatMode get_compat_mode() const = 0;
   virtual uint64_t get_consumer_group_id() const = 0;
   int remove_task(ObITask &task);
+
+#ifdef ERRSIM
+  virtual common::ObErrsimModuleType::TYPE get_module_type() { return ObErrsimModuleType::ERRSIM_MODULE_NONE; }
+#endif
 
 protected:
   int dag_ret_;
@@ -473,6 +484,7 @@ public:
   {
     return OB_SUCCESS;
   }
+  virtual bool is_ha_dag_net() const = 0;
 public:
   friend class ObTenantDagScheduler;
 
@@ -771,13 +783,12 @@ public:
   template<typename T>
   int create_and_add_dag(
       const ObIDagInitParam *param,
-      T *&dag,
       const bool emergency = false,
       const bool check_size_overflow = true);
   template<typename T>
   int alloc_dag(T *&dag);
   template<typename T>
-  int create_and_add_dag_net(const ObIDagInitParam *param, T *&dag_net);
+  int create_and_add_dag_net(const ObIDagInitParam *param);
   void free_dag(ObIDag &dag, ObIDag *parent_dag = nullptr);
   template<typename T>
   void free_dag_net(T *&dag_net);
@@ -816,22 +827,16 @@ public:
       compaction::ObDiagnoseTabletCompProgress &progress);
   int get_max_major_finish_time(const int64_t version, int64_t &estimated_finish_time);
   int diagnose_dag(const ObIDag *dag, compaction::ObDiagnoseTabletCompProgress &input_progress);
-  int check_ls_compaction_dag_exist(const ObLSID &ls_id, bool &exist);
+
+  // 1. check ls compaction exist
+  // 2. cancel ls compaction waiting dag
+  int check_ls_compaction_dag_exist_with_cancel(const ObLSID &ls_id, bool &exist);
   int check_dag_net_exist(
       const ObDagId &dag_id, bool &exist);
   int cancel_dag_net(const ObDagId &dag_id);
   int get_complement_data_dag_progress(const ObIDag *dag, int64_t &row_scanned, int64_t &row_inserted);
-
-  OB_INLINE bool is_ha_dag(ObDagType::ObDagTypeEnum type) const
-  {
-    return ObDagType::DAG_TYPE_MIGRATE <= type &&
-           ObDagType::DAG_TYPE_REMOVE_MEMBER >= type;
-  }
-  OB_INLINE bool is_ha_dag_net(ObDagNetType::ObDagNetTypeEnum type) const
-  {
-    return ObDagNetType::DAG_NET_TYPE_MIGARTION <= type &&
-           ObDagNetType::DAG_NET_TYPE_BACKUP_CLEAN >= type;
-  }
+  // for unittest
+  int get_first_dag_net(ObIDagNet *&dag_net);
 
 private:
   typedef common::ObDList<ObIDag> DagList;
@@ -945,9 +950,11 @@ private:
   int64_t work_thread_num_;
   int64_t default_work_thread_num_;
   int64_t total_running_task_cnt_;
+  int64_t scheduled_task_cnt_; // interval scheduled task count
   int64_t running_task_cnts_[ObDagPrio::DAG_PRIO_MAX];
   int64_t low_limits_[ObDagPrio::DAG_PRIO_MAX]; // wait to delete
   int64_t up_limits_[ObDagPrio::DAG_PRIO_MAX]; // wait to delete
+  int64_t scheduled_task_cnts_[ObDagType::DAG_TYPE_MAX]; // interval scheduled dag count
   int64_t dag_cnts_[ObDagType::DAG_TYPE_MAX];
   int64_t dag_net_cnts_[ObDagNetType::DAG_NET_TYPE_MAX];
   common::ObFIFOAllocator allocator_;
@@ -1006,7 +1013,7 @@ int ObTenantDagScheduler::alloc_dag(T *&dag)
     COMMON_LOG(WARN, "Dag Object is too large", K(ret), K(sizeof(T)));
   } else {
     T tmp_dag;
-    common::ObFIFOAllocator *allocator = is_ha_dag(tmp_dag.get_type()) ? &ha_allocator_ : &allocator_;
+    common::ObFIFOAllocator *allocator = tmp_dag.is_ha_dag() ? &ha_allocator_ : &allocator_;
     if (NULL == (buf = allocator->alloc(sizeof(T)))) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       COMMON_LOG(WARN, "failed to alloc dag", K(ret));
@@ -1030,7 +1037,7 @@ template<typename T>
 void ObTenantDagScheduler::free_dag_net(T *&dag_net)
 {
   if (OB_NOT_NULL(dag_net)) {
-    const bool ha_dag_net = is_ha_dag_net(dag_net->get_type());
+    const bool ha_dag_net = dag_net->is_ha_dag_net();
     dag_net->~T();
     if (ha_dag_net) {
       ha_allocator_.free(dag_net);
@@ -1041,20 +1048,19 @@ void ObTenantDagScheduler::free_dag_net(T *&dag_net)
   }
 }
 
-
 template <typename T>
-int ObTenantDagScheduler::create_and_add_dag_net(const ObIDagInitParam *param, T *&dag_net)
+int ObTenantDagScheduler::create_and_add_dag_net(const ObIDagInitParam *param)
 {
   int ret = common::OB_SUCCESS;
   void *buf = nullptr;
-  dag_net = nullptr;
+  T *dag_net = nullptr;
 
   if (IS_NOT_INIT) {
     ret = common::OB_NOT_INIT;
     COMMON_LOG(WARN, "scheduler is not init", K(ret));
   } else {
     T tmp_dag_net;
-    common::ObFIFOAllocator *allocator =  is_ha_dag_net(tmp_dag_net.get_type()) ? &ha_allocator_ : &allocator_;
+    common::ObFIFOAllocator *allocator =  tmp_dag_net.is_ha_dag_net() ? &ha_allocator_ : &allocator_;
     if (NULL == (buf = allocator->alloc(sizeof(T)))) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       COMMON_LOG(WARN, "failed to alloc dag_net", K(ret));
@@ -1070,7 +1076,8 @@ int ObTenantDagScheduler::create_and_add_dag_net(const ObIDagInitParam *param, T
         COMMON_LOG(WARN, "failed to add dag_net", K(ret), KPC(dag_net));
       }
     } else {
-      notify();
+      COMMON_LOG(INFO, "success to create and add dag_net", K(ret), KP(dag_net));
+      // Donot call notify(), may cause dead lock.
     }
   }
   if (OB_FAIL(ret)) {
@@ -1086,7 +1093,10 @@ int ObTenantDagScheduler::create_dag(
     T *&dag)
 {
   int ret = common::OB_SUCCESS;
-  if (OB_FAIL(alloc_dag(dag))) {
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    COMMON_LOG(WARN, "ObTenantDagScheduler is not inited", K(ret));
+  } else if (OB_FAIL(alloc_dag(dag))) {
     COMMON_LOG(WARN, "failed to alloc dag", K(ret));
   } else if (OB_FAIL(dag->init_by_param(param))) {
     COMMON_LOG(WARN, "failed to init dag", K(ret), KPC(dag));
@@ -1099,11 +1109,11 @@ int ObTenantDagScheduler::create_dag(
 template<typename T>
 int ObTenantDagScheduler::create_and_add_dag(
     const ObIDagInitParam *param,
-    T *&dag,
     const bool emergency/* = false*/,
     const bool check_size_overflow/* = true*/)
 {
   int ret = common::OB_SUCCESS;
+  T *dag = nullptr;
   if (OB_FAIL(create_dag(param, dag))) {
     COMMON_LOG(WARN, "failed to alloc dag", K(ret));
   } else if (OB_FAIL(add_dag(dag, emergency, check_size_overflow))) {
@@ -1111,6 +1121,7 @@ int ObTenantDagScheduler::create_and_add_dag(
       COMMON_LOG(WARN, "failed to add dag", K(ret), KPC(dag));
     }
   } else {
+    COMMON_LOG(INFO, "success to create and add dag", K(ret), KP(dag));
     scheduler_sync_.signal(); // wake up scheduler
   }
   if (OB_FAIL(ret) && nullptr != dag) {

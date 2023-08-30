@@ -203,15 +203,15 @@ namespace transaction
           ObTxMsg(TX_COMMIT),
           expire_ts_(OB_INVALID_TIMESTAMP),
           parts_()
-      {}
+      { commit_start_scn_.set_max(); }
       int64_t expire_ts_;
+      share::SCN commit_start_scn_;
       share::ObLSArray parts_;
       common::ObString app_trace_info_;
       bool is_valid() const;
-      INHERIT_TO_STRING_KV("txMsg", ObTxMsg, K_(expire_ts), K_(parts), K_(app_trace_info));
+      INHERIT_TO_STRING_KV("txMsg", ObTxMsg, K_(expire_ts), K_(commit_start_scn), K_(parts), K_(app_trace_info));
       OB_UNIS_VERSION(1);
     };
-
     struct ObTxCommitRespMsg : public ObTxMsg {
       ObTxCommitRespMsg() :
           ObTxMsg(TX_COMMIT_RESP)
@@ -236,7 +236,7 @@ namespace transaction
     struct ObTxRollbackSPMsg : public ObTxMsg {
       ObTxRollbackSPMsg() :
           ObTxMsg(ROLLBACK_SAVEPOINT),
-          savepoint_(-1),
+          savepoint_(),
           op_sn_(-1),
           //todo:后续branch_id使用方式确定后，需要相应修改
           branch_id_(-1),
@@ -249,7 +249,7 @@ namespace transaction
           tx_ptr_ = NULL;
         }
       }
-      int64_t savepoint_;
+      ObTxSEQ savepoint_;
       int64_t op_sn_;
       //todo:后期设计中操作编号是否等于branch_id
       int64_t branch_id_;
@@ -546,6 +546,35 @@ namespace transaction
           || (TX_2PC_PREPARE_REDO_REQ <= msg_type && TX_2PC_PREPARE_VERSION_RESP >= msg_type);
       }
     };
+
+
+   struct ObAskTxStateFor4377Msg
+   {
+   public:
+     ObAskTxStateFor4377Msg() :
+       tx_id_(),
+       ls_id_() {}
+   public:
+     ObTransID tx_id_;
+     share::ObLSID ls_id_;
+     bool is_valid() const;
+     TO_STRING_KV(K_(tx_id), K_(ls_id));
+     OB_UNIS_VERSION(1);
+   };
+
+   struct ObAskTxStateFor4377RespMsg
+   {
+   public:
+     ObAskTxStateFor4377RespMsg() :
+       is_alive_(false),
+       ret_(OB_SUCCESS) {}
+   public:
+     bool is_alive_;
+     int ret_;
+     bool is_valid() const;
+     TO_STRING_KV(K_(is_alive), K_(ret));
+     OB_UNIS_VERSION(1);
+   };
 }
 }
 

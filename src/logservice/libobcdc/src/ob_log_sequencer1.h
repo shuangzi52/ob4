@@ -8,8 +8,6 @@
  * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
- *
- * Sequencer: sequence trans.
  */
 
 #ifndef OCEANBASE_LIBOBCDC_SEQUENCER_H__
@@ -172,7 +170,9 @@ private:
       ObLogTenant &tenant,
       TransCtx &trans_ctx);
   // wait reader/parser module empty
-  int wait_until_parser_done_(volatile bool &stop_flag);
+  int wait_until_parser_done_(
+      const char *caller,
+      volatile bool &stop_flag);
   // wait reader/parser/formatter module empty
   int wait_until_formatter_done_(volatile bool &stop_flag);
   int recycle_resources_after_trans_ready_(TransCtx &trans_ctx, ObLogTenant &tenant);

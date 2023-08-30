@@ -385,7 +385,7 @@ public:
   };
 
 public:
-  ObBasicSessionInfo();
+  ObBasicSessionInfo(const uint64_t tenant_id);
   virtual ~ObBasicSessionInfo();
 
   virtual int init(uint32_t sessid, uint64_t proxy_sessid,
@@ -396,6 +396,11 @@ public:
   virtual void destroy();
   //called before put session to freelist: unlock/set invalid
   virtual void reset(bool skip_sys_var = false);
+  void set_tenant_session_mgr(ObTenantSQLSessionMgr *tenant_session_mgr)
+  {
+    tenant_session_mgr_ = tenant_session_mgr;
+  }
+  ObTenantSQLSessionMgr *get_tenant_session_mgr() { return tenant_session_mgr_; }
   virtual void clean_status();
   //setters
   int reset_timezone();
@@ -407,6 +412,7 @@ public:
                  const uint64_t length,
                  uint64_t &ori_tenant_id);
   int switch_tenant(uint64_t effective_tenant_id);
+  int switch_tenant_with_name(uint64_t effective_tenant_id, const common::ObString &tenant_name);
   int set_default_database(const common::ObString &database_name,
                            common::ObCollationType coll_type = common::CS_TYPE_INVALID);
   int reset_default_database() { return set_default_database(""); }
@@ -479,7 +485,7 @@ public:
   uint64_t get_login_tenant_id() const { return tenant_id_; }
   void set_login_tenant_id(uint64_t tenant_id) { tenant_id_ = tenant_id; }
   bool is_tenant_changed() const { return tenant_id_ != effective_tenant_id_; }
-  void set_autocommit(bool autocommit);
+  int set_autocommit(bool autocommit);
   int get_autocommit(bool &autocommit) const
   {
     autocommit = sys_vars_cache_.get_autocommit();
@@ -493,6 +499,7 @@ public:
     return common::OB_SUCCESS;
   }
   int get_show_ddl_in_compat_mode(bool &show_ddl_in_compat_mode) const;
+  int get_sql_quote_show_create(bool &sql_quote_show_create) const;
   common::ObConsistencyLevel get_consistency_level() const { return consistency_level_; };
   bool is_zombie() const { return SESSION_KILLED == get_session_state();}
   bool is_query_killed() const;
@@ -812,7 +819,8 @@ public:
   const share::ObBasicSysVar *get_sys_var(const int64_t idx) const;
   share::ObBasicSysVar *get_sys_var(const int64_t idx);
   int64_t get_sys_var_count() const { return share::ObSysVarFactory::ALL_SYS_VARS_COUNT; }
-  int load_default_sys_variable(const bool print_info_log, const bool is_sys_tenant);
+  // deserialized scene need use base_value as baseline.
+  int load_default_sys_variable(const bool print_info_log, const bool is_sys_tenant, bool is_deserialized = false);
   int load_default_configs_in_pc();
   int update_query_sensitive_system_variable(share::schema::ObSchemaGetterGuard &schema_guard);
   int process_variable_for_tenant(const common::ObString &var, common::ObObj &val);
@@ -1150,6 +1158,7 @@ public:
   const common::ObCurTraceId::TraceId &get_current_trace_id() const { return curr_trace_id_; }
   uint64_t get_current_plan_id() const { return plan_id_; }
   uint64_t get_last_plan_id() const { return last_plan_id_; }
+  void set_last_plan_id(uint64_t plan_id) { last_plan_id_ = plan_id; }
   void set_current_execution_id(int64_t execution_id) { current_execution_id_ = execution_id; }
   void set_last_trace_id(common::ObCurTraceId::TraceId *trace_id)
   {
@@ -1165,9 +1174,10 @@ public:
       curr_trace_id_ = *trace_id;
     }
   }
+  // forbid use jit
   int get_jit_enabled_mode(ObJITEnableMode &jit_mode) const
   {
-    jit_mode = sys_vars_cache_.get_ob_enable_jit();
+    jit_mode = ObJITEnableMode::OFF;
     return common::OB_SUCCESS;
   }
 
@@ -1196,11 +1206,14 @@ public:
 
   // for SESSION_SYNC_SYS_VAR serialize and deserialize.
   int serialize_sync_sys_vars(common::ObIArray<share::ObSysVarClassType> &sys_var_delta_ids, char *buf, const int64_t &buf_len, int64_t &pos);
-  int deserialize_sync_sys_vars(int64_t &deserialize_sys_var_count, const char *buf, const int64_t &data_len, int64_t &pos);
+  int deserialize_sync_sys_vars(int64_t &deserialize_sys_var_count, const char *buf, const int64_t &data_len, int64_t &pos, bool is_error_sync = false);
+  int deserialize_sync_error_sys_vars(int64_t &deserialize_sys_var_count, const char *buf, const int64_t &data_len, int64_t &pos);
   int sync_default_sys_vars(SysVarIncInfo sys_var_inc_info_, SysVarIncInfo tmp_sys_var_inc_info, bool &is_influence_plan_cache_sys_var);
   int get_sync_sys_vars(common::ObIArray<share::ObSysVarClassType> &sys_var_delta_ids) const;
+  int get_error_sync_sys_vars(ObIArray<share::ObSysVarClassType> &sys_var_delta_ids) const;
   int get_sync_sys_vars_size(common::ObIArray<share::ObSysVarClassType> &sys_var_delta_ids, int64_t &len) const;
   bool is_sync_sys_var(share::ObSysVarClassType sys_var_id) const;
+  bool is_exist_error_sync_var(share::ObSysVarClassType sys_var_id) const;
 
   // nested session and sql execute for foreign key.
   bool is_nested_session() const { return nested_count_ > 0; }
@@ -1235,6 +1248,9 @@ public:
   void set_is_in_user_scope(bool value) { sql_scope_flags_.set_is_in_user_scope(value); }
   bool is_in_user_scope() const { return sql_scope_flags_.is_in_user_scope(); }
   SqlScopeFlags &get_sql_scope_flags() { return sql_scope_flags_; }
+  share::SCN get_reserved_snapshot_version() const { return reserved_read_snapshot_version_; }
+  void set_reserved_snapshot_version(const share::SCN snapshot_version) { reserved_read_snapshot_version_ = snapshot_version; }
+  void reset_reserved_snapshot_version() { reserved_read_snapshot_version_.reset(); }
 
   bool get_check_sys_variable() { return check_sys_variable_; }
   void set_check_sys_variable(bool check_sys_variable) { check_sys_variable_ = check_sys_variable; }
@@ -1275,6 +1291,7 @@ public:
   int get_enable_optimizer_null_aware_antijoin(bool &is_enabled) const;
   common::ActiveSessionStat &get_ash_stat() {  return ash_stat_; }
   void update_tenant_config_version(int64_t v) { cached_tenant_config_version_ = v; };
+  static int check_optimizer_features_enable_valid(const ObObj &val);
 protected:
   int process_session_variable(share::ObSysVarClassType var, const common::ObObj &value,
                                const bool check_timezone_valid = true,
@@ -1353,8 +1370,8 @@ private:
                              common::ObObj *dest_val_ptr);
   inline int store_query_string_(const ObString &stmt);
   inline int set_session_state_(ObSQLSessionState state);
-  //写入系统变量的默认值
-  int init_system_variables(const bool print_info_log, const bool is_sys_tenant);
+  //写入系统变量的默认值, deserialized scene need use base_value as baseline.
+  int init_system_variables(const bool print_info_log, const bool is_sys_tenant, bool is_deserialized = false);
 protected:
   //============注意：下面的成员变量使用时，需要考虑并发控制================================
   struct MultiThreadData
@@ -1958,10 +1975,13 @@ private:
       };
     };
   };
+protected:
+  const uint64_t orig_tenant_id_;     // which tenant new me
 private:
   static const int64_t CACHED_SYS_VAR_VERSION = 721;// a magic num
   static const int MAX_SESS_BT_BUFF_SIZE = 1024;
 
+  ObTenantSQLSessionMgr *tenant_session_mgr_;
   // data structure related:
   common::ObRecursiveMutex query_mutex_;//互斥同一个session上的多次query请求
   common::ObRecursiveMutex thread_data_mutex_;//互斥多个线程对同一session成员的并发读写, 保护thread_data_的一致性
@@ -1988,7 +2008,12 @@ private:
 protected:
   transaction::ObTxDesc *tx_desc_;
   transaction::ObTxExecResult tx_result_; // TODO: move to QueryCtx/ExecCtx
-  share::SCN unused_read_snapshot_version_;//serialize compatibility preserved
+  // reserved read snapshot version for current or previous stmt in the txn. And
+  // it is used for multi-version garbage colloector to collect ative snapshot.
+  // While it may be empty for the txn with ac = 1 and remote execution whose
+  // snapshot version is generated from remote server(called by start_stmt). So
+  // use it only query is active and version is valid.
+  share::SCN reserved_read_snapshot_version_;
   transaction::ObXATransID xid_;
   bool associated_xa_; // session joined distr-xa-trans by xa-start
   int64_t cached_tenant_config_version_;
@@ -2057,8 +2082,7 @@ private:
   common::ObLogIdLevelMap log_id_level_map_;
   //===============================================================
 
-  // 当前运行的physical_plan，目前只是用于获取该语句运行过程中哪些用户变量和额外的系统变量需要序列化，
-  // 而该语句执行完之后要将其设为NULL
+  // 生命周期不保证，谨慎使用该指针
   ObPhysicalPlan *cur_phy_plan_;
   // sql_id of cur_phy_plan_ sql
   char sql_id_[common::OB_MAX_SQL_ID_LENGTH + 1];
@@ -2183,7 +2207,9 @@ private:
   bool is_password_expired_;
   // timestamp of processing current query. refresh when retry.
   int64_t process_query_time_;
+  int64_t last_update_tz_time_; //timestamp of last attempt to update timezone info
 };
+
 
 inline const common::ObString ObBasicSessionInfo::get_current_query_string() const
 {
@@ -2386,7 +2412,7 @@ public:
                           int64_t &pos);
 
   int init(const ObString &exec_env);
-  int load(ObBasicSessionInfo &session);
+  int load(ObBasicSessionInfo &session, ObIAllocator *alloc = NULL);
   int store(ObBasicSessionInfo &session);
 
   ObSQLMode get_sql_mode() { return sql_mode_; }

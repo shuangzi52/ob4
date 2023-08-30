@@ -27,7 +27,7 @@
 #include "observer/ob_server.h"
 #include "observer/virtual_table/ob_virtual_data_access_service.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "observer/omt/ob_tenant_srs_mgr.h"
+#include "observer/omt/ob_tenant_srs.h"
 #include "share/external_table/ob_external_table_file_mgr.h"
 #include "share/external_table/ob_external_table_utils.h"
 #include "lib/container/ob_array_wrap.h"
@@ -657,7 +657,7 @@ OB_INLINE int ObTableScanOp::create_one_das_task(ObDASTabletLoc *tablet_loc)
     scan_op->set_scan_ctdef(&MY_CTDEF.scan_ctdef_);
     scan_op->set_scan_rtdef(&tsc_rtdef_.scan_rtdef_);
     scan_op->set_can_part_retry(nullptr == tsc_rtdef_.scan_rtdef_.sample_info_
-                                && ctx_.get_my_session()->is_user_session());
+                                && can_partition_retry());
     tsc_rtdef_.scan_rtdef_.table_loc_->is_reading_ = true;
     if (!MY_SPEC.is_index_global_ && MY_CTDEF.lookup_ctdef_ != nullptr) {
       //is local index lookup, need to set the lookup ctdef to the das scan op
@@ -953,7 +953,11 @@ int ObTableScanOp::update_output_tablet_id()
     } else {
       data_tablet_loc = scan_result_.get_tablet_loc();
     }
-    if (OB_NOT_NULL(data_tablet_loc)) {
+    if (OB_ISNULL(data_tablet_loc)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("data tablet loc is null, value of pdml partition id will not be set", K(ret),
+               K(MY_SPEC.should_scan_index()), K(MY_SPEC.ref_table_id_));
+    } else {
       if (MY_SPEC.partition_id_calc_type_ == 0) {
         output_id = data_tablet_loc->tablet_id_.id();
       } else if (MY_SPEC.partition_id_calc_type_ == 1) {
@@ -1326,22 +1330,24 @@ int ObTableScanOp::inner_open()
 int ObTableScanOp::inner_close()
 {
   int ret = OB_SUCCESS;
-
   if (das_ref_.has_task()) {
-    ObTaskExecutorCtx &task_exec_ctx = ctx_.get_task_exec_ctx();
-    if (OB_FAIL(fill_storage_feedback_info())) {
-      LOG_WARN("failed to fill storage feedback info", K(ret));
-    } else if (OB_FAIL(das_ref_.close_all_task())) {
-      LOG_WARN("close all das task failed", K(ret));
+    int tmp_ret = fill_storage_feedback_info();
+    if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
+      LOG_WARN("fill storage feedback info failed", KR(tmp_ret));
+    }
+    if (OB_FAIL(das_ref_.close_all_task())) {
+      LOG_WARN("close all das task failed", KR(ret));
     }
   }
-  if (OB_SUCC(ret) && MY_SPEC.is_global_index_back()) {
+  if (MY_SPEC.is_global_index_back()) {
+    int save_ret = ret;
     if (OB_ISNULL(global_index_lookup_op_)) {
       ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid arguments",K(ret));
+      LOG_WARN("invalid arguments", KR(ret));
     } else if (OB_FAIL(global_index_lookup_op_->close())) {
-      LOG_WARN("failed to get next batch",K(ret));
+      LOG_WARN("close global index lookup op failed", KR(ret));
     }
+    ret = (OB_SUCCESS == save_ret) ? ret : save_ret;
   }
   if (OB_SUCC(ret)) {
     fill_sql_plan_monitor_info();
@@ -1350,7 +1356,6 @@ int ObTableScanOp::inner_close()
     iter_end_ = false;
     need_init_before_get_row_ = true;
   }
-
   return ret;
 }
 
@@ -1589,6 +1594,9 @@ int ObTableScanOp::local_iter_rescan()
         }
       }
       if (OB_SUCC(ret)) {
+        if (MY_SPEC.gi_above_) {
+          scan_op->set_gi_above_and_rescan(true);
+        }
         if (OB_FAIL(cherry_pick_range_by_tablet_id(scan_op))) {
           LOG_WARN("prune query range by partition id failed", K(ret));
         } else if (OB_FAIL(init_das_group_range(0, group_size_))) {
@@ -2493,10 +2501,13 @@ int ObTableScanOp::init_ddl_column_checksum()
     column_checksum_.set_allocator(&ctx_.get_allocator());
     col_need_reshape_.set_allocator(&ctx_.get_allocator());
     const ObSQLSessionInfo *session = nullptr;
-    const ObIArray<ObColumnParam *> &cols = MY_CTDEF.scan_ctdef_.table_param_.get_read_info().get_columns();
+    const ObIArray<ObColumnParam *> *cols = MY_CTDEF.scan_ctdef_.table_param_.get_read_info().get_columns();
     if (OB_ISNULL(session = ctx_.get_my_session())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid session", K(ret));
+    } else if (OB_ISNULL(cols)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("col param array is unexpected null", K(ret),KP(cols));
     } else if (MY_SPEC.output_.count() != MY_SPEC.ddl_output_cids_.count()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid arguments", K(ret), K(MY_SPEC.output_), K(MY_CTDEF.scan_ctdef_.table_param_), K(MY_SPEC.ddl_output_cids_));
@@ -2513,8 +2524,8 @@ int ObTableScanOp::init_ddl_column_checksum()
       for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.ddl_output_cids_.count(); ++i) {
         bool found = false;
         bool need_reshape = false;
-        for (int64_t j = 0; OB_SUCC(ret) && !found && j < cols.count(); ++j) {
-          const ObColumnParam *col_param = cols.at(j);
+        for (int64_t j = 0; OB_SUCC(ret) && !found && j < cols->count(); ++j) {
+          const ObColumnParam *col_param = cols->at(j);
           if (OB_ISNULL(col_param)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("invalid col param", K(ret));
@@ -2530,8 +2541,13 @@ int ObTableScanOp::init_ddl_column_checksum()
         if (OB_FAIL(ret)) {
         } else if (!found) {
           // if not found, the column is virtual generated column, in this scene,
-          // no need reshape, because reshape in opt layer.
+          // if is_fixed_len_char_type() is true, need reshape
+          uint64_t VIRTUAL_GEN_FIX_LEN_TAG = 1ULL << 63;
+          if ((MY_SPEC.ddl_output_cids_.at(i) & VIRTUAL_GEN_FIX_LEN_TAG) >> 63) {
+            need_reshape = true;
+          } else {
             need_reshape = false;
+          }
         }
         if (OB_SUCC(ret) && OB_FAIL(col_need_reshape_.push_back(need_reshape))) {
           LOG_WARN("failed to push back col need reshape", K(ret));
@@ -2685,13 +2701,14 @@ int ObTableScanOp::report_ddl_column_checksum()
     const int64_t curr_scan_task_id = scan_task_id_++;
     const ObTabletID &tablet_id = MY_INPUT.tablet_loc_->tablet_id_;
     const uint64_t table_id = MY_CTDEF.scan_ctdef_.ref_table_id_;
+    uint64_t VIRTUAL_GEN_FIXED_LEN_MASK = ~(1ULL << 63);
     for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.ddl_output_cids_.count(); ++i) {
       ObDDLChecksumItem item;
       item.execution_id_ = MY_SPEC.plan_->get_ddl_execution_id();
       item.tenant_id_ = MTL_ID();
       item.table_id_ = table_id;
       item.ddl_task_id_ = MY_SPEC.plan_->get_ddl_task_id();
-      item.column_id_ = MY_SPEC.ddl_output_cids_.at(i);
+      item.column_id_ = MY_SPEC.ddl_output_cids_.at(i) & VIRTUAL_GEN_FIXED_LEN_MASK;
       item.task_id_ = ctx_.get_px_sqc_id() << 48 | ctx_.get_px_task_id() << 32 | curr_scan_task_id;
       item.checksum_ = i < column_checksum_.count() ? column_checksum_[i] : 0;
     #ifdef ERRSIM
@@ -2929,13 +2946,13 @@ int ObTableScanOp::inner_get_next_spatial_index_row()
           } else if (OB_FAIL(ObGeoTypeUtil::get_srid_from_wkb(geo_wkb, srid))) {
             LOG_WARN("failed to get srid", K(ret), K(geo_wkb));
           } else if (srid != 0 &&
-              OB_FAIL(OTSRS_MGR.get_tenant_srs_guard(tenant_id, srs_guard))) {
+              OB_FAIL(OTSRS_MGR->get_tenant_srs_guard(srs_guard))) {
             LOG_WARN("failed to get srs guard", K(ret), K(tenant_id), K(srid));
           } else if (srid != 0 &&
               OB_FAIL(srs_guard.get_srs_item(srid, srs_item))) {
             LOG_WARN("failed to get srs item", K(ret), K(tenant_id), K(srid));
           } else if (((srid == 0) || !(srs_item->is_geographical_srs())) &&
-                      OB_FAIL(OTSRS_MGR.get_srs_bounds(srid, srs_item, srs_bound))) {
+                      OB_FAIL(OTSRS_MGR->get_srs_bounds(srid, srs_item, srs_bound))) {
             LOG_WARN("failed to get srs bound", K(ret), K(srid));
           } else if (OB_FAIL(ObGeoTypeUtil::get_cellid_mbr_from_geom(geo_wkb, srs_item, srs_bound,
                                                                      cellids, mbr_val))) {
@@ -3149,7 +3166,7 @@ int ObGlobalIndexLookupOpImpl::process_data_table_rowkey()
       das_scan_op = static_cast<ObDASScanOp*>(tmp_op);
       das_scan_op->set_scan_ctdef(get_lookup_ctdef());
       das_scan_op->set_scan_rtdef(lookup_rtdef);
-      das_scan_op->set_can_part_retry(table_scan_op_->get_exec_ctx().get_my_session()->is_user_session());
+      das_scan_op->set_can_part_retry(table_scan_op_->can_partition_retry());
     }
   }
   if (OB_SUCC(ret)) {
@@ -3340,6 +3357,7 @@ int ObGlobalIndexLookupOpImpl::check_lookup_row_cnt()
                 "index_group_cnt", get_index_group_cnt(),
                 "lookup_group_cnt", get_lookup_group_cnt(),
                 "index_table_id", table_scan_op_->get_tsc_spec().get_ref_table_id(),
+                K(DAS_CTX(table_scan_op_->get_exec_ctx()).get_snapshot()),
                 KPC(my_session->get_tx_desc()));
       //now to dump lookup das task info
       int64_t rownum = 0;

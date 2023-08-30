@@ -349,15 +349,15 @@ int MutatorRow::parse_columns_(
 
   // NOTE: Allow obj2str_helper and column_schema to be empty
   if (OB_ISNULL(col_data) || OB_UNLIKELY(col_data_size <= 0)) {
-    LOG_ERROR("invalid argument", K(col_data_size), K(col_data));
     ret = OB_INVALID_ARGUMENT;
+    LOG_ERROR("invalid argument", KR(ret), K(col_data_size), K(col_data));
   }
   // Validate cols values
   else if (OB_UNLIKELY(cols.num_ > 0)) {
-    LOG_ERROR("column value list is not reseted", K(cols));
     ret = OB_INVALID_ARGUMENT;
+    LOG_ERROR("column value list is not reseted", KR(ret), K(cols));
   } else if (OB_FAIL(row_reader.read_row(col_data, col_data_size, nullptr, datum_row))) {
-    TRANS_LOG(WARN, "Failed to read datum row", K(ret));
+    LOG_WARN("Failed to read datum row", KR(ret), K(tenant_id), K(table_id), K(is_parse_new_col));
   } else {
     LOG_DEBUG("prepare to handle datum_row", K(datum_row));
     // Iterate through all Cells using Cell Reader
@@ -367,7 +367,10 @@ int MutatorRow::parse_columns_(
       ColumnSchemaInfo *column_schema_info = NULL;
       blocksstable::ObStorageDatum &datum = datum_row.storage_datums_[column_stored_idx];
 
-      if (datum.is_nop()) {
+      if (OB_FAIL(deep_copy_encoded_column_value_(datum))) {
+        LOG_ERROR("deep_copy_encoded_column_value_ failed", KR(ret),
+            K(tenant_id), K(table_id), K(column_stored_idx), K(datum), K(is_parse_new_col));
+      } else if (datum.is_nop()) {
         LOG_DEBUG("ignore nop datum", K(column_stored_idx), K(datum));
       } else if (OB_FAIL(get_column_info_(
             tb_schema_info,
@@ -383,7 +386,6 @@ int MutatorRow::parse_columns_(
           // for normal column which is not belong to some udt, is_usr_column is true and is_udt_column is false
           // for udt column
           // if is main column of group, is_usr_column is true , is_udt_column is also true.
-          // and currently main column without data, always is nop, will not execute to here.
           // if is hidden column of udt, is_usr_column is false, is_udt_column is true.
           if (! (column_schema_info->is_usr_column() || column_schema_info->is_udt_column())) {
             // ignore non user columns
@@ -410,7 +412,7 @@ int MutatorRow::parse_columns_(
             LOG_ERROR("set_obj_propertie_ failed", K(column_id), K(column_stored_idx),
                 KPC(column_schema_info), K(obj_meta), K(obj));
           } else if (OB_FAIL(datum.to_obj_enhance(obj, obj_meta))) {
-            LOG_ERROR("transfer datum to obj failed", K(ret), K(datum), K(obj_meta));
+            LOG_ERROR("transfer datum to obj failed", KR(ret), K(datum), K(obj_meta));
           } else {
             const bool is_lob_storage = obj_meta.is_lob_storage();
             // Default is false
@@ -424,7 +426,7 @@ int MutatorRow::parse_columns_(
               LOG_DEBUG("handle_lob_v2_data", K(column_stored_idx), K(lob_common), K(obj));
 
               if (! is_out_row) {
-                LOG_DEBUG("is_lob_storage in row", K(column_id), K(is_lob_storage), K(lob_common), K(obj));
+                LOG_DEBUG("is_lob_storage in row", K(column_id), K(is_lob_storage), K(is_parse_new_col), K(lob_common), K(obj));
                 obj.set_string(obj.get_type(), lob_common.get_inrow_data_ptr(), lob_common.get_byte_size(datum.len_));
               } else {
                 const ObLobData &lob_data = *(reinterpret_cast<const ObLobData *>(lob_common.buffer_));
@@ -432,9 +434,8 @@ int MutatorRow::parse_columns_(
                 const ObLobDataOutRowCtx *lob_data_out_row_ctx =
                   reinterpret_cast<const ObLobDataOutRowCtx *>(lob_data.buffer_);
 
-                // TODO remove
-                LOG_DEBUG("is_lob_storage out row", K(column_id), K(is_lob_storage), K(lob_data), K(obj),
-                    KPC(lob_data_out_row_ctx));
+                LOG_DEBUG("is_lob_storage out row", K(column_id), K(is_lob_storage), K(is_parse_new_col), K(lob_common),
+                    K(lob_data), K(obj), KPC(lob_data_out_row_ctx));
 
                 if (is_parse_new_col) {
                   ObLobDataGetCtx *lob_data_get_ctx = static_cast<ObLobDataGetCtx *>(allocator_.alloc(sizeof(ObLobDataGetCtx)));
@@ -538,10 +539,18 @@ int MutatorRow::add_column_(
     ObCDCUdtValueMap *udt_value_map)
 {
   int ret = OB_SUCCESS;
-  ColValue *cv_node = static_cast<ColValue *>(allocator_.alloc(sizeof(ColValue)));
+  ColValue *cv_node = nullptr;
 
   // NOTE: Allow obj2str_helper and column_schema to be empty
-  if (OB_ISNULL(cv_node)) {
+  if (OB_NOT_NULL(column_schema_info)
+      && OB_NOT_NULL(udt_value_map)
+      && column_schema_info->is_udt_column()) {
+    // for udt column, no need calling obj2str, just add to udt column group
+    // then will group columns obj value of same udt to single string value together
+    if (OB_FAIL(udt_value_map->add_column_value_to_udt(*column_schema_info, is_out_row, value))) {
+      LOG_ERROR("add_column_value_to_udt fail", KR(ret), K(cols));
+    }
+  } else if (OB_ISNULL(cv_node = static_cast<ColValue *>(allocator_.alloc(sizeof(ColValue))))) {
     LOG_ERROR("allocate memory for ColValue fail", "size", sizeof(ColValue));
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else if (NULL != column_schema_info && column_schema_info->is_delete()) {
@@ -609,13 +618,6 @@ int MutatorRow::add_column_(
         tz_info_wrap))) {
       LOG_ERROR("obj2str fail", KR(ret),
           "obj", *value, K(obj2str_helper), K(accuracy), K(collation_type), K(column_id), K(column_schema_info));
-    } else if ( // add to udt if is udt column , else add to cols as usual
-        OB_NOT_NULL(column_schema_info)
-        && OB_NOT_NULL(udt_value_map)
-        && column_schema_info->is_udt_column()) {
-      if (OB_FAIL(udt_value_map->add_column_value_to_udt(column_schema_info->get_udt_set_id(), cv_node))) {
-        LOG_ERROR("add column to udt fail", KR(ret), "column_value", *cv_node, K(cols));
-      }
     } else if (OB_FAIL(cols.add(cv_node))) {
       LOG_ERROR("add column into ColValueList fail", KR(ret), "column_value", *cv_node, K(cols));
     }
@@ -764,7 +766,7 @@ int MutatorRow::parse_columns_(
     ret = OB_INVALID_ARGUMENT;
     LOG_ERROR("column value list is not reseted", KR(ret), K(cols));
   } else if (OB_FAIL(row_reader.read_row(col_data, col_data_size, nullptr, datum_row))) {
-    LOG_ERROR("Failed to read datum row", K(ret));
+    LOG_ERROR("Failed to read datum row", KR(ret));
   } else {
     LOG_DEBUG("parse_columns_", K(is_parse_new_col), K(datum_row));
 
@@ -775,7 +777,10 @@ int MutatorRow::parse_columns_(
       blocksstable::ObStorageDatum &datum = datum_row.storage_datums_[i];
       column_id = col_des_array[i].col_id_;
 
-      if (datum.is_nop()) {
+      if (OB_FAIL(deep_copy_encoded_column_value_(datum))) {
+        LOG_ERROR("deep_copy_encoded_column_value_ failed", KR(ret), "column_stored_idx", i, K(datum), K(is_parse_new_col));
+      } else if (datum.is_nop()) {
+        LOG_DEBUG("ignore nop datum", "column_stored_idx", i, K(datum));
       } else if (OB_INVALID_ID == column_id) {
         // Note: the column_id obtained here may be invalid
         // For example a delete statement with only one cell and an invalid column_id in the cell
@@ -788,7 +793,7 @@ int MutatorRow::parse_columns_(
           if (OB_FAIL(set_obj_propertie_(column_id, i, table_schema, obj_meta, obj))) {
             LOG_ERROR("set_obj_propertie_ failed", K(column_id), K(i), K(obj_meta), K(obj));
           } else if (OB_FAIL(datum.to_obj_enhance(obj, obj_meta))) {
-            LOG_ERROR("transfer datum to obj failed", K(ret), K(datum), K(obj_meta));
+            LOG_ERROR("transfer datum to obj failed", KR(ret), K(datum), K(obj_meta));
           } else {
             OB_ASSERT(obj.has_lob_header() == false); // debug only
             if (OB_FAIL(add_column_(cols, column_id, &obj))) {
@@ -827,6 +832,26 @@ int MutatorRow::parse_rowkey_(
         LOG_ERROR("add_column_ fail", KR(ret), K(rowkey_cols), "column_id", rowkey_col.column_id_,
             K(index), K(rowkey_objs[index]));
       }
+    }
+  }
+
+  return ret;
+}
+
+int MutatorRow::deep_copy_encoded_column_value_(blocksstable::ObStorageDatum &datum)
+{
+  int ret = OB_SUCCESS;
+
+  if (datum.need_copy_for_encoding_column_with_flat_format(OBJ_DATUM_STRING)) {
+    // local buffer will free while allocator_ reset
+    char* local_buffer = static_cast<char*>(allocator_.alloc(sizeof(uint64_t)));
+
+    if (OB_ISNULL(local_buffer)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("Failed to allocate local buffer to store local encoded column datum", KR(ret));
+    } else {
+      MEMCPY(local_buffer, datum.ptr_, sizeof(uint64_t));
+      datum.set_string(local_buffer, sizeof(uint64_t));
     }
   }
 
@@ -2142,6 +2167,7 @@ PartTransTask::PartTransTask() :
     ref_cnt_(0),
     multi_data_source_node_arr_(),
     multi_data_source_info_(),
+    segment_buf_(),
     checkpoint_seq_(0),
     global_trans_seq_(0),
     global_schema_version_(OB_INVALID_VERSION),
@@ -2276,6 +2302,7 @@ void PartTransTask::reset()
   ref_cnt_ = 0;
   multi_data_source_node_arr_.reset();
   multi_data_source_info_.reset();
+  segment_buf_.reset();
   checkpoint_seq_ = 0;
   global_trans_seq_ = 0;
   global_schema_version_ = OB_INVALID_VERSION;
@@ -2376,7 +2403,7 @@ int PartTransTask::push_redo_log(
   return ret;
 }
 
-int PartTransTask::push_rollback_to_info(const palf::LSN &lsn, const int64_t rollback_from, const int64_t rollback_to)
+int PartTransTask::push_rollback_to_info(const palf::LSN &lsn, const ObTxSEQ &rollback_from, const ObTxSEQ &rollback_to)
 {
   int ret = OB_SUCCESS;
   RollbackNode *rollback_node = static_cast<RollbackNode*>(allocator_.alloc(sizeof(RollbackNode)));
@@ -2407,7 +2434,11 @@ int PartTransTask::push_fetched_log_entry(const palf::LSN &lsn)
   } else if (OB_FAIL(alloc_log_entry_node_(lsn, log_entry_node))) {
     LOG_ERROR("alloc_log_entry_node_ failed", KR(ret), K(lsn), KPC(this));
   } else if (OB_FAIL(sorted_log_entry_info_.push_fetched_log_entry_node(log_entry_node))) {
-    LOG_ERROR("push_fetched_log_entry_node failed", KR(ret), KPC(log_entry_node), KPC(this));
+    if (OB_ENTRY_EXIST != ret) {
+      LOG_ERROR("push_fetched_log_entry_node failed", KR(ret), KPC(log_entry_node), KPC(this));
+    } else {
+      LOG_DEBUG("duplicate log_entry", KR(ret), KPC(log_entry_node), KPC(this));
+    }
   }
 
   return ret;
@@ -2464,8 +2495,8 @@ int PartTransTask::push_multi_data_source_data(
           }
           break;
         }
-        case transaction::ObTxDataSourceType::CREATE_TABLET:
-        case transaction::ObTxDataSourceType::REMOVE_TABLET:
+        case transaction::ObTxDataSourceType::CREATE_TABLET_NEW_MDS:
+        case transaction::ObTxDataSourceType::DELETE_TABLET_NEW_MDS:
         {
           if (! is_commit_log) {
             if (OB_FAIL(alloc_and_save_multi_data_source_node_(lsn, mds_buffer_node))) {
@@ -2476,27 +2507,29 @@ int PartTransTask::push_multi_data_source_data(
         }
         case transaction::ObTxDataSourceType::LS_TABLE:
         {
-          if (is_commit_log) {
+          // only push_back ls_op in multi_data_source_log, in case of reentrant of commit_log
+          // while handling miss_log.
+          if (! is_commit_log) {
             int64_t pos = 0;
-            share::ObLSAttr &ls_attr = multi_data_source_info_.get_ls_attr();
+            share::ObLSAttr ls_attr;;
 
             if (OB_FAIL(ls_attr.deserialize(data.ptr(), data_buf_size, pos))) {
               LOG_ERROR("deserialize ls_table_op failed", KR(ret), K_(tls_id), K_(trans_id), K(lsn),
                   K(mds_buffer_node), K(ls_attr));
+            } else if (OB_FAIL(multi_data_source_info_.push_back_ls_table_op(ls_attr))) {
+              LOG_ERROR("push_back ls_table_op info multi_data_source_info failed", KR(ret),
+                  K_(tls_id), K_(trans_id), K(lsn), K(mds_buffer_node), K(ls_attr));
+            } else {
+              LOG_INFO("resolver found ls_attr in multi_data_source log", K_(tls_id), K_(trans_id), K(lsn),
+                  K(mds_buffer_node), K(ls_attr));
             }
-          } else if (multi_data_source_info_.has_ls_table_op()) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_ERROR("expect at most one ls_table_op per trans", KR(ret), K_(tls_id), K_(trans_id), K(lsn),
-                K(mds_buffer_node), K_(multi_data_source_info));
-          } else {
-            multi_data_source_info_.set_has_ls_table_op();
           }
           break;
         }
         default:
         {
-          LOG_WARN("ignore not_supportted multi_data_source type", KR(ret), K_(tls_id), K_(trans_id), K(lsn),
-              K(is_commit_log), K(mds_data_arr), K(mds_buffer_node));
+          LOG_INFO("ignore not_supportted multi_data_source type", KR(ret), K_(tls_id), K_(trans_id), K(lsn),
+              K(is_commit_log), K(mds_type));
           break;
         }
       }
@@ -2641,7 +2674,10 @@ int PartTransTask::get_database_schema_info_with_inc_dict(
   return ret;
 }
 
-int PartTransTask::get_table_meta_with_inc_dict(const uint64_t tenant_id, const uint64_t table_id, const datadict::ObDictTableMeta *&tb_meta)
+int PartTransTask::get_table_meta_with_inc_dict(
+    const uint64_t tenant_id,
+    const uint64_t table_id,
+    const datadict::ObDictTableMeta *&tb_meta)
 {
   int ret = OB_SUCCESS;
 
@@ -2676,6 +2712,51 @@ int PartTransTask::get_table_meta_with_inc_dict(const uint64_t tenant_id, const 
   } else {
     // ONLY used for SYS_LS PartTransTask of DDL_TRANS
     ret = OB_ENTRY_NOT_EXIST;
+  }
+
+  return ret;
+}
+
+int PartTransTask::check_for_ddl_trans(
+    bool &is_not_barrier,
+    ObSchemaOperationType &op_type) const
+{
+  int ret = OB_SUCCESS;
+  is_not_barrier = false;
+  int64_t other_ddl_count = 0;
+  IStmtTask *stmt_task = get_stmt_list().head_;
+
+  while (NULL != stmt_task && OB_SUCC(ret)) {
+    DdlStmtTask *ddl_stmt = dynamic_cast<DdlStmtTask *>(stmt_task);
+
+    if (OB_UNLIKELY(! stmt_task->is_ddl_stmt()) || OB_ISNULL(ddl_stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("invalid DDL statement", KR(ret), KPC(stmt_task), K(ddl_stmt));
+    } else {
+      op_type = static_cast<ObSchemaOperationType>(ddl_stmt->get_operation_type());
+
+      // TODO It refer to the create table DDL as a barrer because the Online DDL may cause the incremental
+      // data dictionary information containing two tables (such as: the hidden table and original table),
+      // resulting in incorrect replay of the incremental data dictionary.
+      if (OB_DDL_CREATE_TABLE == op_type) {
+        if (get_multi_data_source_info().is_contains_multiple_table_metas()) {
+          is_not_barrier = false;
+        } else {
+          is_not_barrier = true;
+        }
+      } else {
+        ++other_ddl_count;
+      }
+      stmt_task = stmt_task->get_next();
+    }
+  } // while
+
+  if (OB_SUCC(ret)) {
+    // Normally, a DDL transaction only contains one DDL statement.
+    // If there are multiple statements, the DDL transaction is treated as barrier to avoid misjudgments
+    if (other_ddl_count > 0) {
+      is_not_barrier = false;
+    }
   }
 
   return ret;
@@ -2976,32 +3057,42 @@ int PartTransTask::commit(
       type_ = TASK_TYPE_DDL_TRANS;
     } else if (multi_data_source_info_.has_ls_table_op()) {
       type_ = TASK_TYPE_LS_OP_TRANS;
-      const share::ObLSAttr &ls_attr = multi_data_source_info_.get_ls_attr();;
+      int64_t idx = 0;
+      int64_t ls_attr_cnt = 0;
+      const share::ObLSAttrArray &ls_attr_arr = multi_data_source_info_.get_ls_attr_arr();;
 
-      if (OB_UNLIKELY(! ls_attr.is_valid())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_ERROR("ls_attr from multi_data_source is not valid", KR(ret), K(ls_attr), KPC(this));
-      } else if (OB_FAIL(ObLogLSOpProcessor::process_ls_op(tls_id_.get_tenant_id(), commit_log_lsn, commit_log_submit_ts,
-          ls_attr))) {
-        if (OB_ENTRY_NOT_EXIST != ret) {
-          LOG_ERROR("ObLogLSOpProcessor process_ls_op failed", KR(ret), K(tls_id_), K(tx_id), K(commit_log_lsn),
-              K(commit_log_submit_ts), K(ls_attr));
-        } else {
-          if (is_data_dict_mode) {
-            // In Data dictionary, it need to fetch the log of the baseline data dict before adding a tenant,
-            // and if it encounter a log stream operation in the process of building the data dictionary,
-            // it need to ignore it and rely on the incremental replay process of the data dictionary.
-            ret = OB_SUCCESS;
-            LOG_INFO("ObLogLSOpProcessor process_ls_op when tenant is not exist", KR(ret), K(tls_id_), K(tx_id), K(commit_log_lsn),
-                K(commit_log_submit_ts), K(ls_attr));
-          } else {
+      ARRAY_FOREACH_N(ls_attr_arr, idx, ls_attr_cnt)
+      {
+        const share::ObLSAttr &ls_attr = ls_attr_arr.at(idx);
+
+        if (OB_UNLIKELY(! ls_attr.is_valid())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR("ls_attr from multi_data_source is not valid", KR(ret), K(idx), K(ls_attr_cnt), K(ls_attr), K(ls_attr_arr), KPC(this));
+        } else if (OB_FAIL(ObLogLSOpProcessor::process_ls_op(
+            tls_id_.get_tenant_id(),
+            commit_log_lsn,
+            commit_log_submit_ts,
+            ls_attr))) {
+          if (OB_ENTRY_NOT_EXIST != ret) {
             LOG_ERROR("ObLogLSOpProcessor process_ls_op failed", KR(ret), K(tls_id_), K(tx_id), K(commit_log_lsn),
                 K(commit_log_submit_ts), K(ls_attr));
+          } else {
+            if (is_data_dict_mode) {
+              // In Data dictionary, it need to fetch the log of the baseline data dict before adding a tenant,
+              // and if it encounter a log stream operation in the process of building the data dictionary,
+              // it need to ignore it and rely on the incremental replay process of the data dictionary.
+              ret = OB_SUCCESS;
+              LOG_INFO("ObLogLSOpProcessor process_ls_op when tenant is not exist", KR(ret), K(tls_id_), K(tx_id), K(commit_log_lsn),
+                  K(commit_log_submit_ts), K(ls_attr));
+            } else {
+              LOG_ERROR("ObLogLSOpProcessor process_ls_op failed", KR(ret), K(tls_id_), K(tx_id), K(commit_log_lsn),
+                  K(commit_log_submit_ts), K(ls_attr), K(idx), K(ls_attr_arr));
+            }
           }
+        } else {
+          LOG_INFO("ObLogLSOpProcessor process_ls_op succ", K(tls_id_), K(tx_id), K(commit_log_lsn),
+              K(commit_log_submit_ts), K(ls_attr), K(idx), K(ls_attr_arr));
         }
-      } else {
-        LOG_INFO("ObLogLSOpProcessor process_ls_op succ", K(tls_id_), K(tx_id), K(commit_log_lsn),
-            K(commit_log_submit_ts), K(ls_attr));
       }
     } else {
       ret = OB_NOT_SUPPORTED;

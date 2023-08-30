@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #pragma once
 
 #include "observer/table_load/ob_table_load_stat.h"
@@ -200,7 +207,7 @@ int ObDirectLoadDataBlockWriter<Header, T>::write_item(const T &item)
 template <typename Header, typename T>
 int ObDirectLoadDataBlockWriter<Header, T>::flush_buffer()
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_flush_buffer_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, external_flush_buffer_time_us);
   int ret = common::OB_SUCCESS;
   if (OB_FAIL(pre_flush_buffer())) {
     STORAGE_LOG(WARN, "fail to pre flush buffer", KR(ret));
@@ -227,7 +234,7 @@ int ObDirectLoadDataBlockWriter<Header, T>::flush_buffer()
 template <typename Header, typename T>
 int ObDirectLoadDataBlockWriter<Header, T>::flush_extra_buffer(const T &item)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_flush_buffer_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, external_flush_buffer_time_us);
   int ret = common::OB_SUCCESS;
   if (OB_FAIL(pre_flush_buffer())) {
     STORAGE_LOG(WARN, "fail to pre flush buffer", KR(ret));

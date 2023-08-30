@@ -47,6 +47,11 @@ DEFINE_RPC_PROCESSOR(LogFetchReqP,
                      LogFetchReq,
                      obrpc::OB_LOG_FETCH_REQ);
 
+DEFINE_RPC_PROCESSOR(LogBatchFetchRespP,
+                     obrpc::LogRpcProxyV2,
+                     LogBatchFetchResp,
+                     obrpc::OB_LOG_BATCH_FETCH_RESP);
+
 DEFINE_RPC_PROCESSOR(LogPrepareReqP,
                      obrpc::LogRpcProxyV2,
                      LogPrepareReq,
@@ -144,6 +149,13 @@ DEFINE_SYNC_RPC_PROCESSOR(LogGetStatP,
                           LogGetStatResp,
                           obrpc::OB_LOG_GET_STAT);
 
+#ifdef OB_BUILD_ARBITRATION
+DEFINE_SYNC_RPC_PROCESSOR(ObRpcGetArbMemberInfoP,
+                          obrpc::LogRpcProxyV2,
+                          LogGetArbMemberInfoReq,
+                          LogGetArbMemberInfoResp,
+                          obrpc::OB_LOG_GET_ARB_MEMBER_INFO);
+#endif
 } // end namespace palf
 } // end namespace oceanbase
 

@@ -31,9 +31,7 @@ ObLobLocatorHelper::ObLobLocatorHelper()
   : table_id_(OB_INVALID_ID),
     tablet_id_(OB_INVALID_ID),
     ls_id_(OB_INVALID_ID),
-    tx_id_(OB_INVALID_ID),
-    snapshot_version_(0),
-    scn_(0),
+    read_snapshot_(),
     rowid_version_(ObURowIDData::INVALID_ROWID_VERSION),
     rowid_project_(nullptr),
     rowid_objs_(),
@@ -53,9 +51,7 @@ void ObLobLocatorHelper::reset()
   table_id_ = OB_INVALID_ID;
   tablet_id_ = OB_INVALID_ID;
   ls_id_ = OB_INVALID_ID;
-  tx_id_ = OB_INVALID_ID;
-  scn_ = 0;
-  snapshot_version_ = 0;
+  read_snapshot_.reset();
   rowid_version_ = ObURowIDData::INVALID_ROWID_VERSION;
   rowid_project_ = nullptr;
   rowid_objs_.reset();
@@ -96,16 +92,14 @@ int ObLobLocatorHelper::init(const ObTableScanParam &scan_param,
       rowid_version_ = table_param.get_rowid_version();
       rowid_project_ = &table_param.get_rowid_projector();
       table_id_ = table_param.get_table_id();
-      snapshot_version_ = snapshot_version;
       tablet_id_ = scan_param.tablet_id_.id();
       ls_id_ = ls_id.id();
-      tx_id_ = scan_param.tx_id_;
-      scn_ = ctx.mvcc_acc_ctx_.snapshot_.scn_;
+      read_snapshot_ = ctx.mvcc_acc_ctx_.snapshot_;
       enable_locator_v2_ = table_param.enable_lob_locator_v2();
-      if (snapshot_version != ctx.mvcc_acc_ctx_.snapshot_.version_.get_val_for_tx()) {
+      if (snapshot_version != read_snapshot_.version_.get_val_for_tx()) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "snapshot version mismatch",
-          K(snapshot_version), K(ctx.mvcc_acc_ctx_.snapshot_.version_.get_val_for_tx()));
+          K(snapshot_version), K(read_snapshot_));
       } else {
         is_inited_ = true;
       }
@@ -134,8 +128,7 @@ int ObLobLocatorHelper::init(const ObTableStoreStat &table_store_stat,
     table_id_ = table_store_stat.table_id_;
     tablet_id_ = table_store_stat.tablet_id_.id();
     ls_id_ = ls_id.id();
-    tx_id_ = ctx.mvcc_acc_ctx_.snapshot_.tx_id_; // scn?
-    snapshot_version_ = snapshot_version;
+    read_snapshot_ = ctx.mvcc_acc_ctx_.snapshot_;
     enable_locator_v2_ = true; // must be called en locator v2 enabled
     OB_ASSERT(ob_enable_lob_locator_v2() == true);
     is_inited_ = true;
@@ -305,13 +298,15 @@ int ObLobLocatorHelper::fuse_mem_lob_header(ObObj &def_obj, uint64_t col_id, boo
                                  payload_size,
                                  0,
                                  false))) {
-          STORAGE_LOG(WARN, "Lob: init locator in build_lob_locatorv2", K(ret), K(column_id));
+          STORAGE_LOG(WARN, "Lob: init locator in build_lob_locatorv2", K(ret), K(col_id));
         } else if (OB_FAIL(locator.set_payload_data(&lob_common, def_obj.get_string()))) {
         } else if (has_extern) {
-          ObMemLobTxInfo tx_info(snapshot_version_, tx_id_, scn_);
+          ObMemLobTxInfo tx_info(read_snapshot_.version_.get_val_for_tx(),
+                                 read_snapshot_.tx_id_.get_id(),
+                                 read_snapshot_.scn_.cast_to_int());
           ObMemLobLocationInfo location_info(tablet_id_, ls_id_, def_obj.get_collation_type());
-          if (OB_FAIL(locator.set_table_info(table_id_, column_id))) { // ToDo: @gehao should be column idx
-            STORAGE_LOG(WARN, "Lob: set table info failed", K(ret), K(table_id_), K(column_id));
+          if (OB_FAIL(locator.set_table_info(table_id_, col_id))) { // ToDo: @gehao should be column idx
+            STORAGE_LOG(WARN, "Lob: set table info failed", K(ret), K(table_id_), K(col_id));
           } else if (extern_flags.has_tx_info_ && OB_FAIL(locator.set_tx_info(tx_info))) {
             STORAGE_LOG(WARN, "Lob: set transaction info failed", K(ret), K(tx_info));
           } else if (extern_flags.has_location_info_ && OB_FAIL(locator.set_location_info(location_info))) {
@@ -422,7 +417,7 @@ int ObLobLocatorHelper::build_lob_locator(common::ObString payload,
       STORAGE_LOG(WARN, "Failed to alloc memory for lob locator", K(ret), K(locator_size));
     } else if (FALSE_IT(MEMSET(buf, 0, locator_size))) {
     } else if (FALSE_IT(locator = reinterpret_cast<ObLobLocator *>(buf))) {
-    } else if (OB_FAIL(locator->init(table_id_, column_id, snapshot_version_,
+    } else if (OB_FAIL(locator->init(table_id_, column_id, read_snapshot_.version_.get_val_for_tx(),
                                      LOB_DEFAULT_FLAGS, rowid_str, payload))) {
       STORAGE_LOG(WARN, "Failed to init lob locator", K(ret), K(*this), K(rowid_str));
     } else {
@@ -457,7 +452,8 @@ int ObLobLocatorHelper::build_lob_locatorv2(ObLobLocatorV2 &locator,
     bool is_src_inrow = (is_simple ? true : lob_common->in_row_);
     // systable read always get full lob data and output inrow lobs
     bool is_dst_inrow = ((is_systable) ? true : is_src_inrow);
-    if (byte_size <= LOB_FORCE_INROW_SIZE) {
+    bool is_enable_force_inrow = false;
+    if (is_enable_force_inrow && (byte_size <= LOB_FORCE_INROW_SIZE)) {
       // if lob is smaller than datum allow size
       // let lob obj force inrow for hash/cmp cannot handle error
       is_dst_inrow = true;
@@ -514,7 +510,9 @@ int ObLobLocatorHelper::build_lob_locatorv2(ObLobLocatorV2 &locator,
           STORAGE_LOG(WARN, "Lob: fill payload failed", K(ret), K(column_id));
         }
       } else if (has_extern) {
-        ObMemLobTxInfo tx_info(snapshot_version_, tx_id_, scn_);
+        ObMemLobTxInfo tx_info(read_snapshot_.version_.get_val_for_tx(),
+                               read_snapshot_.tx_id_.get_id(),
+                               read_snapshot_.scn_.cast_to_int());
         ObMemLobLocationInfo location_info(tablet_id_, ls_id_, cs_type);
         if (has_extern && OB_FAIL(locator.set_table_info(table_id_, column_id))) { // should be column idx
           STORAGE_LOG(WARN, "Lob: set table info failed", K(ret), K(table_id_), K(column_id));
@@ -566,9 +564,7 @@ int ObLobLocatorHelper::build_lob_locatorv2(ObLobLocatorV2 &locator,
             ObArenaAllocator tmp_lob_allocator(ObModIds::OB_LOB_READER, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
             ObLobAccessParam param;
             param.tx_desc_ = NULL;
-            param.snapshot_.core_.tx_id_ = tx_id_;
-            param.snapshot_.core_.version_.convert_for_tx(snapshot_version_);
-            param.snapshot_.core_.scn_ = scn_;
+            param.snapshot_.core_ = read_snapshot_;
             param.snapshot_.valid_= true;
             param.snapshot_.source_ = transaction::ObTxReadSnapshot::SRC::LS;
             param.snapshot_.snapshot_lsid_ = share::ObLSID(ls_id_);

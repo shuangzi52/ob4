@@ -89,6 +89,7 @@ public:
   void destroy();
   int update_memory_limit(const int64_t memory_limit);
   int64_t get_allocated_size() const;
+  int64_t get_pre_allocated_count() const { return block_count_; }
   virtual void *alloc(const int64_t size, const lib::ObMemAttr &attr) override;
   virtual void *alloc(const int64_t size) override;
   virtual void free(void *ptr) override;
@@ -102,6 +103,7 @@ private:
   static const int64_t MACRO_POOL_BLOCK_SIZE = 2L * 1024L * 1024L + DIO_READ_ALIGN_SIZE;
   bool is_inited_;
   int64_t memory_limit_;
+  int64_t block_count_;
   ObConcurrentFIFOAllocator inner_allocator_;
   ObIOMemoryPool<MACRO_POOL_BLOCK_SIZE> macro_pool_;
 };
@@ -161,6 +163,27 @@ private:
   ObSEArray<int64_t, GROUP_START_NUM> doing_request_count_;
 };
 
+class ObSysIOUsage final
+{
+public:
+  ObSysIOUsage();
+  ~ObSysIOUsage();
+  int init();
+  void accumulate(ObIORequest &req);
+  void calculate_io_usage();
+  typedef ObSEArray<ObSEArray<double, SYS_RESOURCE_GROUP_CNT>, 2> SysAvgItems;
+  void get_io_usage(SysAvgItems &avg_iops, SysAvgItems &avg_bytes, SysAvgItems &avg_rt_us);
+  void record_request_start(ObIORequest &req);
+  void record_request_finish(ObIORequest &req);
+  TO_STRING_KV(K(io_stats_), K(io_estimators_), K(group_avg_iops_), K(group_avg_byte_), K(group_avg_rt_us_));
+private:
+  ObSEArray<ObSEArray<ObIOStat, SYS_RESOURCE_GROUP_CNT>, 2> io_stats_;
+  ObSEArray<ObSEArray<ObIOStatDiff, SYS_RESOURCE_GROUP_CNT>, 2> io_estimators_;
+  SysAvgItems group_avg_iops_;
+  SysAvgItems group_avg_byte_;
+  SysAvgItems group_avg_rt_us_;
+};
+
 class ObCpuUsage final
 {
 public:
@@ -181,6 +204,7 @@ public:
   virtual ~ObIOTuner();
   int init();
   void destroy();
+  int send_detect_task();
   virtual void run1() override;
 
 private:
@@ -277,7 +301,7 @@ public:
   void stop();
   void accumulate(const ObIORequest &req);
   int schedule_request(ObIORequest &req);
-  int init_group_queues(const uint64_t tenant_id, const int64_t group_num);
+  int init_group_queues(const uint64_t tenant_id, const int64_t group_num, ObIOAllocator *io_allocator);
   int update_group_queues(const uint64_t tenant_id, const int64_t group_num);
   int remove_phyqueues(const uint64_t tenant_id);
   int stop_phy_queues(const uint64_t tenant_id, const int64_t index);
@@ -478,6 +502,7 @@ public:
   int get_device_health_status(ObDeviceHealthStatus &dhs, int64_t &device_abnormal_time);
   void reset_device_health();
   void record_failure(const ObIORequest &req);
+  int record_timing_task(const int64_t first_id, const int64_t second_id);
 
 private:
   int record_read_failure(const ObIORequest &req);
@@ -495,9 +520,6 @@ private:
   bool is_device_error_;
   int64_t begin_device_error_ts_;
   int64_t last_device_error_ts_;
-  // write/append failure detect
-  int64_t write_failure_count_;
-  int64_t write_failure_ts_[WRITE_FAILURE_DETECT_EVENT_COUNT];
 };
 
 class ObIOTracer final

@@ -25,6 +25,9 @@
 #include "share/interrupt/ob_global_interrupt_call.h"
 #include "ob_operator.h"
 #include "observer/ob_server.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_controller.h"
+#endif
 
 namespace oceanbase
 {
@@ -126,7 +129,8 @@ ObExecContext::ObExecContext(ObIAllocator &allocator)
     tmp_alloc_used_(false),
     table_direct_insert_ctx_(),
     errcode_(OB_SUCCESS),
-    dblink_snapshot_map_()
+    dblink_snapshot_map_(),
+    cur_row_num_(-1)
 {
 }
 
@@ -738,6 +742,8 @@ int ObExecContext::init_physical_plan_ctx(const ObPhysicalPlan &plan)
     const ObPhyPlanHint &phy_plan_hint = plan.get_phy_plan_hint();
     ObConsistencyLevel consistency = INVALID_CONSISTENCY;
     my_session_->set_cur_phy_plan(const_cast<ObPhysicalPlan*>(&plan));
+    part_ranges_.set_tenant_id(my_session_->get_effective_tenant_id());
+    part_ranges_.set_label("PxTabletRangArr");
     if (OB_UNLIKELY(phy_plan_hint.query_timeout_ > 0)) {
       plan_timeout = phy_plan_hint.query_timeout_;
     } else {
@@ -771,6 +777,13 @@ int ObExecContext::init_physical_plan_ctx(const ObPhysicalPlan &plan)
       phy_plan_ctx_->set_foreign_key_checks(0 != foreign_key_checks);
       phy_plan_ctx_->set_table_row_count_list_capacity(plan.get_access_table_num());
       THIS_WORKER.set_timeout_ts(phy_plan_ctx_->get_timeout_timestamp());
+#ifdef OB_BUILD_SPM
+      if (sql_ctx_ != NULL && sql_ctx_->spm_ctx_.need_spm_timeout_) {
+        phy_plan_ctx_->set_spm_timeout_timestamp(
+            ObSpmController::calc_spm_timeout_us(start_time + plan_timeout,
+                                                 sql_ctx_->spm_ctx_.baseline_exec_time_));
+      }
+#endif
     }
   }
   if (OB_SUCC(ret)) {
@@ -796,12 +809,8 @@ int ObExecContext::init_physical_plan_ctx(const ObPhysicalPlan &plan)
   return ret;
 }
 
-int ObExecContext::add_partition_range(ObPxTabletRange &part_range)
-{
-  return part_ranges_.push_back(part_range);
-}
-
-int ObExecContext::set_partition_ranges(const ObIArray<ObPxTabletRange> &part_ranges)
+int ObExecContext::set_partition_ranges(const Ob2DArray<ObPxTabletRange> &part_ranges,
+                                        char *buf, int64_t size)
 {
   int ret = OB_SUCCESS;
   part_ranges_.reset();
@@ -809,10 +818,13 @@ int ObExecContext::set_partition_ranges(const ObIArray<ObPxTabletRange> &part_ra
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("part ranges is empty", K(ret), K(part_ranges.count()));
   } else {
+    int64_t pos = 0;
     ObPxTabletRange tmp_range;
     for (int64_t i = 0; OB_SUCC(ret) && i < part_ranges.count(); ++i) {
       const ObPxTabletRange &cur_range = part_ranges.at(i);
-      if (OB_FAIL(tmp_range.deep_copy_from(cur_range, get_allocator()))) {
+      if (0 == size && OB_FAIL(tmp_range.deep_copy_from<true>(cur_range, get_allocator(), buf, size, pos))) {
+        LOG_WARN("deep copy partition range failed", K(ret), K(cur_range));
+      } else if (0 != size && OB_FAIL(tmp_range.deep_copy_from<false>(cur_range, get_allocator(), buf, size, pos))) {
         LOG_WARN("deep copy partition range failed", K(ret), K(cur_range));
       } else if (OB_FAIL(part_ranges_.push_back(tmp_range))) {
         LOG_WARN("push back partition range failed", K(ret), K(tmp_range));

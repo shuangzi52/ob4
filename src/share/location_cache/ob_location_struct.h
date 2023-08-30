@@ -92,7 +92,7 @@ public:
       K_(property),
       K_(restore_status),
       K_(proposal_id));
-private:
+protected:
   common::ObAddr server_;
   common::ObRole role_;
   int64_t sql_port_;
@@ -294,9 +294,9 @@ public:
   inline ObTabletID get_tablet_id() const { return cache_key_.get_tablet_id(); }
   inline ObLSID get_ls_id() const { return ls_id_; }
   inline int64_t get_renew_time() const { return renew_time_; }
-  inline int64_t get_row_scn() const { return row_scn_; }
-  void set_last_access_ts(const int64_t ts) { last_access_ts_ = ts; }
-  int64_t get_last_access_ts() const { return last_access_ts_; }
+  //inline int64_t get_row_scn() const { return row_scn_; }
+  //void set_last_access_ts(const int64_t ts) { last_access_ts_ = ts; }
+  //int64_t get_last_access_ts() const { return last_access_ts_; }
   const ObTabletLSKey &get_cache_key() const { return cache_key_; }
   int init(
       const uint64_t tenant_id,
@@ -304,13 +304,13 @@ public:
       const ObLSID &ls_id,
       const int64_t renew_time,
       const int64_t row_scn);
-  TO_STRING_KV(K_(cache_key), K_(ls_id), K_(renew_time), K_(row_scn), K_(last_access_ts));
+  TO_STRING_KV(K_(cache_key), K_(ls_id), K_(renew_time));
 private:
    ObTabletLSKey cache_key_;
    ObLSID ls_id_;
    int64_t renew_time_;     // renew by sql
-   int64_t row_scn_;        // used for auto refresh location
-   int64_t last_access_ts_; // used for ObTabletLSMap
+   //int64_t row_scn_;        // used for auto refresh location
+   //int64_t last_access_ts_; // used for ObTabletLSMap
 };
 
 //TODO: Reserved for tableapi. Need remove.
@@ -397,6 +397,34 @@ private:
   int64_t cur_count_;
   int64_t max_count_;
   common::ObThreadCond cond_;
+};
+
+struct ObLSExistState final
+{
+public:
+  enum State
+  {
+    INVALID_STATE = -1,
+    UNCREATED,
+    DELETED,
+    EXISTING,
+    MAX_STATE
+  };
+  ObLSExistState() : state_(INVALID_STATE) {}
+  ObLSExistState(State state) : state_(state) {}
+  ~ObLSExistState() {}
+  void reset() { state_ = INVALID_STATE; }
+  void set_existing() { state_ = EXISTING; }
+  void set_deleted() { state_ = DELETED; }
+  void set_uncreated() { state_ = UNCREATED; }
+  bool is_valid() const { return state_ > INVALID_STATE && state_ < MAX_STATE; }
+  bool is_existing() const { return EXISTING == state_; }
+  bool is_deleted() const { return DELETED == state_; }
+  bool is_uncreated() const { return UNCREATED == state_; }
+
+  TO_STRING_KV(K_(state));
+private:
+  State state_;
 };
 
 } // end namespace share

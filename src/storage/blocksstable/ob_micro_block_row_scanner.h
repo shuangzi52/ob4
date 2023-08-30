@@ -67,6 +67,7 @@ public:
 
 protected:
   virtual int inner_get_next_row(const ObDatumRow *&row);
+  int inner_get_row_header(const ObRowHeader *&row_header);
   int set_reader(const ObRowStoreType store_type);
   int set_base_scan_param(const bool is_left_bound_block,
                           const bool is_right_bound_block);
@@ -99,7 +100,7 @@ protected:
   int64_t step_;
   ObDatumRow row_;
   MacroBlockId macro_id_;
-  const ObTableReadInfo *read_info_;
+  const ObITableReadInfo *read_info_;
   const ObDatumRange *range_;
   const blocksstable::ObSSTable *sstable_;
   ObIMicroBlockReader *reader_;
@@ -110,7 +111,7 @@ protected:
   ObIAllocator &allocator_;
   bool can_ignore_multi_version_;
   storage::ObBlockRowStore *block_row_store_;
-  storage::ObTxTableGuard tx_table_guard_;
+  storage::ObTxTableGuards tx_table_guard_;
 };
 
 // major sstable micro block scanner for query and merge
@@ -131,7 +132,7 @@ public:
       const bool is_left_border,
       const bool is_right_border) override final;
   int estimate_row_count(
-      const ObTableReadInfo &column_info,
+      const ObITableReadInfo &column_info,
       const ObMicroBlockData &block_data,
       const ObDatumRange &range,
       bool consider_multi_version,
@@ -338,7 +339,7 @@ private:
   void clear_scan_status();
   int prepare_committed_row_queue(const ObDatumRow *&row);
   int get_row_from_row_queue(const ObDatumRow *&row);
-  int check_curr_row_can_read(const transaction::ObTransID &trans_id, const int64_t sql_seq, bool &can_read);
+  int check_curr_row_can_read(const transaction::ObTransID &trans_id, const transaction::ObTxSEQ &sql_seq, bool &can_read);
   int compact_trans_row_into_row_queue();
   int set_trans_version_for_uncommitted_row(ObDatumRow &row);
   int get_trans_state(const transaction::ObTransID &trans_id,

@@ -114,7 +114,7 @@ public:
                    const ObPackageStateVersion &state_version,
                    bool serially_reusable)
       : inner_allocator_(this),
-        cursor_allocator_(),
+        cursor_allocator_("PlPkgCursor", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
         package_id_(package_id),
         state_version_(state_version),
         serially_reusable_(serially_reusable),
@@ -167,6 +167,7 @@ public:
                                 common::ObObj &value);
   inline bool get_serially_reusable() const { return serially_reusable_; }
   int remove_user_variables_for_package_state(ObSQLSessionInfo &session);
+  int check_package_state_valid(ObExecContext &exec_ctx, bool &valid);
   uint64_t get_package_id() { return package_id_; }
 
   ObIArray<ObObj> &get_vars() { return vars_; }

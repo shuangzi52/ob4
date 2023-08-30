@@ -77,6 +77,7 @@ int LSFetchCtxUpdateSourceFunctor::operator()(const ObLSID &id, logservice::ObRe
 
 /////////////////////////////// LSFetchCtx /////////////////////////////////
 LSFetchCtx::LSFetchCtx() :
+    source_(NULL),
     remote_iter_(LSFetchCtxGetSourceFunctor(*this),
                  LSFetchCtxUpdateSourceFunctor(*this))
 {
@@ -248,6 +249,7 @@ int LSFetchCtx::init_remote_iter()
   const LSN &start_lsn = progress_.get_next_lsn();
   const int64_t cur_log_progress = progress_.get_progress();
   archive::LargeBufferPool *large_buffer_pool = NULL;
+  logservice::ObLogExternalStorageHandler *log_ext_handler = NULL;
   SCN start_scn;
 
   if (remote_iter_.is_init()) {
@@ -257,8 +259,10 @@ int LSFetchCtx::init_remote_iter()
     LOG_ERROR("convert log progress to start scn failed", KR(ret), K(cur_log_progress));
   } else if (OB_FAIL(get_large_buffer_pool(large_buffer_pool))) {
     LOG_ERROR("get large buffer pool failed", KR(ret));
+  } else if (OB_FAIL(get_log_ext_handler(log_ext_handler))) {
+    LOG_ERROR("get log ext handler failed", KR(ret));
   } else if (OB_FAIL(remote_iter_.init(tenant_id, ls_id, start_scn, start_lsn,
-      LSN(LOG_MAX_LSN_VAL), large_buffer_pool))) {
+      LSN(LOG_MAX_LSN_VAL), large_buffer_pool, log_ext_handler))) {
     LOG_ERROR("remote iter init failed", KR(ret), K(tenant_id), K(ls_id), K(start_scn), K(start_lsn));
   }
   return ret;
@@ -296,6 +300,7 @@ if (! mem_storage_.is_inited()) {
 void LSFetchCtx::reset_memory_storage()
 {
   mem_storage_.destroy();
+  LOG_DEBUG("reset memory storage", KPC(this));
 }
 
 int LSFetchCtx::get_next_group_entry(palf::LogGroupEntry &group_entry, palf::LSN &lsn)
@@ -526,11 +531,7 @@ int LSFetchCtx::read_miss_tx_log(
   } else {
 
     if (OB_FAIL(part_trans_resolver_->read(buf, buf_len, pos, lsn, submit_ts, serve_info_, missing, tsi))) {
-      if (OB_ITEM_NOT_SETTED == ret) {
-        // if found new generated miss log while resolving misslog, FetchStream will
-        // found new_generated_missing_info not empty and goon with misslog process
-        ret = OB_SUCCESS;
-      } else {
+      if (OB_ITEM_NOT_SETTED != ret) {
         LOG_ERROR("resolve miss_log fail", KR(ret), K(log_entry), K(log_base_header), K(lsn), K(missing));
       }
     }
@@ -588,25 +589,23 @@ int LSFetchCtx::handle_offline_ls_log_(const palf::LogEntry &log_entry,
   // There are two scenarios in which partitions need to be reclaimed.
   // 1. ls deletion by DDL: this includes deleting tables, deleting partitions, deleting DBs, deleting tenants, etc. This scenario relies on DDL deletion to be sufficient
   // The observer ensures that the ls is not iterated over in the schema after the DDL is deleted
-  if (STATE_NORMAL == state_) {
-    int64_t pending_trans_count = 0;
-    // First ensure that all tasks in the queue are dispatched
-    if (OB_FAIL(dispatch_(stop_flag, pending_trans_count))) {
-      if (OB_IN_STOP_STATE != ret) {
-        LOG_ERROR("dispatch task fail", KR(ret), K(tls_id_));
-      }
+  int64_t pending_trans_count = 0;
+  // First ensure that all tasks in the queue are dispatched
+  if (OB_FAIL(dispatch_(stop_flag, pending_trans_count))) {
+    if (OB_IN_STOP_STATE != ret) {
+      LOG_ERROR("dispatch task fail", KR(ret), K(tls_id_));
     }
-    // Check if there are pending transactions to be output
-    else if (OB_UNLIKELY(pending_trans_count > 0)) {
-      ret = OB_INVALID_DATA;
-      LOG_ERROR("there are still pending trans after dispatch when processing offline log, unexcept error",
-          KR(ret), K(pending_trans_count), K(tls_id_), K(state_));
-    } else {
-      // Finally mark the ls as ready for deletion
-      // Note: there is a concurrency situation here, after a successful setup, it may be dropped into the DEAD POOL for recycling by other threads immediately
-      // Since all data is already output here, it doesn't matter if it goes to the DEAD POOL
-      set_discarded();
-    }
+  }
+  // Check if there are pending transactions to be output
+  else if (OB_UNLIKELY(pending_trans_count > 0)) {
+    ret = OB_INVALID_DATA;
+    LOG_ERROR("there are still pending trans after dispatch when processing offline log, unexcept error",
+        KR(ret), K(pending_trans_count), K(tls_id_), K(state_));
+  } else {
+    // Finally mark the ls as ready for deletion
+    // Note: there is a concurrency situation here, after a successful setup, it may be dropped into the DEAD POOL for recycling by other threads immediately
+    // Since all data is already output here, it doesn't matter if it goes to the DEAD POOL
+    set_discarded();
   }
 
   ISTAT("[HANDLE_OFFLINE_LOG] end", KR(ret), K_(tls_id), "state", print_state(state_));
@@ -682,6 +681,22 @@ int LSFetchCtx::get_large_buffer_pool(archive::LargeBufferPool *&large_buffer_po
   } else if (OB_ISNULL(large_buffer_pool)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("log_route_service is nullptr", KR(ret), K(large_buffer_pool));
+  }
+  return ret;
+}
+
+int LSFetchCtx::get_log_ext_handler(logservice::ObLogExternalStorageHandler *&log_ext_handler)
+{
+  int ret = OB_SUCCESS;
+  IObLogFetcher *fetcher = static_cast<IObLogFetcher *>(ls_fetch_mgr_->get_fetcher_host());
+  if (OB_ISNULL(fetcher)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("fetcher is nullptr", KR(ret), K(fetcher));
+  } else if (OB_FAIL(fetcher->get_log_ext_handler(log_ext_handler))) {
+    LOG_ERROR("Fetcher get_log_ext_handler fail", KR(ret));
+  } else if (OB_ISNULL(log_ext_handler)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("log_ext_handler is nullptr", KR(ret), K(log_ext_handler));
   }
   return ret;
 }

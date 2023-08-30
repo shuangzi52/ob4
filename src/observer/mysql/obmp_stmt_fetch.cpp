@@ -154,7 +154,8 @@ int ObMPStmtFetch::set_session_active(ObSQLSessionInfo &session) const
   }
   return ret;
 }
-int ObMPStmtFetch::do_process(ObSQLSessionInfo &session)
+int ObMPStmtFetch::do_process(ObSQLSessionInfo &session,
+                              bool &need_response_error)
 {
   int ret = OB_SUCCESS;
   ObAuditRecordData &audit_record = session.get_raw_audit_record();
@@ -197,7 +198,7 @@ int ObMPStmtFetch::do_process(ObSQLSessionInfo &session)
       // 本分支内如果出错，全部会在response_result内部处理妥当
       // 无需再额外处理回复错误包
       session.set_current_execution_id(execution_id);
-
+      OX (need_response_error = false);
       if (0 == fetch_limit && !cursor->is_streaming()
                            && cursor->is_ps_cursor()
                            && lib::is_oracle_mode()
@@ -212,6 +213,7 @@ int ObMPStmtFetch::do_process(ObSQLSessionInfo &session)
         // oracle return success when read nothing
         ret = OB_SUCCESS;
       }
+      OX (need_response_error = true);
     }
     //监控项统计结束
     exec_end_timestamp_ = ObTimeUtility::current_time();
@@ -266,57 +268,21 @@ int ObMPStmtFetch::response_query_header(ObSQLSessionInfo &session,
   // TODO: 增加com类型的处理
   int ret = OB_SUCCESS;
   bool ac = true;
-  CK (OB_NOT_NULL(fields));
-  if (OB_SUCC(ret)) {
-    int64_t fields_count = fields->count();
-    if (fields_count <= 0) {
-      ret = OB_ERR_BAD_FIELD_ERROR;
-      LOG_WARN("cursor set column", K(ret), K(fields_count));
-    } else if (OB_FAIL(session.get_autocommit(ac))) {
-      LOG_WARN("fail to get autocommit", K(ret));
-    }
-    if (OB_SUCC(ret)) {
-      OMPKResheader rhp;
-      rhp.set_field_count(fields_count);
-      if (OB_FAIL(response_packet(rhp, &session))) {
-        LOG_WARN("response packet fail", K(ret));
-      }
-    }
-    if (OB_SUCC(ret)) {
-      for (int64_t i = 0; OB_SUCC(ret) && i < fields_count; ++i) {
-        ObMySQLField field;
-        const ObField &ob_field = fields->at(i);
-        ret = ObMySQLResultSet::to_mysql_field(ob_field, field);
-        if (OB_SUCC(ret)) {
-          ObMySQLResultSet::replace_lob_type(session, ob_field, field);
-          OMPKField fp(field);
-          if (OB_FAIL(response_packet(fp, &session))) {
-            LOG_WARN("response packet fail", K(ret));
-          }
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    OMPKEOF eofp;
-    eofp.set_warning_count(0);
-    ObServerStatusFlags flags = eofp.get_server_status();
-    flags.status_flags_.OB_SERVER_STATUS_IN_TRANS
-      = (session.is_server_status_in_transaction() ? 1 : 0);
-    flags.status_flags_.OB_SERVER_STATUS_AUTOCOMMIT = (ac ? 1 : 0);
-    flags.status_flags_.OB_SERVER_MORE_RESULTS_EXISTS = has_ok_packet() ? true : false;
-    flags.status_flags_.OB_SERVER_PS_OUT_PARAMS = false;
-    flags.status_flags_.OB_SERVER_STATUS_CURSOR_EXISTS = true;
-    if (!session.is_obproxy_mode()) {
-      // in java client or others, use slow query bit to indicate partition hit or not
-      flags.status_flags_.OB_SERVER_QUERY_WAS_SLOW = !session.partition_hit().get_bool();
-    }
-    eofp.set_server_status(flags);
-
-    if (OB_FAIL(response_packet(eofp, &session))) {
-      LOG_WARN("response packet fail", K(ret));
-    }
+  ObSqlCtx ctx;
+  ObQueryRetryCtrl retry_ctrl;
+  ObSyncPlanDriver drv(gctx_,
+                           ctx,
+                           session,
+                           retry_ctrl,
+                           *this,
+                           false,
+                           OB_INVALID_COUNT);
+  if (NULL == fields) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(drv.response_query_header(*fields,
+                                               has_ok_packet(),
+                                               false))) {
+    LOG_WARN("fail to get autocommit", K(ret));
   }
   return ret;
 }
@@ -567,7 +533,6 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
         flags.status_flags_.OB_SERVER_MORE_RESULTS_EXISTS = has_ok_packet() ? true : false; /*no more result*/
         flags.status_flags_.OB_SERVER_STATUS_CURSOR_EXISTS = !last_row ? 1 : 0;
         if ((!cursor.is_streaming()
-             && cursor.is_ps_cursor()
              && max_count == cursor.get_current_position() + 1)
               || last_row) {
           flags.status_flags_.OB_SERVER_STATUS_LAST_ROW_SENT = 1;
@@ -606,8 +571,7 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
               ok_param.affected_rows_ = 0;
             }
             if ((!cursor.is_streaming()
-                 && cursor.is_ps_cursor()
-                 && max_count == cursor.get_current_position() + 1 )
+                 && max_count == cursor.get_current_position() + 1)
                 || last_row) {
               ok_param.send_last_row_ = true;
             } else {
@@ -639,7 +603,8 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
   return ret;
 }
 
-int ObMPStmtFetch::process_fetch_stmt(ObSQLSessionInfo &session)
+int ObMPStmtFetch::process_fetch_stmt(ObSQLSessionInfo &session,
+                                      bool &need_response_error)
 {
   int ret = OB_SUCCESS;
   // 执行setup_wb后，所有WARNING都会写入到当前session的WARNING BUFFER中
@@ -661,7 +626,7 @@ int ObMPStmtFetch::process_fetch_stmt(ObSQLSessionInfo &session)
       LOG_WARN("update transmisson checksum flag failed", K(ret));
     } else {
       // do the real work
-      ret = do_process(session);
+      ret = do_process(session, need_response_error);
     }
   }
   if (enable_trace_log) {
@@ -680,17 +645,9 @@ int ObMPStmtFetch::process_fetch_stmt(ObSQLSessionInfo &session)
   {
     int tmp_ret = OB_SUCCESS;
     //清空WARNING BUFFER
-    pl::ObPLCursorInfo *cursor = session.get_cursor(cursor_id_);
-    if (NULL != cursor
-        && cursor->is_streaming()
-        && NULL != cursor->get_cursor_handler()
-        && NULL != cursor->get_cursor_handler()->get_result_set()) {
-      ObSqlCtx *sql_ctx
-          = cursor->get_cursor_handler()->get_result_set()->get_exec_context().get_sql_ctx();
-      if (NULL != sql_ctx) {
-        tmp_ret = do_after_process(session, *sql_ctx, false/*no asyn response*/);
-      }
-    }
+    ObSqlCtx sql_ctx; // sql_ctx do nothing in do_after_process
+    tmp_ret = do_after_process(session, sql_ctx, false/*no asyn response*/);
+    UNUSED(tmp_ret);
   }
   return ret;
 }
@@ -764,7 +721,7 @@ int ObMPStmtFetch::process()
       ObPLCursorInfo *cursor = NULL;
       THIS_WORKER.set_timeout_ts(get_receive_timestamp() + query_timeout);
       session.partition_hit().reset();
-      ret = process_fetch_stmt(session);
+      ret = process_fetch_stmt(session, need_response_error);
       // set cursor fetched info. if cursor has be fetched, we need to disconnect
       cursor = session.get_cursor(cursor_id_);
       if (OB_NOT_NULL(cursor) && cursor->get_fetched()) {

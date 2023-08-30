@@ -206,6 +206,12 @@ int ObPLPackageState::set_package_var_val(const int64_t var_idx, const ObObj &va
       ObObj copy;
       OZ (ObUserDefinedType::deep_copy_obj(inner_allocator_, value, copy));
       OX (vars_.at(var_idx) = copy);
+    } else if (value.is_null()
+               && vars_.at(var_idx).is_pl_extend()
+               && types_.at(var_idx) != PL_CURSOR_TYPE
+               && types_.at(var_idx) != PL_REF_CURSOR_TYPE) {
+      CK (vars_.at(var_idx).get_ext() != 0);
+      OZ (ObUserDefinedType::destruct_obj(vars_.at(var_idx), NULL, false));
     } else {
       vars_.at(var_idx) = value;
     }
@@ -294,6 +300,8 @@ int ObPLPackageState::make_pkg_var_kv_value(ObPLExecCtx &ctx, ObObj &var_val, in
         } else {
           OX (value.set_bool(true));
         }
+      } else if (var->get_type().is_opaque_type()) {
+        value.set_null();
       } else {
         OZ (var->get_type().serialize(resolve_ctx, var_val, value));
       }
@@ -370,6 +378,41 @@ int ObPLPackageState::remove_user_variables_for_package_state(ObSQLSessionInfo &
       } else if (OB_FAIL(session.remove_changed_user_var(key))) {
         LOG_WARN("fail to remove change user var", K(ret), K(key), K(package_id_), K(var_idx));
       }
+    }
+  }
+  return ret;
+}
+
+int ObPLPackageState::check_package_state_valid(ObExecContext &exec_ctx, bool &valid)
+{
+  int ret = OB_SUCCESS;
+  valid = false;
+  ObSQLSessionInfo *sql_session = exec_ctx.get_my_session();
+  if (OB_ISNULL(sql_session) || OB_ISNULL(sql_session->get_pl_engine())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sql session is null.", K(ret));
+  } else if (OB_ISNULL(exec_ctx.get_sql_ctx()) || OB_ISNULL(exec_ctx.get_sql_ctx()->schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sql ctx or schema guard is null.", K(ret));
+  } else {
+    const ObPackageInfo *package_spec_info = NULL;
+    const ObPackageInfo *package_body_info = NULL;
+    if (OB_FAIL(sql_session->get_pl_engine()->get_package_manager().get_package_schema_info(*exec_ctx.get_sql_ctx()->schema_guard_,
+                                                                                            package_id_,
+                                                                                            package_spec_info,
+                                                                                            package_body_info))) {
+      LOG_WARN("package not exist", K(ret), K(package_id_));
+      ret = OB_SUCCESS;
+    } else if (OB_ISNULL(package_spec_info)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("package info is null", K(ret), K(package_id_));
+    } else {
+      ObPackageStateVersion package_version(common::OB_INVALID_VERSION, common::OB_INVALID_VERSION);
+      package_version.package_version_ = package_spec_info->get_schema_version();
+      if (OB_NOT_NULL(package_body_info)) {
+        package_version.package_body_version_ = package_body_info->get_schema_version();
+      }
+      valid = check_version(package_version);
     }
   }
   return ret;

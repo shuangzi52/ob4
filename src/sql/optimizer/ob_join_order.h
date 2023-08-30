@@ -51,6 +51,18 @@ namespace sql
   class ObIndexSkylineDim;
   class ObIndexInfoCache;
   class ObSelectLogPlan;
+  struct CandiRangeExprs {
+    int64_t column_id_;
+    int64_t index_;
+    ObSEArray<ObRawExpr*, 2, common::ModulePageAllocator, true> eq_exprs_;
+    ObSEArray<ObRawExpr*, 2, common::ModulePageAllocator, true> in_exprs_;
+    TO_STRING_KV(
+      K_(column_id),
+      K_(index),
+      K_(eq_exprs),
+      K_(in_exprs)
+    );
+  };
   /*
    * 用于指示inner join未来的连接条件
    */
@@ -1229,6 +1241,7 @@ struct NullAwareAntiJoinInfo {
     struct PathHelper {
       PathHelper()
       : is_inner_path_(false),
+        force_inner_nl_(false),
         child_stmt_(NULL),
         pushdown_filters_(),
         filters_(),
@@ -1238,6 +1251,7 @@ struct NullAwareAntiJoinInfo {
       {}
 
       bool is_inner_path_;
+      bool force_inner_nl_;
       ObSelectStmt *child_stmt_;
       // when generate inner access path, save all pushdown filters
       // when generate subquery path, save all pushdown filters after rename
@@ -1384,8 +1398,8 @@ struct NullAwareAntiJoinInfo {
                                       const Path &second_path,
                                       DominateRelation &relation);
 
-    int estimate_size_and_width_for_base_table(PathHelper &helper,
-                                               ObIArray<AccessPath *> &access_paths);
+    int estimate_size_for_base_table(PathHelper &helper,
+                                    ObIArray<AccessPath *> &access_paths);
 
     int estimate_size_and_width_for_join(const ObJoinOrder* lefttree,
                                          const ObJoinOrder* righttree,
@@ -1563,6 +1577,30 @@ struct NullAwareAntiJoinInfo {
                                         ObIArray<ObExprConstraint> &expr_constraints,
                                         ObQueryRange* &range);
 
+    int get_candi_range_expr(const ObIArray<ColumnItem> &range_columns,
+                            const ObIArray<ObRawExpr*> &predicates,
+                            ObIArray<ObRawExpr*> &range_predicates);
+
+    int calculate_range_expr_cost(ObIArray<CandiRangeExprs*> &sorted_predicates,
+                                  ObIArray<ObRawExpr*> &range_exprs,
+                                  int64_t range_column_count,
+                                  int64_t range_count,
+                                  double &cost);
+
+    int sort_predicate_by_index_column(const ObIArray<ColumnItem> &range_columns,
+                                       const ObIArray<ObRawExpr*> &predicates,
+                                       ObIArray<CandiRangeExprs*> &sort_exprs,
+                                       bool &has_in_pred);
+
+    int is_eq_or_in_range_expr(ObRawExpr* expr,
+                               int64_t &column_id,
+                               bool &is_in_expr,
+                               bool &is_valid);
+
+    int get_range_filter(ObIArray<CandiRangeExprs*> &sort_exprs,
+                         ObIArray<ObRawExpr*> &range_exprs,
+                         ObIArray<ObRawExpr*> &filters);
+
     int extract_geo_preliminary_query_range(const ObIArray<ColumnItem> &range_columns,
                                               const ObIArray<ObRawExpr*> &predicates,
                                               const ColumnIdInfoMap &column_schema_info,
@@ -1663,6 +1701,10 @@ struct NullAwareAntiJoinInfo {
 
     int compute_base_table_property(uint64_t table_id,
                                     uint64_t ref_table_id);
+
+    int extract_necessary_pushdown_quals(ObIArray<ObRawExpr *> &candi_quals,
+                                         ObIArray<ObRawExpr *> &necessary_pushdown_quals,
+                                         ObIArray<ObRawExpr *> &unnecessary_pushdown_quals);
 
     /**
      * @brief generate_subquery_path
@@ -2108,7 +2150,6 @@ struct NullAwareAntiJoinInfo {
 
     int compute_table_location(const uint64_t table_id,
                                const uint64_t ref_id,
-                               ObIArray<AccessPath *> &access_paths,
                                const bool is_global_index,
                                ObTablePartitionInfo *&table_partition_info);
 
@@ -2454,6 +2495,10 @@ struct NullAwareAntiJoinInfo {
                                           bool &can_use,
                                           ObIArray<int64_t> &global_part_ids,
                                           double &scale_ratio);
+    int is_valid_range_expr_for_oracle_agent_table(const ObRawExpr *range_expr, bool &is_valid);
+    int extract_valid_range_expr_for_oracle_agent_table(const common::ObIArray<ObRawExpr *> &filters,
+                                                        common::ObIArray<ObRawExpr *> &new_filters);
+    bool virtual_table_index_can_range_scan(uint64_t table_id);
     friend class ::test::TestJoinOrder_ob_join_order_param_check_Test;
     friend class ::test::TestJoinOrder_ob_join_order_src_Test;
   private:

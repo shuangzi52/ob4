@@ -79,15 +79,15 @@ public:
   DISALLOW_COPY_AND_ASSIGN(ObTabletGroupRestoreCtx);
 };
 
-struct ObTabletRestoreCtx
+struct ObTabletRestoreCtx final: public ObICopyTabletCtx
 {
 public:
   ObTabletRestoreCtx();
   virtual ~ObTabletRestoreCtx();
   bool is_valid() const;
   void reset();
-  int set_copy_tablet_status(const ObCopyTabletStatus::STATUS &status);
-  int get_copy_tablet_status(ObCopyTabletStatus::STATUS &status);
+  int set_copy_tablet_status(const ObCopyTabletStatus::STATUS &status) override;
+  int get_copy_tablet_status(ObCopyTabletStatus::STATUS &status) const override;
   VIRTUAL_TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(tablet_id), KPC_(restore_base_info), K_(is_leader),
       K_(action), KP_(meta_index_store), KP_(second_meta_index_store), K_(replica_type), KP_(ha_table_info_mgr), K_(status));
 
@@ -143,6 +143,7 @@ public:
   virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   virtual int clear_dag_net_ctx() override;
   virtual int deal_with_cancel() override;
+  bool is_ha_dag_net() const override { return true; }
 
   ObTabletGroupRestoreCtx *get_restore_ctx() { return ctx_; }
   common::ObInOutBandwidthThrottle *get_bandwidth_throttle() { return bandwidth_throttle_; }
@@ -174,10 +175,11 @@ private:
 class ObTabletGroupRestoreDag : public ObStorageHADag
 {
 public:
-  explicit ObTabletGroupRestoreDag(const ObStorageHADagType sub_type);
+  explicit ObTabletGroupRestoreDag(const share::ObDagType::ObDagTypeEnum &dag_type);
   virtual ~ObTabletGroupRestoreDag();
   virtual bool operator == (const share::ObIDag &other) const override;
   virtual int64_t hash() const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   ObTabletGroupRestoreCtx *get_ctx() const { return static_cast<ObTabletGroupRestoreCtx *>(ha_dag_net_ctx_); }
 
   INHERIT_TO_STRING_KV("ObStorageHADag", ObStorageHADag, KP(this));
@@ -192,8 +194,6 @@ public:
   virtual ~ObInitialTabletGroupRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObTabletGroupRestoreDag", ObTabletGroupRestoreDag, KP(this));
 protected:
@@ -216,7 +216,7 @@ private:
   int choose_leader_src_();
   int choose_follower_src_();
   int generate_tablet_restore_dags_();
-  int create_or_update_tablets_();
+  int renew_tablets_meta_();
   int init_ha_tablets_builder_();
   int build_tablet_group_ctx_();
   int record_server_event_();
@@ -242,8 +242,6 @@ public:
   virtual ~ObStartTabletGroupRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net, share::ObIDag *finish_dag);
   INHERIT_TO_STRING_KV("ObTabletGroupRestoreDag", ObTabletGroupRestoreDag, KP(this));
 protected:
@@ -288,8 +286,6 @@ public:
   virtual ~ObFinishTabletGroupRestoreDag();
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
-
   int init(share::ObIDagNet *dag_net);
   INHERIT_TO_STRING_KV("ObTabletGroupRestoreDag", ObTabletGroupRestoreDag, KP(this));
 protected:
@@ -360,7 +356,7 @@ public:
   virtual int64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
-  virtual int fill_comment(char *buf, const int64_t buf_len) const override;
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int inner_reset_status_for_retry() override;
   virtual int generate_next_dag(share::ObIDag *&dag);
 
@@ -377,6 +373,7 @@ protected:
 protected:
   bool is_inited_;
   ObTabletRestoreCtx tablet_restore_ctx_;
+  //TODO(muwei.ym) put this into dag net ctx 4.3
   common::ObInOutBandwidthThrottle *bandwidth_throttle_;
   obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
   storage::ObStorageRpc *storage_rpc_;
@@ -423,7 +420,7 @@ private:
   int generate_tablet_copy_finish_task_(
       ObTabletCopyFinishTask *&tablet_copy_finish_task);
   int try_update_tablet_();
-  int update_ha_expected_status_(const ObCopyTabletStatus::STATUS &status);
+  int update_ha_status_(const ObCopyTabletStatus::STATUS &status);
   int check_need_copy_sstable_(
       const ObITable::TableKey &table_key,
       bool &need_copy);
@@ -455,9 +452,7 @@ public:
   virtual int process() override;
   VIRTUAL_TO_STRING_KV(K("ObTabletRestoreTask"), KP(this), KPC(ha_dag_net_ctx_), KPC(tablet_restore_ctx_));
 private:
-  int update_data_status_();
   int update_restore_status_();
-  int check_tablet_valid_();
   int record_server_event_();
 
 private:

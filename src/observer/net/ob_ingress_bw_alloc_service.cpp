@@ -114,6 +114,7 @@ int ObNetEndpointIngressManager::collect_predict_bw(ObNetEndpointKVArray &update
       const ObNetEndpointKey &endpoint_key = delete_keys[i];
       if (OB_FAIL(ingress_plan_map_.erase_refactored(endpoint_key))) {
         LOG_ERROR("failed to erase endpoint", K(ret), K(endpoint_key));
+        ret = OB_SUCCESS;  // ignore error
       }
     }
   }
@@ -359,6 +360,7 @@ void ObIngressBWAllocService::destroy()
   if (-1 != tg_id_) {
     TG_STOP(tg_id_);
     TG_WAIT(tg_id_);
+    TG_DESTROY(tg_id_);
     tg_id_ = -1;
     ingress_manager_.destroy();
     LOG_INFO("[INGRESS_SERVICE] ObIngressBWAllocService destroy success", K(tg_id_));

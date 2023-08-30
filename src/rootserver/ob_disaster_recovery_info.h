@@ -147,8 +147,8 @@ public:
       unit_mgr_(unit_mgr),
       zone_mgr_(zone_mgr),
       schema_service_(schema_service),
-      unit_stat_info_map_(),
-      server_stat_info_map_(),
+      unit_stat_info_map_("DRUnitStatMap"),
+      server_stat_info_map_("DRSerStatMap"),
       zone_locality_array_(),
       inner_ls_info_(),
       ls_status_info_(),
@@ -167,7 +167,8 @@ public:
   int init();
   int build_disaster_ls_info(
       const share::ObLSInfo &ls_info,
-      const share::ObLSStatusInfo &ls_status_info);
+      const share::ObLSStatusInfo &ls_status_info,
+      const bool &filter_readonly_replicas_with_flag);
 public:
   const common::ObIArray<share::ObZoneReplicaAttrSet> &get_locality() const {
     return zone_locality_array_;
@@ -209,7 +210,8 @@ public:
 private:
   int construct_filtered_ls_info_to_use_(
       const share::ObLSInfo &input_ls_info,
-      share::ObLSInfo &output_ls_info);
+      share::ObLSInfo &output_ls_info,
+      const bool &filter_readonly_replicas_with_flag);
   // init related private func
   int gather_server_unit_stat();
   int fill_servers();

@@ -26,6 +26,7 @@ ob_set_subtarget(oblib_lib charset
 ob_set_subtarget(oblib_lib common
   ob_abort.cpp
   ob_date_unit_type.cpp
+  ob_define.cpp
   ob_lib_config.cpp
   ob_name_id_def.cpp
   ob_replica_define.cpp
@@ -105,7 +106,6 @@ ob_set_subtarget(oblib_lib common_mixed
   net/ob_addr.cpp
   net/ob_net_util.cpp
   number/ob_number_v2.cpp
-  objectpool/ob_concurrency_objpool.cpp
   objectpool/ob_pool.ipp
   objectpool/ob_server_object_pool.cpp
   profile/ob_atomic_event.cpp
@@ -121,6 +121,7 @@ ob_set_subtarget(oblib_lib common_mixed
   rc/context.cpp
   rc/ob_rc.cpp
   rowid/ob_urowid.cpp
+  stat/ob_di_tls.cpp
   stat/ob_di_cache.cpp
   stat/ob_diagnose_info.cpp
   stat/ob_latch_define.cpp
@@ -193,7 +194,6 @@ ob_set_subtarget(oblib_lib oblog
   oblog/ob_syslog_rate_limiter.cpp
 )
 
-
 ob_set_subtarget(oblib_lib signal
   signal/ob_signal_handlers.cpp
   signal/ob_signal_processor.cpp
@@ -239,6 +239,10 @@ ob_set_subtarget(oblib_lib ssl
   ssl/ob_ssl_config.cpp
 )
 
+ob_set_subtarget(oblib_lib vtoa
+  vtoa/ob_vtoa_util.cpp
+)
+
 ob_lib_add_target(oblib_lib)
 
 ob_set_subtarget(ob_malloc_object_list common_alloc
@@ -276,6 +280,7 @@ ob_set_subtarget(ob_malloc_object_list common_alloc
   allocator/ob_slice_alloc.cpp
   allocator/ob_tc_malloc.cpp
 )
+
 ob_add_new_object_target(ob_malloc_object ob_malloc_object_list)
 target_link_libraries(ob_malloc_object oblib_base_base_base)
 add_library(ob_malloc STATIC)
@@ -286,6 +291,17 @@ add_library(malloc_hook STATIC
   alloc/malloc_hook.h)
 target_link_libraries(malloc_hook oblib_base)
 
+if(OB_BUILD_ORACLE_XML)
+target_link_libraries(oblib_lib
+  PUBLIC ob_malloc compress restore
+  ${DEP_DIR}/lib/libxml2.a
+  ${DEP_DIR}/lib/liblzma.a
+  ${DEP_3RD_DIR}/usr/local/lib/libxslt.a
+  ${DEP_3RD_DIR}/usr/local/lib/libexslt.a
+  ${ob_close_deps_static_name}
+)
+else()
 target_link_libraries(oblib_lib
   PUBLIC ob_malloc
 )
+endif()

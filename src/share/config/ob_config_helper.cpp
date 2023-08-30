@@ -11,7 +11,6 @@
  */
 
 #include "share/config/ob_config_helper.h"
-#include "share/backup/ob_backup_info_mgr.h"
 #include "share/config/ob_config.h"
 #include "lib/ob_running_mode.h"
 #include "lib/utility/ob_macro_utils.h"
@@ -28,6 +27,7 @@
 #include "sql/optimizer/ob_log_join_filter.h"
 #include "share/ob_encryption_util.h"
 #include "share/ob_resource_limit.h"
+#include "src/observer/ob_server.h"
 
 namespace oceanbase
 {
@@ -46,36 +46,18 @@ bool ObConfigIpChecker::check(const ObConfigItem &t) const
 ObConfigConsChecker:: ~ObConfigConsChecker()
 {
   if (NULL != left_) {
-    delete left_;
+    ObConfigChecker *left = const_cast<ObConfigChecker*>(left_);
+    OB_DELETE(ObConfigChecker, "unused", left);
   }
   if (NULL != right_) {
-    delete right_;
+    ObConfigChecker *right = const_cast<ObConfigChecker*>(right_);
+    OB_DELETE(ObConfigChecker, "unused", right);
   }
 }
 bool ObConfigConsChecker::check(const ObConfigItem &t) const
 {
   return (NULL == left_ ? true : left_->check(t))
          && (NULL == right_ ? true : right_->check(t));
-}
-
-bool ObConfigGreaterThan::check(const ObConfigItem &t) const
-{
-  return t > val_;
-}
-
-bool ObConfigGreaterEqual::check(const ObConfigItem &t) const
-{
-  return t >= val_;
-}
-
-bool ObConfigLessThan::check(const ObConfigItem &t) const
-{
-  return t < val_;
-}
-
-bool ObConfigLessEqual::check(const ObConfigItem &t) const
-{
-  return t <= val_;
 }
 
 bool ObConfigEvenIntChecker::check(const ObConfigItem &t) const
@@ -142,6 +124,55 @@ int64_t ObConfigWriteThrottleTriggerIntChecker::get_freeze_trigger_percentage_(c
     percent = tenant_config->freeze_trigger_percentage;
   }
   return percent;
+}
+
+bool ObConfigLogDiskLimitThresholdIntChecker::check(const uint64_t tenant_id,
+                                                               const ObAdminSetConfigItem &t)
+{
+  bool is_valid = false;
+  const int64_t value = ObConfigIntParser::get(t.value_.ptr(), is_valid);
+  const int64_t throttling_percentage = get_log_disk_throttling_percentage_(tenant_id);
+  if (is_valid) {
+    is_valid = (throttling_percentage != 0);
+  }
+  if (is_valid) {
+    is_valid = (throttling_percentage == 100) || (value > throttling_percentage);
+  }
+  return is_valid;
+}
+
+int64_t ObConfigLogDiskLimitThresholdIntChecker::get_log_disk_throttling_percentage_(const uint64_t tenant_id)
+{
+  int64_t percent = 0;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+  if (tenant_config.is_valid()) {
+    percent = tenant_config->log_disk_throttling_percentage;
+  }
+  return percent;
+}
+
+bool ObConfigLogDiskThrottlingPercentageIntChecker::check(const uint64_t tenant_id, const obrpc::ObAdminSetConfigItem &t)
+{
+  bool is_valid = false;
+  const int64_t value = ObConfigIntParser::get(t.value_.ptr(), is_valid);
+  const int64_t limit_threshold = get_log_disk_utilization_limit_threshold_(tenant_id);
+  if (is_valid) {
+    is_valid = (limit_threshold != 0);
+  }
+  if (is_valid) {
+    is_valid = (value == 100) || (value < limit_threshold);
+  }
+  return is_valid;
+}
+
+int64_t ObConfigLogDiskThrottlingPercentageIntChecker::get_log_disk_utilization_limit_threshold_(const uint64_t tenant_id)
+{
+  int64_t threshold = 0;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+  if (tenant_config.is_valid()) {
+    threshold = tenant_config->log_disk_utilization_limit_threshold;
+  }
+  return threshold;
 }
 
 bool ObConfigTabletSizeChecker::check(const ObConfigItem &t) const
@@ -310,7 +341,7 @@ bool ObConfigLogArchiveOptionsChecker::check(const ObConfigItem &t) const
             }
             key_idx = -1;
           } else if (LOG_ARCHIVE_ENCRYPTION_ALGORITHM_IDX == key_idx) {
-            share::ObAesOpMode encryption_algorithm;
+            share::ObCipherOpMode encryption_algorithm;
             if (OB_FAIL(ObEncryptionUtil::parse_encryption_algorithm(s, encryption_algorithm))) {
               bret = false;
               OB_LOG(WARN, "invalid encrytion algorithm", K(s));
@@ -346,7 +377,9 @@ bool ObConfigMemoryLimitChecker::check(const ObConfigItem &t) const
   bool is_valid = false;
   int64_t value = ObConfigCapacityParser::get(t.str(), is_valid, false);
   if (is_valid) {
-    is_valid = 0 == value || value >= lib::ObRunningModeConfig::instance().MIN_MEM;
+    int64_t min_memory_size = OBSERVER.is_arbitration_mode() ? lib::ObRunningModeConfig::instance().MIN_MEM :
+                                                               lib::ObRunningModeConfig::instance().MINI_MEM_LOWER;
+    is_valid = 0 == value || value >= min_memory_size;
   }
   return is_valid;
 }
@@ -824,5 +857,16 @@ bool ObConfigRuntimeFilterChecker::check(const ObConfigItem &t) const
   int64_t rf_type = get_runtime_filter_type(t.str(), len);
   return rf_type >= 0;
 }
+
+bool ObConfigSQLTlsVersionChecker::check(const ObConfigItem &t) const
+{
+  const ObString tmp_str(t.str());
+  return 0 == tmp_str.case_compare("NONE")    ||
+         0 == tmp_str.case_compare("TLSV1")   ||
+         0 == tmp_str.case_compare("TLSV1.1") ||
+         0 == tmp_str.case_compare("TLSV1.2") ||
+         0 == tmp_str.case_compare("TLSV1.3");
+}
+
 } // end of namepace common
 } // end of namespace oceanbase

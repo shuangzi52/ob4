@@ -591,23 +591,30 @@ int ObPartitionMergeHelper::init_merge_iters(const ObIPartitionMergeFuser &fuser
     ObITable *table = nullptr;
     ObSSTable *sstable = nullptr;
     ObPartitionMergeIter *merge_iter = nullptr;
+    bool is_small_sstable = false;
 
     for (int64_t i = table_cnt - 1; OB_SUCC(ret) && i >= 0; i--) {
       if (OB_ISNULL(table = merge_param.tables_handle_->get_table(i))) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "unexpected null iter", K(ret), K(i), K(merge_param));
       } else if (OB_UNLIKELY(table->is_remote_logical_minor_sstable())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected remote minor sstable", K(ret), KP(sstable));
-      } else if (FALSE_IT(sstable = static_cast<ObSSTable *>(table))) {
-      } else if (table->is_sstable() &&
-          sstable->get_meta().get_basic_meta().get_data_macro_block_count() <= 0) {
-        // do nothing. don't need to construct iter for empty sstable
-        FLOG_INFO("table is empty, need not create iter", K(i), KPC(sstable), K(sstable->get_meta()));
-        continue;
-      } else if (OB_ISNULL(merge_iter = alloc_merge_iter(merge_param, 0 == i, table->is_sstable() && sstable->is_small_sstable()))) {
+        ret = OB_EAGAIN;
+        LOG_WARN("unexpected remote minor sstable, try later", K(ret), KP(sstable));
+      } else if (table->is_sstable()) {
+        sstable = static_cast<ObSSTable *>(table);
+        if (sstable->get_data_macro_block_count() <= 0) {
+          // do nothing. don't need to construct iter for empty sstable
+          FLOG_INFO("table is empty, need not create iter", K(i), KPC(sstable));
+          continue;
+        } else {
+          is_small_sstable = sstable->is_small_sstable();
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_ISNULL(merge_iter = alloc_merge_iter(merge_param, 0 == i, table->is_sstable()
+          && is_small_sstable))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
-        STORAGE_LOG(WARN, "Failed to alloc memory for merge iter", K(ret));
+        STORAGE_LOG(WARN, "Failed to alloc memory for merge iter", K(ret), K(is_small_sstable));
       } else if (OB_FAIL(merge_iter->init(merge_param,
                                           fuser.get_multi_version_column_ids(),
                                           row_store_type, i))) {
@@ -715,9 +722,6 @@ int ObPartitionMergeHelper::check_iter_end() const
       } else if (!iter->is_iter_end()) {
         ret = OB_ERR_SYS;
         STORAGE_LOG(ERROR, "Merge iter not iter to end", K(ret), KPC(iter));
-      } else if (i == 0 && !iter->is_tx_table_valid()) {
-        ret = OB_STATE_NOT_MATCH;
-        STORAGE_LOG(ERROR, "Failed to complete the merge because of broken txn table", K(ret), KPC(iter));
       }
     }
   }

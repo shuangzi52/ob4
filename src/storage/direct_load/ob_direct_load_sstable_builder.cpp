@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yiren.ly <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_sstable_builder.h"
@@ -47,6 +54,7 @@ int ObDirectLoadSSTableBuilder::init(const ObDirectLoadSSTableBuildParam &param)
     const uint64_t tenant_id = MTL_ID();
     param_ = param;
     allocator_.set_tenant_id(tenant_id);
+    rowkey_allocator_.set_tenant_id(tenant_id);
     start_key_.set_min_rowkey();
     end_key_.set_min_rowkey();
     int64_t dir_id = -1;
@@ -76,7 +84,7 @@ int ObDirectLoadSSTableBuilder::init(const ObDirectLoadSSTableBuildParam &param)
   return ret;
 }
 
-int ObDirectLoadSSTableBuilder::append_row(const ObTabletID &tablet_id, const ObDatumRow &datum_row)
+int ObDirectLoadSSTableBuilder::append_row(const ObTabletID &tablet_id, const table::ObTableLoadSequenceNo &seq_no, const ObDatumRow &datum_row)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -92,11 +100,11 @@ int ObDirectLoadSSTableBuilder::append_row(const ObTabletID &tablet_id, const Ob
   } else {
     ObDatumRowkey key(datum_row.storage_datums_, param_.table_data_desc_.rowkey_column_num_);
     ObDirectLoadExternalRow external_row;
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(simple_sstable_append_row_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, simple_sstable_append_row_time_us);
     if (OB_FAIL(check_rowkey_order(key))) {
       LOG_WARN("fail to check rowkey order", KR(ret), K(datum_row));
     } else if (OB_FAIL(external_row.from_datums(datum_row.storage_datums_, datum_row.count_,
-                                                param_.table_data_desc_.rowkey_column_num_))) {
+                                                param_.table_data_desc_.rowkey_column_num_, seq_no))) {
       LOG_WARN("fail to from datum row", KR(ret));
     } else if (OB_FAIL(data_block_writer_.append_row(external_row))) {
       LOG_WARN("fail to append row to data block writer", KR(ret), K(external_row));
@@ -126,7 +134,7 @@ int ObDirectLoadSSTableBuilder::append_row(const ObDirectLoadExternalRow &extern
   } else {
     ObDatumRowkey key(external_row.rowkey_datum_array_.datums_,
                       param_.table_data_desc_.rowkey_column_num_);
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(simple_sstable_append_row_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, simple_sstable_append_row_time_us);
     if (OB_FAIL(check_rowkey_order(key))) {
       LOG_WARN("fail to check rowkey order", KR(ret), K(external_row));
     } else if (OB_FAIL(data_block_writer_.append_row(external_row))) {
@@ -150,7 +158,7 @@ int ObDirectLoadSSTableBuilder::close()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("direct load sstable is closed", KR(ret));
   } else {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(simple_sstable_append_row_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, simple_sstable_append_row_time_us);
     if (OB_FAIL(data_block_writer_.close())) {
       LOG_WARN("fail to close data block writer", KR(ret), K(data_block_writer_));
     } else if (OB_FAIL(index_block_writer_.close())) {

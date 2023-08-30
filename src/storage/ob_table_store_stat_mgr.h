@@ -16,7 +16,7 @@
 #include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_print_utils.h"
 #include "lib/lock/ob_spin_rwlock.h"
-#include "lib/allocator//page_arena.h"
+#include "lib/allocator/page_arena.h"
 #include "lib/hash_func/murmur_hash.h"
 #include "lib/hash/ob_hashmap.h"
 #include "lib/task/ob_timer.h"
@@ -214,6 +214,8 @@ class ObTableStoreStatMgr
 {
 public:
   int init(const int64_t limit_cnt = DEFAULT_MAX_CNT);
+  void stop();
+  void wait();
   void destroy();
   static ObTableStoreStatMgr &get_instance();
   int report_stat(const ObTableStoreStat &stat);

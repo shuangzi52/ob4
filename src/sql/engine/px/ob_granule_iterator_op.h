@@ -59,6 +59,8 @@ public:
   int64_t get_px_sequence_id() { return px_sequence_id_; }
   void set_px_sequence_id(int64_t id) { px_sequence_id_ = id; }
   int add_table_location_keys(common::ObIArray<const ObTableScanSpec*> &tscs);
+  int64_t get_rf_max_wait_time() { return rf_max_wait_time_; }
+  void set_rf_max_wait_time(int64_t rf_max_wait_time) { rf_max_wait_time_ = rf_max_wait_time; }
 private:
   int deep_copy_range(ObIAllocator *allocator, const ObNewRange &src, ObNewRange &dst);
 public:
@@ -72,6 +74,7 @@ public:
   //for partition pruning
   common::ObSEArray<uint64_t, 2> table_location_keys_;
   int64_t px_sequence_id_;
+  int64_t rf_max_wait_time_;
 private:
   common::ObIAllocator *deserialize_allocator_;
 };
@@ -84,9 +87,9 @@ public:
   ~ObGranuleIteratorSpec() {}
 
   INHERIT_TO_STRING_KV("op_spec", ObOpSpec,
-                       K_(ref_table_id), K_(tablet_size), K_(affinitize), K_(access_all));
+                       K_(index_table_id), K_(tablet_size), K_(affinitize), K_(access_all));
 
-  void set_related_id(uint64_t ref_id) { ref_table_id_ = ref_id; }
+  void set_related_id(uint64_t index_id) { index_table_id_ = index_id; }
   void set_tablet_size(int64_t tablet_size) { tablet_size_ = tablet_size; }
   int64_t get_tablet_size() { return tablet_size_; }
 
@@ -104,7 +107,7 @@ public:
   // 目前同时保留了这两个结构，4.2上可以直接删除pw_op_tscs_和所有引用到的地方
   inline bool full_partition_wise() const { return partition_wise_join_ && (!affinitize_ || pw_op_tscs_.count() > 1 || pw_dml_tsc_ids_.count() > 1); }
 public:
-  uint64_t ref_table_id_;
+  uint64_t index_table_id_;
   int64_t tablet_size_;
   // affinitize用于表示线程和任务是否有进行绑定。
   bool affinitize_;
@@ -127,6 +130,7 @@ public:
   // for partition join filter
   ObPxBFStaticInfo bf_info_;
   ObHashFunc hash_func_;
+  //TODO: shanting. remove this expr in 4.3
   ObExpr *tablet_id_expr_;
   // end for partition join filter
   int64_t repart_pruning_tsc_idx_;
@@ -210,6 +214,7 @@ private:
   bool enable_single_runtime_filter_pruning();
   int do_single_runtime_filter_pruning(const ObGranuleTaskInfo &gi_task_info, bool &partition_pruning);
   int do_parallel_runtime_filter_pruning();
+  int wait_runtime_ready(bool &partition_pruning);
   int do_join_filter_partition_pruning(int64_t tablet_id, bool &partition_pruning);
   int try_build_tablet2part_id_map();
   //---end----
@@ -240,6 +245,7 @@ private:
   int64_t total_count_; // total partition count or block count processed, rescan included
   ObP2PDatahubMsgBase *rf_msg_;
   ObP2PDhKey rf_key_;
+  int64_t rf_start_wait_time_;
   ObPxTablet2PartIdMap tablet2part_id_map_;
   ObOperator *real_child_;
   bool is_parallel_runtime_filtered_;

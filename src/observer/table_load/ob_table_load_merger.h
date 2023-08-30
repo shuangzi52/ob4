@@ -1,10 +1,19 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
 #include "lib/lock/ob_mutex.h"
+#include "storage/blocksstable/ob_sstable.h"
 #include "observer/table_load/ob_table_load_table_compactor.h"
 #include "share/table/ob_table_load_define.h"
 #include "storage/direct_load/ob_direct_load_merge_ctx.h"
@@ -30,6 +39,7 @@ public:
   void stop();
   int handle_table_compact_success();
   int collect_sql_statistics(table::ObTableLoadSqlStatistics &sql_statistics);
+  int collect_dml_stat(table::ObTableLoadDmlStat &dml_stats);
 private:
   int build_merge_ctx();
   int start_merge();
@@ -44,7 +54,6 @@ private:
   mutable lib::ObMutex mutex_;
   ObDirectLoadMergeTaskIterator merge_task_iter_;
   common::ObDList<storage::ObDirectLoadPartitionMergeTask> merging_list_;
-  common::ObArenaAllocator allocator_;
   int64_t running_thread_count_ CACHE_ALIGNED;
   volatile bool has_error_;
   volatile bool is_stop_;

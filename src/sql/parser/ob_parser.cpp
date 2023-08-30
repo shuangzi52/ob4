@@ -77,6 +77,10 @@ bool ObParser::is_pl_stmt(const ObString &stmt, bool *is_create_func, bool *is_c
               state = S_C_COMMENT;
               p += 2;
             }
+          } else if ('#' == *p && lib::is_mysql_mode()) {
+            save_state = state;
+            state = S_COMMENT;
+            p += 1;
           }
           if (state != S_COMMENT && state != S_C_COMMENT) {
             p_normal_start = p;
@@ -376,6 +380,7 @@ ObParser::State ObParser::transform_normal(ObString &normal)
   ELSIF(14, S_EDITIONABLE, "noneditionable")
   ELSIF(6, S_SIGNAL, "signal")
   ELSIF(8, S_RESIGNAL, "resignal")
+  ELSIF(5, S_FORCE, "force")
   ELSE()
 
   if (S_INVALID == state
@@ -445,7 +450,8 @@ ObParser::State ObParser::transform_normal(
         } break;
         case S_OR:
         case S_REPLACE:
-        case S_EDITIONABLE: {
+        case S_EDITIONABLE:
+        case S_FORCE: {
           // do nothing ...
         } break;
         case S_FUNCTION: {
@@ -1005,7 +1011,7 @@ int ObParser::parse(const ObString &query,
     }
   }
 
-  const ObString stmt(len, query.ptr());
+  ObString stmt(len, query.ptr());
   memset(&parse_result, 0, sizeof(ParseResult));
   parse_result.is_multi_values_parser_ = (INS_MULTI_VALUES == parse_mode);
   parse_result.is_fp_ = (FP_MODE == parse_mode
@@ -1041,6 +1047,8 @@ int ObParser::parse(const ObString &query,
     parse_result.question_mark_ctx_.count_ = def_name_ctx_->count_;
   }
 
+  parse_result.pl_parse_info_.is_inner_parse_ = is_pl_inner_parse;
+
   if (INS_MULTI_VALUES == parse_mode) {
     void *buffer = nullptr;
     if (OB_ISNULL(buffer = allocator_->alloc(sizeof(InsMultiValuesResult)))) {
@@ -1051,7 +1059,7 @@ int ObParser::parse(const ObString &query,
     }
   }
 
-  if (parse_result.is_fp_ || parse_result.is_dynamic_sql_) {
+  if (OB_SUCC(ret) && (parse_result.is_fp_ || parse_result.is_dynamic_sql_)) {
     int64_t new_length = parse_result.is_fp_ ? stmt.length() + 1 : stmt.length() * 2;
     char *buf = (char *)parse_malloc(new_length, parse_result.malloc_pool_);
     if (OB_UNLIKELY(NULL == buf)) {
@@ -1060,6 +1068,18 @@ int ObParser::parse(const ObString &query,
     } else {
       parse_result.no_param_sql_ = buf;
       parse_result.no_param_sql_buf_len_ = new_length;
+    }
+  }
+  //compatible mysql, mysql allow use the "--"
+  if (OB_SUCC(ret) && lib::is_mysql_mode() && stmt.case_compare("--") == 0) {
+    const char *line_str = "-- ";
+    char *buf = (char *)parse_malloc(strlen(line_str), parse_result.malloc_pool_);
+    if (OB_UNLIKELY(NULL == buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("no memory for parser");
+    } else {
+      MEMCPY(buf, line_str, strlen(line_str));
+      stmt.assign_ptr(buf, strlen(line_str));
     }
   }
   if (OB_SUCC(ret) && OB_ISNULL(parse_result.charset_info_)) {
@@ -1101,7 +1121,7 @@ int ObParser::parse(const ObString &query,
         }
       }
     } else {
-      ObPLParser pl_parser(*(ObIAllocator*)(parse_result.malloc_pool_), connection_collation_);
+      ObPLParser pl_parser(*(ObIAllocator*)(parse_result.malloc_pool_), connection_collation_, sql_mode_);
       if (OB_FAIL(pl_parser.parse(stmt, stmt, parse_result, is_pl_inner_parse))) {
         LOG_WARN("failed to parse stmt as pl", K(stmt), K(ret));
         // may create ddl func, try it.

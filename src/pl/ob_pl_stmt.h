@@ -40,6 +40,8 @@ OB_INLINE uint64_t get_tenant_id_by_object_id(uint64_t object_id)
 {
   object_id = object_id & ~(OB_MOCK_TRIGGER_PACKAGE_ID_MASK);
   object_id = object_id & ~(OB_MOCK_OBJECT_PACAKGE_ID_MASK);
+  object_id = object_id & ~(OB_MOCK_PACKAGE_BODY_ID_MASK);
+  object_id = object_id & ~(OB_MOCK_DBLINK_UDT_ID_MASK);
   return is_inner_pl_object_id(object_id) ? OB_SYS_TENANT_ID : MTL_ID();
 }
 
@@ -312,12 +314,24 @@ private:
 class ObPLUserTypeTable
 {
 public:
+#ifdef OB_BUILD_ORACLE_PL
+  ObPLUserTypeTable() : type_start_gen_id_(0), sys_refcursor_type_(), user_types_(), external_user_types_()
+  {
+    sys_refcursor_type_.set_name("SYS_REFCURSOR");
+    sys_refcursor_type_.set_user_type_id(generate_user_type_id(OB_INVALID_ID));
+    sys_refcursor_type_.set_type_from(PL_TYPE_SYS_REFCURSOR);
+  }
+#else
   ObPLUserTypeTable() : type_start_gen_id_(0), user_types_(), external_user_types_() {}
+#endif
   virtual ~ObPLUserTypeTable() {}
 
   inline void set_type_start_gen_id(uint64_t type_start_gen_id) { type_start_gen_id_ = type_start_gen_id; }
   inline uint64_t get_type_start_gen_id() const { return type_start_gen_id_; }
   inline int64_t get_count() const { return user_types_.count(); }
+#ifdef OB_BUILD_ORACLE_PL
+  inline const ObRefCursorType &get_sys_refcursor_type() const { return sys_refcursor_type_; }
+#endif
   const common::ObIArray<const ObUserDefinedType *> &get_types() const { return user_types_; }
   int add_type(ObUserDefinedType *user_defined_type);
   const ObUserDefinedType *get_type(const common::ObString &type_name) const;
@@ -331,6 +345,9 @@ public:
   inline uint64_t generate_user_type_id(uint64_t package_id) { return common::combine_pl_type_id(package_id, type_start_gen_id_++); }
 private:
   uint64_t type_start_gen_id_;
+#ifdef OB_BUILD_ORACLE_PL
+  ObRefCursorType sys_refcursor_type_;
+#endif
   common::ObSEArray<const ObUserDefinedType *, 4> user_types_;
   common::ObSEArray<const ObUserDefinedType *, 4> external_user_types_;
 };
@@ -457,7 +474,8 @@ public:
     ref_objects_(allocator),
     row_desc_(NULL),
     rowid_table_id_(OB_INVALID_ID),
-    ps_sql_() {}
+    ps_sql_(),
+    is_link_table_(false) {}
   virtual ~ObPLSql() {}
 
   inline const common::ObString &get_sql() const { return sql_; }
@@ -485,6 +503,9 @@ public:
   inline uint64_t get_rowid_table_id() const { return rowid_table_id_; }
   inline void set_rowid_table_id(uint64 table_id) { rowid_table_id_ = table_id; }
 
+  inline void set_link_table(bool is_link_table) { is_link_table_ = is_link_table; }
+  inline bool has_link_table() const { return is_link_table_; }
+
   TO_STRING_KV(K_(sql), K_(params), K_(ps_sql), K_(stmt_type), K_(ref_objects), K_(rowid_table_id));
 
 protected:
@@ -499,6 +520,7 @@ protected:
   const ObRecordType *row_desc_;
   uint64_t rowid_table_id_;
   common::ObString ps_sql_;
+  bool is_link_table_;
 };
 
 class ObPLCursor
@@ -977,6 +999,8 @@ public:
   virtual bool is_udt_map() const { return compile_flag_.compile_with_map(); }
   virtual bool is_udt_order() const { return compile_flag_.compile_with_order(); }
 
+  virtual const ObString& get_routine_name() const { return get_name(); }
+
   bool has_self_param() const;
   int64_t get_self_param_pos() const;
 
@@ -1128,6 +1152,8 @@ public:
     UDF_NS,
     LOCAL_TYPE,         // 本地的自定义类型
     PKG_TYPE,           // 包中的自定义类型
+    SELF_ATTRIBUTE,
+    DBLINK_PKG_NS,      // dblink package
   };
 
   ObPLExternalNS(const ObPLResolveCtx &resolve_ctx, const ObPLBlockNS *parent_ns)
@@ -1139,7 +1165,8 @@ public:
                       const ObString &object_name,
                       ExternalType &type,
                       uint64_t &parent_id,
-                      int64_t &var_idx) const;
+                      int64_t &var_idx,
+                      const ObString &synonym_name) const;
   int resolve_external_symbol(const common::ObString &name, ExternalType &type, ObPLDataType &data_type,
                               uint64_t &parent_id, int64_t &var_idx) const;
   int resolve_external_type_by_name(const ObString &db_name,
@@ -1340,6 +1367,9 @@ public:
                                const ObString &db_name, const ObString &package_name,
                                const ObString &type_name, const ObUserDefinedType *&user_type) const;
   int get_pl_data_type_by_id(uint64_t type_id, const ObUserDefinedType *&user_type) const;
+#ifdef OB_BUILD_ORACLE_PL
+  int get_subtype(uint64_t type_id, const ObUserDefinedSubType *&subtype);
+#endif
   int get_subtype_actually_basetype(ObPLDataType &pl_type);
   int get_subtype_actually_basetype(const ObPLDataType *pl_type,
                                     const ObPLDataType *&actually_type);
@@ -1427,6 +1457,13 @@ public:
                                             bool &exists,
                                             pl::ObProcType &proc_type,
                                             uint64_t udt_id) const;
+#ifdef OB_BUILD_ORACLE_PL
+  int add_column_conv_for_coll_func(ObSQLSessionInfo &session_info,
+                                    ObRawExprFactory &expr_factory,
+                                    const ObUserDefinedType *user_type,
+                                    const ObString &attr_name,
+                                    ObRawExpr *&expr) const;
+#endif
   int find_sub_attr_by_name(const ObUserDefinedType &user_type,
                             const sql::ObObjAccessIdent &access_ident,
                             ObSQLSessionInfo &session_info,
@@ -1541,7 +1578,7 @@ public:
        analyze_flag_(0)
   {}
 
-  virtual ~ObPLCompileUnitAST() {}
+  virtual ~ObPLCompileUnitAST();
 
   inline UnitType get_type() const { return type_; }
   inline void set_type(UnitType type) { type_ = type; }
@@ -1719,6 +1756,11 @@ public:
   inline int add_subprogram_path(int64_t path) { return subprogram_path_.push_back(path); }
   inline bool get_is_all_sql_stmt() const { return is_all_sql_stmt_; }
   inline void set_is_all_sql_stmt(bool is_all_sql_stmt) { is_all_sql_stmt_ = is_all_sql_stmt; }
+  inline bool has_parallel_affect_factor() const
+  {
+    return is_reads_sql_data() || is_modifies_sql_data() || is_wps() ||
+           is_rps() || is_has_sequence() || is_external_state();
+  }
   int add_argument(const common::ObString &name, const ObPLDataType &type,
                    const sql::ObRawExpr *expr = NULL,
                    const common::ObIArray<common::ObString> *type_info = NULL,
@@ -1905,7 +1947,19 @@ public:
       in_handler_scope_(false),
       is_contain_goto_stmt_(false),
       is_autonomous_block_(false) {}
-  virtual ~ObPLStmtBlock() {}
+  virtual ~ObPLStmtBlock() {
+    reset();
+  }
+
+  void reset()
+  {
+    for (int64_t i = 0; i < stmts_.count(); ++i) {
+      if (NULL != stmts_.at(i)) {
+        stmts_.at(i)->~ObPLStmt();
+      }
+    }
+    stmts_.reset();
+  }
 
   int accept(ObPLStmtVisitor &visitor) const;
   virtual int64_t get_child_size() const { return stmts_.count(); }
@@ -2025,7 +2079,16 @@ class ObPLIfStmt : public ObPLStmt
 {
 public:
   ObPLIfStmt() : ObPLStmt(PL_IF), cond_(OB_INVALID_INDEX), then_(NULL), else_(NULL) {}
-  virtual ~ObPLIfStmt() {}
+  virtual ~ObPLIfStmt() {
+    if (NULL != then_) {
+      then_->~ObPLStmtBlock();
+      then_ = NULL;
+    }
+    if (NULL != else_) {
+      else_->~ObPLStmtBlock();
+      else_ = NULL;
+    }
+  }
 
   int accept(ObPLStmtVisitor &visitor) const;
   virtual int64_t get_child_size() const { return NULL == else_ ? 1 : 2; }
@@ -2053,7 +2116,19 @@ public:
       : ObPLStmt(PL_CASE),
         case_expr_idx_(OB_INVALID_INDEX), case_var_idx_(OB_INVALID_INDEX),
         when_(allocator), else_(nullptr) {}
-  virtual ~ObPLCaseStmt() {}
+  virtual ~ObPLCaseStmt() {
+    if (NULL != else_) {
+      else_->~ObPLStmtBlock();
+      else_ = NULL;
+    }
+    int64_t when_count = when_.count();
+    for (int64_t i = 0; i < when_count; ++i) {
+      ObPLStmt *ret = when_[i].body_;
+      if (OB_NOT_NULL(ret)) {
+        ret->~ObPLStmt();
+      }
+    }
+  }
 
   virtual int64_t get_child_size() const override { return when_.count() + 1; }
   virtual const ObPLStmt *get_child_stmt(int64_t i) const override {
@@ -2202,7 +2277,12 @@ class ObPLLoop : public ObPLStmt
 {
 public:
   ObPLLoop(ObPLStmtType type) : ObPLStmt(type), body_(NULL) {}
-  virtual ~ObPLLoop() {}
+  virtual ~ObPLLoop() {
+    if (NULL != body_) {
+      body_->~ObPLStmtBlock();
+      body_ = NULL;
+    }
+  }
 
   virtual int64_t get_child_size() const { return 1; }
   virtual const ObPLStmt *get_child_stmt(int64_t i) const { return 0 == i ? body_ : NULL; }
@@ -2462,7 +2542,10 @@ public:
   inline const hash::ObHashMap<int64_t, int64_t>& get_tab_to_subtab_map() const { return tab_to_subtab_; }
   inline hash::ObHashMap<int64_t, int64_t>& get_tab_to_subtab_map() { return tab_to_subtab_; }
 
-  inline int create_tab_to_subtab() { return tab_to_subtab_.create(16, ObModIds::OB_PL_TEMP); }
+  inline int create_tab_to_subtab()
+  {
+    return tab_to_subtab_.create(16, ObModIds::OB_PL_TEMP, ObModIds::OB_HASH_NODE, MTL_ID());
+  }
 
   int accept(ObPLStmtVisitor &visitor) const;
 
@@ -2759,7 +2842,15 @@ public:
 
 public:
   ObPLDeclareHandlerStmt(common::ObIAllocator &allocator) : ObPLStmt(PL_HANDLER), handlers_(allocator) {}
-  virtual ~ObPLDeclareHandlerStmt() {}
+  virtual ~ObPLDeclareHandlerStmt()
+  {
+    for (int64_t i = 0; i < get_child_size(); ++i) {
+      if (NULL != get_child_stmt(i)) {
+        (const_cast<ObPLStmt *>(get_child_stmt(i)))->~ObPLStmt();
+      }
+    }
+    handlers_.reset();
+  }
 
   int accept(ObPLStmtVisitor &visitor) const;
   virtual int64_t get_child_size() const { return handlers_.count(); }
@@ -2880,7 +2971,8 @@ public:
         subprogram_path_(allocator),
         params_(allocator),
         nocopy_params_(allocator),
-        route_sql_() {}
+        route_sql_(),
+        dblink_id_(common::OB_INVALID_ID) {}
   virtual ~ObPLCallStmt() {}
 
   int accept(ObPLStmtVisitor &visitor) const;
@@ -2906,6 +2998,9 @@ public:
   inline uint64_t get_is_object_udf() const { return is_object_udf_; }
   inline const common::ObString &get_route_sql() const { return route_sql_; }
   inline void set_route_sql(const common::ObString &route_sql) { route_sql_ = route_sql; }
+  inline void set_dblink_id(uint64_t dblink_id) { dblink_id_ = dblink_id; }
+  inline uint64_t get_dblink_id() const { return dblink_id_; }
+  inline bool is_dblink_call() const { return common::OB_INVALID_ID == dblink_id_; }
 
   TO_STRING_KV(K_(type),
                K_(label),
@@ -2914,7 +3009,8 @@ public:
                K_(is_object_udf),
                K_(params),
                K_(nocopy_params),
-               K_(route_sql));
+               K_(route_sql),
+               K_(dblink_id));
 
 private:
   uint64_t invoker_id_;
@@ -2925,6 +3021,7 @@ private:
   ObPLSEArray<InOutParam> params_;
   ObPLSEArray<int64_t> nocopy_params_;
   common::ObString route_sql_;
+  uint64_t dblink_id_;
 };
 
 class ObPLInnerCallStmt : public ObPLStmt

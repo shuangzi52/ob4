@@ -433,36 +433,20 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
                                                   show_db_id,
                                                   show_db_name))) {
               LOG_WARN("fail to resolve show database", K(ret), K(real_tenant_id));
-            } else if (OB_FAIL(stmt_need_privs.need_privs_.init(2))) {
-              LOG_WARN("fail to init need privs array", K(ret));
-            } else {
-              ObNeedPriv need_priv;
-              need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-              need_priv.priv_set_ = OB_PRIV_DB_ACC;
-              stmt_need_privs.need_privs_.push_back(need_priv);
-
-              need_priv.priv_level_ = OB_PRIV_DB_LEVEL;
-              need_priv.priv_set_ = OB_PRIV_DB_ACC;
-              need_priv.db_ = show_db_name;
-              stmt_need_privs.need_privs_.push_back(need_priv);
-
-              if (OB_FAIL(schema_checker_->check_priv_or(session_priv, stmt_need_privs))) {
-                if (OB_ERR_NO_DB_PRIVILEGE == ret) {
-                  LOG_USER_ERROR(OB_ERR_NO_DB_PRIVILEGE, session_priv.user_name_.length(), session_priv.user_name_.ptr(),
-                                 session_priv.host_name_.length(),session_priv.host_name_.ptr(),
-                                 show_db_name.length(), show_db_name.ptr());
-                } else {
-                  LOG_WARN("fail to check priv", K(ret));
-                }
+            } else if (OB_FAIL(schema_checker_->check_db_access(session_priv, show_db_name))) {
+              if (OB_ERR_NO_DB_PRIVILEGE == ret) {
+                LOG_USER_ERROR(OB_ERR_NO_DB_PRIVILEGE, session_priv.user_name_.length(), session_priv.user_name_.ptr(),
+                               session_priv.host_name_.length(),session_priv.host_name_.ptr(),
+                               show_db_name.length(), show_db_name.ptr());
               } else {
-                if (NULL != parse_tree.children_[0]) {
-                  GEN_SQL_STEP_1(ObShowSqlSet::SHOW_CREATE_DATABASE_EXISTS);
-                  GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_DATABASE_EXISTS, OB_SYS_DATABASE_NAME, OB_TENANT_VIRTUAL_SHOW_CREATE_DATABASE_TNAME, show_db_id);
-                } else {
-                  GEN_SQL_STEP_1(ObShowSqlSet::SHOW_CREATE_DATABASE);
-                  GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_DATABASE, OB_SYS_DATABASE_NAME, OB_TENANT_VIRTUAL_SHOW_CREATE_DATABASE_TNAME, show_db_id);
-                }
+                LOG_WARN("fail to check priv", K(ret));
               }
+            } else if (NULL != parse_tree.children_[0]) {
+              GEN_SQL_STEP_1(ObShowSqlSet::SHOW_CREATE_DATABASE_EXISTS);
+              GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_DATABASE_EXISTS, OB_SYS_DATABASE_NAME, OB_TENANT_VIRTUAL_SHOW_CREATE_DATABASE_TNAME, show_db_id);
+            } else {
+              GEN_SQL_STEP_1(ObShowSqlSet::SHOW_CREATE_DATABASE);
+              GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_DATABASE, OB_SYS_DATABASE_NAME, OB_TENANT_VIRTUAL_SHOW_CREATE_DATABASE_TNAME, show_db_id);
             }
           }
         }();
@@ -487,7 +471,7 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
               LOG_WARN("fail to resolve show from table", K(ret));
             }
             if (OB_FAIL(ret)) {
-            } else if (T_SHOW_CREATE_VIEW == parse_tree.type_) {
+            } else if (T_SHOW_CREATE_VIEW == parse_tree.type_ || is_view) {
               if (ObSchemaChecker::is_ora_priv_check()) {
               } else {
                 ObNeedPriv need_priv;
@@ -1138,17 +1122,35 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
             ObSqlStrGenerator sql_gen;
             show_resv_ctx.condition_node_ = parse_tree.children_[0];
             show_resv_ctx.stmt_type_ = stmt::T_SHOW_TABLEGROUPS;
-            GEN_SQL_STEP_1(ObShowSqlSet::SHOW_TABLEGROUPS);
-            GEN_SQL_STEP_2(ObShowSqlSet::SHOW_TABLEGROUPS,
-                          REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
-                          REAL_NAME(OB_ALL_TABLEGROUP_TNAME, OB_ALL_VIRTUAL_TABLEGROUP_REAL_AGENT_ORA_TNAME),
-                          REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
-                          REAL_NAME(table_name, OB_ALL_VIRTUAL_TABLE_REAL_AGENT_ORA_TNAME),
-                          is_oracle_mode ? real_tenant_id : sql_tenant_id,
-                          REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
-                          REAL_NAME(OB_ALL_DATABASE_TNAME, OB_ALL_VIRTUAL_DATABASE_REAL_AGENT_ORA_TNAME),
-                          is_oracle_mode ? real_tenant_id : sql_tenant_id,
-                          is_oracle_mode ? real_tenant_id : sql_tenant_id);
+            uint64_t compat_version = OB_INVALID_VERSION;
+
+            if (OB_FAIL(GET_MIN_DATA_VERSION(real_tenant_id, compat_version))) {
+              LOG_WARN("get min data_version failed", K(ret), K(real_tenant_id));
+            } else if (compat_version < DATA_VERSION_4_2_0_0) {
+              GEN_SQL_STEP_1(ObShowSqlSet::SHOW_TABLEGROUPS);
+              GEN_SQL_STEP_2(ObShowSqlSet::SHOW_TABLEGROUPS,
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(OB_ALL_TABLEGROUP_TNAME, OB_ALL_VIRTUAL_TABLEGROUP_REAL_AGENT_ORA_TNAME),
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(table_name, OB_ALL_VIRTUAL_TABLE_REAL_AGENT_ORA_TNAME),
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id,
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(OB_ALL_DATABASE_TNAME, OB_ALL_VIRTUAL_DATABASE_REAL_AGENT_ORA_TNAME),
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id,
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id);
+            } else {
+              GEN_SQL_STEP_1(ObShowSqlSet::SHOW_TABLEGROUPS_V2);
+              GEN_SQL_STEP_2(ObShowSqlSet::SHOW_TABLEGROUPS_V2,
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(OB_ALL_TABLEGROUP_TNAME, OB_ALL_VIRTUAL_TABLEGROUP_REAL_AGENT_ORA_TNAME),
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(table_name, OB_ALL_VIRTUAL_TABLE_REAL_AGENT_ORA_TNAME),
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id,
+                            REAL_NAME(OB_SYS_DATABASE_NAME, OB_ORA_SYS_SCHEMA_NAME),
+                            REAL_NAME(OB_ALL_DATABASE_TNAME, OB_ALL_VIRTUAL_DATABASE_REAL_AGENT_ORA_TNAME),
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id,
+                            is_oracle_mode ? real_tenant_id : sql_tenant_id);
+            }
           }
         }();
         break;
@@ -1418,7 +1420,7 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
         break;
       }
       case T_SHOW_RESTORE_PREVIEW: {
-  // TODO:  fix restore preview later.
+  // TODO(chongrong.th): fix restore preview in 4.1
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "show restore preview is");
         break;
@@ -2691,6 +2693,19 @@ DEFINE_SHOW_CLAUSE_SET(SHOW_TABLEGROUPS,
                         WHERE T1.TENANT_ID = %lu \
                         ORDER BY T1.TABLEGROUP_NAME, T2.TABLE_NAME",
                        "Tablegroup_name");
+DEFINE_SHOW_CLAUSE_SET(SHOW_TABLEGROUPS_V2,
+                       NULL,
+                       "SELECT t1.Tablegroup_name AS Tablegroup_name, t2.Table_name AS Table_name, t3.Database_name AS Database_name, t1.Sharding AS Sharding \
+                        FROM %s.%s t1 LEFT JOIN %s.%s  t2 ON (t1.tablegroup_id = t2.tablegroup_id and t2.tenant_id = %lu) \
+                        LEFT JOIN %s.%s  t3 ON (t2.database_id = t3.database_id and t3.tenant_id = %lu) \
+                        WHERE t1.tenant_id = %lu AND t2.table_type in (0, 3, 6) \
+                        ORDER BY t1.tablegroup_name, t2.table_name",
+                        "SELECT T1.TABLEGROUP_NAME AS \"TABLEGROUP_NAME\", T2.TABLE_NAME AS \"TABLE_NAME\", T3.DATABASE_NAME AS \"DATABASE_NAME\", t1.SHARDING AS \"SHARDING\" \
+                        FROM %s.%s T1 LEFT JOIN %s.%s  T2 ON (T1.TABLEGROUP_ID = T2.TABLEGROUP_ID AND T2.TENANT_ID = %lu) \
+                        LEFT JOIN %s.%s  T3 ON (T2.DATABASE_ID = T3.DATABASE_ID AND T3.TENANT_ID = %lu) \
+                        WHERE T1.TENANT_ID = %lu AND T2.TABLE_TYPE in (0, 3, 6) \
+                        ORDER BY T1.TABLEGROUP_NAME, T2.TABLE_NAME",
+                       "Tablegroup_name");
 DEFINE_SHOW_CLAUSE_SET(SHOW_VARIABLES,
                        NULL,
                        "SELECT variable_name AS `Variable_name`, value AS `Value` FROM %s.%s ORDER BY variable_name ASC",
@@ -2816,7 +2831,7 @@ DEFINE_SHOW_CLAUSE_SET(SHOW_TRIGGERS_LIKE,
                        NULL,
                        "select t.trigger_name as `Trigger`, t.event_manipulation as `Event`, t.event_object_table as `Table`, t.action_statement as `Statement`, t.action_timing as `Timing`, t.created as `Created`, t.sql_mode as `sql_mode`, t.definer as `Definer`, t.character_set_client as `character_set_client`, t.collation_connection as `collation_connection`, t.database_collation as `Database Collation` from %s.%s t, %s.%s d where t.event_object_schema = d.database_name and d.database_id = %ld ",
                        NULL,
-                       "Trigger");
+                       "Table");
 DEFINE_SHOW_CLAUSE_SET(SHOW_WARNINGS,
                        NULL,
                        "SELECT `level` AS `Level`, `code` AS `Code`, `message` AS `Message` FROM %s.%s ",

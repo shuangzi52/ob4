@@ -449,14 +449,20 @@ int ObPxSQCProxy::report(int end_ret) const
   // 第一版暂不支持重试
   int sqc_ret = OB_SUCCESS;
   auto &tasks = sqc_ctx.get_tasks();
-  update_error_code(sqc_ret, end_ret);
   ObSQLSessionInfo *session = NULL;
   CK(OB_NOT_NULL(sqc_arg.exec_ctx_) &&
      OB_NOT_NULL(session = GET_MY_SESSION(*sqc_arg.exec_ctx_)));
   for (int64_t i = 0; i < tasks.count(); ++i) {
     // overwrite ret
     ObPxTask &task = tasks.at(i);
-    update_error_code(sqc_ret, task.get_result());
+    ObPxErrorUtil::update_sqc_error_code(sqc_ret, task.get_result(), task.err_msg_, finish_msg.err_msg_);
+    if (OB_SUCCESS == finish_msg.das_retry_rc_) {
+      //Even if the PX task is successfully retried by DAS,
+      //it is necessary to collect the retry error code of each task and provide feedback to the QC node of PX,
+      //so that the QC node can refresh the location cache in a timely manner,
+      //avoiding the next execution from being sent to the same erroneous node.
+      finish_msg.das_retry_rc_ = task.get_das_retry_rc();
+    }
     affected_rows += task.get_affected_rows();
     finish_msg.dml_row_info_.add_px_dml_row_info(task.dml_row_info_);
     finish_msg.temp_table_id_ = task.temp_table_id_;
@@ -468,6 +474,7 @@ int ObPxSQCProxy::report(int end_ret) const
           (void)MTL(transaction::ObTransService*)->merge_tx_state(*sqc_tx_desc, *task_tx_desc);
           (void)MTL(transaction::ObTransService*)->release_tx(*task_tx_desc);
         } else {
+          sql::ObSQLSessionInfo::LockGuard guard(session->get_thread_data_lock());
           sqc_tx_desc = task_tx_desc;
         }
         task_tx_desc = NULL;
@@ -481,6 +488,7 @@ int ObPxSQCProxy::report(int end_ret) const
 
     OZ(append(finish_msg.interm_result_ids_, task.interm_result_ids_));
   }
+  ObPxErrorUtil::update_error_code(sqc_ret, end_ret);
   if (OB_SUCCESS != ret && OB_SUCCESS == sqc_ret) {
     sqc_ret = ret;
   }
@@ -490,12 +498,7 @@ int ObPxSQCProxy::report(int end_ret) const
   finish_msg.rc_ = sqc_ret;
   // 重写错误码，使得scheduler端能等待远端schema刷新并重试
   if (OB_SUCCESS != sqc_ret && is_schema_error(sqc_ret)) {
-    if (OB_NOT_NULL(session)
-        && GSCHEMASERVICE.is_schema_error_need_retry(NULL, session->get_effective_tenant_id())) {
-      finish_msg.rc_ = OB_ERR_REMOTE_SCHEMA_NOT_FULL;
-    } else {
-      finish_msg.rc_ = OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH;
-    }
+    ObInterruptUtil::update_schema_error_code(sqc_arg.exec_ctx_, finish_msg.rc_);
   }
 
   // 如果 session 为 null，rc 不会为 SUCCESS，没有设置 trans_result 也无妨

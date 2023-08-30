@@ -92,6 +92,7 @@ public:
 	    task_id_(0)
 	{ }
 	virtual ~ObGranuleTaskInfo() { }
+  int assign(const ObGranuleTaskInfo &other);
 	TO_STRING_KV(K_(ranges), K_(ss_ranges), K_(task_id));
 public:
   common::ObSEArray<common::ObNewRange, 1> ranges_;
@@ -152,6 +153,7 @@ public:
     {
       return common::OB_INVALID_TIMESTAMP != renew_time_;
     }
+    int assign(ObPartLoc &other);
     TO_STRING_KV(K_(scan_ranges),
                  K_(part_key_ref_id),
                  K_(value_ref_id),

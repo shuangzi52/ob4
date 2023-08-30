@@ -56,6 +56,8 @@ int ObMPUtils::add_changed_session_info(OMPKOK &ok_pkt, sql::ObSQLSessionInfo &s
         encoder->is_changed_ = true;
       }
     }
+    // record sys var need sync in error scene.
+    bool is_exist_error_sync_var = false;
     for (int64_t i = 0; OB_SUCC(ret) && i < sys_var.count(); ++i) {
       sql::ObBasicSessionInfo::ChangedVar change_var = sys_var.at(i);
       ObObj new_val;
@@ -73,15 +75,29 @@ int ObMPUtils::add_changed_session_info(OMPKOK &ok_pkt, sql::ObSQLSessionInfo &s
           LOG_WARN("failed to get sys vairable new value string", K(ret), K(new_val));
         } else if (OB_FAIL(ok_pkt.add_system_var(str_kv))) {
           LOG_WARN("failed to add system variable", K(str_kv), K(ret));
+        } else if (session.is_exist_error_sync_var(change_var.id_) && FALSE_IT(is_exist_error_sync_var = true)) {
+          // do nothing.
         } else {
+          if (is_exist_error_sync_var) {
+            ObSessInfoEncoder* encoder = NULL;
+            if (OB_FAIL(session.get_sess_encoder(SESSION_SYNC_ERROR_SYS_VAR, encoder))) {
+              LOG_WARN("failed to get session encoder", K(ret));
+            } else {
+              encoder->is_changed_ = true;
+              is_exist_error_sync_var = false;
+            }
+          }
+          if (OB_FAIL(ret)) {
+          } else {
 #ifndef NDEBUG
-          LOG_TRACE("success add system var to ok pack", K(str_kv), K(change_var), K(new_val),
+            LOG_INFO("success add system var to ok pack", K(str_kv), K(change_var), K(new_val),
                K(session.get_sessid()), K(session.get_proxy_sessid()));
 #else
-          // for autocommit change record.
-          LOG_INFO("success add system var to ok pack", K(str_kv), K(change_var), K(new_val),
+            // for autocommit change record.
+            LOG_TRACE("success add system var to ok pack", K(str_kv), K(change_var), K(new_val),
                K(session.get_sessid()), K(session.get_proxy_sessid()), K(change_var.id_));
 #endif
+          }
         }
       } else {
         LOG_TRACE("sys var not actully changed", K(changed), K(change_var), K(new_val),
@@ -99,8 +115,7 @@ int ObMPUtils::add_changed_session_info(OMPKOK &ok_pkt, sql::ObSQLSessionInfo &s
       if (name.empty()) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("invalid variable name", K(name), K(ret));
-      }
-      if (OB_FAIL(user_map.get_refactored(name, sess_var))) {
+      } else if (OB_FAIL(user_map.get_refactored(name, sess_var))) {
         LOG_WARN("unknown user variable", K(name), K(ret));
       } else {
         ObStringKV str_kv;
@@ -183,7 +198,7 @@ int ObMPUtils::sync_session_info(sql::ObSQLSessionInfo &sess, const common::ObSt
     }
     // phase 2: handle txn relative types in order
     if (OB_SUCC(ret) && has_txn_type) {
-      for(int info_type = min; info_type <= max; info_type++) {
+      for(int info_type = min; OB_SUCC(ret) && info_type <= max; info_type++) {
         auto &info = txn_type_infos[info_type - min];
         if (info.has) {
           if (OB_FAIL(sess.update_sess_sync_info((sql::SessionSyncInfoType)info_type, buf, info.pos + info.len, info.pos))) {
@@ -263,6 +278,7 @@ int ObMPUtils::append_modfied_sess_info(common::ObIAllocator &allocator,
         } else if (encoder->is_changed_) {
           int16_t info_type = (int16_t)i;
           int32_t info_len = sess_size[i];
+          int64_t info_pos = 0;
           LOG_DEBUG("session-info-encode", K(sess.get_sessid()), K(info_type), K(info_len));
           if (info_len < 0) {
             ret = OB_INVALID_ARGUMENT;
@@ -271,10 +287,14 @@ int ObMPUtils::append_modfied_sess_info(common::ObIAllocator &allocator,
             // invalid info len do nothing and skip it.
             encoder->is_changed_ = false;
           } else if (OB_FAIL(ObProtoTransUtil::store_type_and_len(buf, size, pos, info_type, info_len))) {
-            LOG_WARN("failed to set type and len", K(info_type), K(info_len), K(ret));
-          } else if (OB_FAIL(encoder->serialize(sess, buf, size, pos))) {
-            LOG_WARN("failed to serialize", K(sess), K(ret), K(size), K(pos));
+            LOG_WARN("failed to set type and len", K(ret), K(info_type), K(info_len), K(pos));
+          } else if (pos + info_len > size) {
+            ret = OB_SIZE_OVERFLOW;
+            LOG_WARN("buf overflow for info", K(ret), K(buf), K(pos), K(info_type), K(info_len), K(size));
+          } else if (OB_FAIL(encoder->serialize(sess, buf + pos, info_len, info_pos))) {
+            LOG_WARN("failed to serialize", K(sess), K(ret), K(size), K(buf), K(pos), K(info_type), K(info_len), K(info_pos));
           } else {
+            pos += info_len;
             // reset to not changed
             encoder->is_changed_ = false;
           }
@@ -317,6 +337,12 @@ int ObMPUtils::append_modfied_sess_info(common::ObIAllocator &allocator,
         } else {
           LOG_TRACE("add extra_info", K(kv) , KPHEX(buf, size), KP(buf), KP(kv.value_.get_string().ptr()));
         }
+      }
+    }
+    if (OB_FAIL(ret)) {
+      // dump info size array
+      for (int i = 0; i< SESSION_SYNC_MAX_TYPE; i++) {
+        LOG_INFO("dump sess info size", "type", i, "size", sess_size[i]);
       }
     }
   }

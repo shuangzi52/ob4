@@ -15,7 +15,11 @@
 #ifndef OCEANBASE_LIBOBCDC_FORMATTER_H__
 #define OCEANBASE_LIBOBCDC_FORMATTER_H__
 
+#ifndef OB_USE_DRCMSG
 #include "ob_cdc_msg_convert.h"
+#else
+#include <drcmsg/binlogBuf.h>                       // binlogBuf
+#endif
 
 #include "lib/allocator/ob_allocator.h"             // ObIAllocator
 #include "lib/thread/ob_multi_fixed_queue_thread.h" // ObMQThread
@@ -133,6 +137,7 @@ private:
 
     bool is_rowkey_[common::OB_MAX_COLUMN_NUMBER];
     bool is_changed_[common::OB_MAX_COLUMN_NUMBER];
+    bool is_null_lob_old_columns_[common::OB_MAX_COLUMN_NUMBER];
 
     void reset();
     int init(const int64_t column_num, const bool contain_old_column);

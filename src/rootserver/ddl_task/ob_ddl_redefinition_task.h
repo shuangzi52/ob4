@@ -137,9 +137,8 @@ public:
       K(check_table_empty_job_ret_code_), K(check_table_empty_job_time_));
 protected:
   int prepare(const share::ObDDLTaskStatus next_task_status);
-  int lock_table(const share::ObDDLTaskStatus next_task_status);
   int check_table_empty(const share::ObDDLTaskStatus next_task_status);
-  int obtain_snapshot();
+  int obtain_snapshot(const share::ObDDLTaskStatus next_task_status);
   bool check_can_validate_column_checksum(
       const bool is_oracle_mode,
       const share::schema::ObColumnSchemaV2 &src_column_schema,
@@ -149,7 +148,6 @@ protected:
       const share::schema::ObTableSchema &dest_table_schema,
       common::hash::ObHashMap<uint64_t, uint64_t> &validate_checksum_column_ids);
   int check_data_dest_tables_columns_checksum(const int64_t execution_id);
-  int unlock_table();
   int fail();
   int success();
   int hold_snapshot(const int64_t snapshot_version);
@@ -211,6 +209,7 @@ protected:
   int get_child_task_ids(char *buf, int64_t len);
   int get_estimated_timeout(const share::schema::ObTableSchema *dst_table_schema, int64_t &estimated_timeout);
   int get_orig_all_index_tablet_count(ObSchemaGetterGuard &schema_guard, int64_t &all_tablet_count);
+  int64_t get_build_replica_request_time();
 protected:
   struct DependTaskStatus final
   {
@@ -219,6 +218,7 @@ protected:
       : ret_code_(INT64_MAX), task_id_(0)
     {}
     ~DependTaskStatus() = default;
+    TO_STRING_KV(K_(task_id), K_(ret_code));
   public:
     int64_t ret_code_;
     int64_t task_id_;

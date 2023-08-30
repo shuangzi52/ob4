@@ -88,6 +88,7 @@ struct PCVSchemaObj
     inner_alloc_(alloc) {}
 
   int init(const share::schema::ObTableSchema *schema);
+  int init_with_synonym(const ObSimpleSynonymSchema *schema);
   int init_with_version_obj(const share::schema::ObSchemaObjVersion &schema_obj_version);
   int init_without_copy_name(const share::schema::ObSimpleTableSchemaV2 *schema);
   void set_allocator(common::ObIAllocator *alloc)
@@ -169,19 +170,34 @@ public:
                              ParamStore *obj_params);
 
   int resolve_multi_stmt_params(ObPlanCacheCtx &pc_ctx);
+
+  int before_resolve_array_params(ObPlanCacheCtx &pc_ctx, int64_t query_num, int64_t param_num, ParamStore *&ab_params);
+
   static int check_multi_stmt_param_type(ObPlanCacheCtx &pc_ctx,
                                          const stmt::StmtType stmt_type,
                                          const ObIArray<ObCharsetType> &param_charset_type,
                                          const ObBitSet<> &neg_param_index_,
                                          const ObBitSet<> &not_param_index,
                                          const ObBitSet<> &must_be_positive_idx,
-                                         ParamStore &param_store,
-                                         bool need_check_param_type,
-                                         bool &is_valid);
+                                         ParamStore &param_store);
+
+  static int resolve_insert_multi_values_param(ObPlanCacheCtx &pc_ctx,
+                                               const stmt::StmtType stmt_type,
+                                               const ObIArray<ObCharsetType> &param_charset_type,
+                                               const ObBitSet<> &neg_param_index_,
+                                               const ObBitSet<> &not_param_index,
+                                               const ObBitSet<> &must_be_positive_idx,
+                                               int64_t params_num,
+                                               ParamStore &param_store);
+
   static int check_multi_stmt_not_param_value(
                                 const ObIArray<ObFastParserResult> &multi_stmt_fp_results,
                                 const ObIArray<NotParamInfo> &not_param_info,
                                 bool &is_same);
+  static int check_insert_multi_values_param(ObPlanCacheCtx &pc_ctx, bool &is_same);
+  static int check_not_param_value(const ObIArray<ObPCParam *> &raw_params,
+                                   const ObIArray<NotParamInfo> &not_param_info,
+                                   bool &is_same);
   static int check_not_param_value(const ObFastParserResult &fp_result,
                                    const ObIArray<NotParamInfo> &not_param_info,
                                    bool &is_same);
@@ -262,6 +278,9 @@ public:
 
   int lift_tenant_schema_version(int64_t new_schema_version);
   int check_contains_table(uint64_t db_id, common::ObString tab_name, bool &contains);
+#ifdef OB_BUILD_SPM
+  int get_evolving_evolution_task(EvolutionPlanList &evo_task_list);
+#endif
 private:
   //used for add plan
   //check table version, view table version, merged version
@@ -291,6 +310,12 @@ private:
    * @retval is_contain: true for containing temporary table
    */
   bool is_contain_tmp_tbl() const;
+
+  /**
+   * @brief if there is a synonym in dependency tables
+   * @retval is_contain: true for containing synonym
+   */
+  bool is_contain_synonym() const;
 
   /**
    * @brief if there is a sys package/type in dependency tables
@@ -384,6 +409,9 @@ private:
   uint64_t sess_create_time_;
   // wether this pcv's plans contains sys table (oracle mode)
   bool contain_sys_name_table_;
+#ifdef OB_BUILD_SPM
+  bool is_spm_closed_;
+#endif
 
   bool need_param_;
   //at present, if a SQL is in nested sql, it is forced to use DAS plan

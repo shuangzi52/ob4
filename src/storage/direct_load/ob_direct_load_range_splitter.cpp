@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_range_splitter.h"
@@ -67,7 +74,7 @@ int ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
 int ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
   ObSSTable *sstable,
   const ObDatumRange &scan_range,
-  const ObTableReadInfo &index_read_info,
+  const ObITableReadInfo &index_read_info,
   ObIAllocator &allocator,
   ObIDirectLoadDatumRowkeyIterator *&rowkey_iter)
 {
@@ -181,6 +188,64 @@ int ObDirectLoadRangeSplitUtils::construct_multiple_rowkey_iter(
         end_key_iter->~ObDirectLoadMultipleSSTableIndexBlockEndKeyIterator();
         allocator.free(end_key_iter);
         end_key_iter = nullptr;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDirectLoadRangeSplitUtils::construct_origin_table_rowkey_iters(
+  ObDirectLoadOriginTable *origin_table,
+  const ObDatumRange &scan_range,
+  ObIAllocator &allocator,
+  int64_t &total_block_count,
+  ObIArray<ObIDirectLoadDatumRowkeyIterator *> &rowkey_iters)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(nullptr == origin_table || !origin_table->is_valid() || !scan_range.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", KR(ret), KPC(origin_table), K(scan_range));
+  } else {
+    const ObITableReadInfo &read_info =
+      origin_table->get_tablet_handle().get_obj()->get_rowkey_read_info();
+    if (nullptr != origin_table->get_major_sstable()) {
+      ObSSTable *major_sstable = origin_table->get_major_sstable();
+      ObIDirectLoadDatumRowkeyIterator *rowkey_iter = nullptr;
+      if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
+            major_sstable, scan_range, read_info, allocator, rowkey_iter))) {
+        LOG_WARN("fail to construct rowkey iter", KR(ret));
+      } else if (OB_FAIL(rowkey_iters.push_back(rowkey_iter))) {
+        LOG_WARN("fail to push back rowkey iter", KR(ret));
+      } else {
+        total_block_count += major_sstable->get_data_macro_block_count();
+      }
+      if (OB_FAIL(ret)) {
+        if (nullptr != rowkey_iter) {
+          rowkey_iter->~ObIDirectLoadDatumRowkeyIterator();
+          allocator.free(rowkey_iter);
+          rowkey_iter = nullptr;
+        }
+      }
+    } else {
+      const ObIArray<blocksstable::ObSSTable *> &ddl_sstables = origin_table->get_ddl_sstables();
+      for (int64_t i = 0; OB_SUCC(ret) && i < ddl_sstables.count(); ++i) {
+        ObSSTable *ddl_sstable = ddl_sstables.at(i);
+        ObIDirectLoadDatumRowkeyIterator *rowkey_iter = nullptr;
+        if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
+              ddl_sstable, scan_range, read_info, allocator, rowkey_iter))) {
+          LOG_WARN("fail to construct rowkey iter", KR(ret));
+        } else if (OB_FAIL(rowkey_iters.push_back(rowkey_iter))) {
+          LOG_WARN("fail to push back rowkey iter", KR(ret));
+        } else {
+          total_block_count += ddl_sstable->get_data_macro_block_count();
+        }
+        if (OB_FAIL(ret)) {
+          if (nullptr != rowkey_iter) {
+            rowkey_iter->~ObIDirectLoadDatumRowkeyIterator();
+            allocator.free(rowkey_iter);
+            rowkey_iter = nullptr;
+          }
+        }
       }
     }
   }
@@ -368,6 +433,7 @@ int ObDirectLoadSSTableRangeSplitter::init(const ObIArray<ObDirectLoadSSTable *>
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(sstable_array), KP(datum_utils));
   } else {
+    allocator_.set_tenant_id(MTL_ID());
     if (OB_FAIL(construct_rowkey_iters(sstable_array))) {
       LOG_WARN("fail to construct rowkey itres", KR(ret));
     } else if (OB_FAIL(
@@ -452,9 +518,11 @@ int ObDirectLoadMergeRangeSplitter::init(ObDirectLoadOriginTable *origin_table,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), KPC(origin_table), K(sstable_array), KP(datum_utils));
   } else {
+    allocator_.set_tenant_id(MTL_ID());
     scan_range_.set_whole_range();
-    if (OB_FAIL(construct_origin_table_rowkey_iter(origin_table))) {
-      LOG_WARN("fail to construct origin sstable rowkey itre", KR(ret));
+    if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_origin_table_rowkey_iters(
+          origin_table, scan_range_, allocator_, total_block_count_, rowkey_iters_))) {
+      LOG_WARN("fail to construct origin table rowkey iters", KR(ret));
     } else if (OB_FAIL(construct_sstable_rowkey_iters(sstable_array))) {
       LOG_WARN("fail to construct sstable rowkey itres", KR(ret));
     } else if (OB_FAIL(
@@ -465,25 +533,6 @@ int ObDirectLoadMergeRangeSplitter::init(ObDirectLoadOriginTable *origin_table,
     } else {
       is_inited_ = true;
     }
-  }
-  return ret;
-}
-
-int ObDirectLoadMergeRangeSplitter::construct_origin_table_rowkey_iter(
-  ObDirectLoadOriginTable *origin_table)
-{
-  int ret = OB_SUCCESS;
-  ObIDirectLoadDatumRowkeyIterator *rowkey_iter = nullptr;
-  if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
-        origin_table->get_major_sstable(), scan_range_,
-        origin_table->get_tablet_handle().get_obj()->get_index_read_info(), allocator_,
-        rowkey_iter))) {
-    LOG_WARN("fail to construct rowkey iter", KR(ret));
-  } else if (OB_FAIL(rowkey_iters_.push_back(rowkey_iter))) {
-    LOG_WARN("fail to push back rowkey iter", KR(ret));
-  } else {
-    total_block_count_ +=
-      origin_table->get_major_sstable()->get_meta().get_basic_meta().data_macro_block_count_;
   }
   return ret;
 }
@@ -567,9 +616,11 @@ int ObDirectLoadMultipleMergeTabletRangeSplitter::init(
              K(table_data_desc), KP(datum_utils));
   } else {
     tablet_id_ = tablet_id;
+    allocator_.set_tenant_id(MTL_ID());
     scan_range_.set_whole_range();
-    if (OB_FAIL(construct_origin_table_rowkey_iter(origin_table))) {
-      LOG_WARN("fail to construct origin sstable rowkey itre", KR(ret));
+    if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_origin_table_rowkey_iters(
+          origin_table, scan_range_, allocator_, total_block_count_, rowkey_iters_))) {
+      LOG_WARN("fail to construct origin table rowkey iters", KR(ret));
     } else if (OB_FAIL(
                  construct_sstable_rowkey_iters(sstable_array, table_data_desc, datum_utils))) {
       LOG_WARN("fail to construct sstable rowkey itres", KR(ret));
@@ -581,25 +632,6 @@ int ObDirectLoadMultipleMergeTabletRangeSplitter::init(
     } else {
       is_inited_ = true;
     }
-  }
-  return ret;
-}
-
-int ObDirectLoadMultipleMergeTabletRangeSplitter::construct_origin_table_rowkey_iter(
-  ObDirectLoadOriginTable *origin_table)
-{
-  int ret = OB_SUCCESS;
-  ObIDirectLoadDatumRowkeyIterator *rowkey_iter = nullptr;
-  if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
-        origin_table->get_major_sstable(), scan_range_,
-        origin_table->get_tablet_handle().get_obj()->get_index_read_info(), allocator_,
-        rowkey_iter))) {
-    LOG_WARN("fail to construct rowkey iter", KR(ret));
-  } else if (OB_FAIL(rowkey_iters_.push_back(rowkey_iter))) {
-    LOG_WARN("fail to push back rowkey iter", KR(ret));
-  } else {
-    total_block_count_ +=
-      origin_table->get_major_sstable()->get_meta().get_basic_meta().data_macro_block_count_;
   }
   return ret;
 }
@@ -783,38 +815,43 @@ int ObDirectLoadMultipleMergeRangeSplitter::get_rowkeys_by_origin(
   ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
-  ObIDirectLoadDatumRowkeyIterator *rowkey_iter = nullptr;
+  ObDirectLoadDatumRowkeyCompare compare;
+  RowkeyMerger rowkey_merger;
   ObDatumRange scan_range;
   scan_range.set_whole_range();
-  if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_rowkey_iter(
-        origin_table->get_major_sstable(), scan_range,
-        origin_table->get_tablet_handle().get_obj()->get_index_read_info(), allocator,
-        rowkey_iter))) {
-    LOG_WARN("fail to construct rowkey iter", KR(ret));
-  } else {
-    const ObDatumRowkey *datum_rowkey = nullptr;
-    ObDatumRowkey copied_rowkey;
-    int64_t count = 0;
-    while (OB_SUCC(ret)) {
-      if (OB_FAIL(rowkey_iter->get_next_rowkey(datum_rowkey))) {
-        if (OB_UNLIKELY(OB_ITER_END != ret)) {
-          LOG_WARN("fail to get next rowkey", KR(ret));
-        } else {
-          ret = OB_SUCCESS;
-          break;
-        }
-      } else if (++count >= BLOCK_COUNT_PER_RANGE) {
-        if (OB_FAIL(datum_rowkey->deep_copy(copied_rowkey, allocator))) {
-          LOG_WARN("fail to deep copy rowkey", KR(ret));
-        } else if (OB_FAIL(rowkey_array.push_back(copied_rowkey))) {
-          LOG_WARN("fail to push back", KR(ret));
-        } else {
-          count = 0;
-        }
+  ObArray<ObIDirectLoadDatumRowkeyIterator *> rowkey_iters;
+  int64_t unused_total_block_count = 0;
+  const ObDatumRowkey *datum_rowkey = nullptr;
+  ObDatumRowkey copied_rowkey;
+  int64_t count = 0;
+  if (OB_FAIL(ObDirectLoadRangeSplitUtils::construct_origin_table_rowkey_iters(
+        origin_table, scan_range, allocator, unused_total_block_count, rowkey_iters))) {
+    LOG_WARN("fail to construct origin table rowkey iters", KR(ret));
+  } else if (OB_FAIL(compare.init(*datum_utils_))) {
+    LOG_WARN("fail to init rowkey compare", KR(ret));
+  } else if (OB_FAIL(rowkey_merger.init(rowkey_iters, &compare))) {
+    LOG_WARN("fail to init rowkey merger", KR(ret));
+  }
+  while (OB_SUCC(ret)) {
+    if (OB_FAIL(rowkey_merger.get_next_rowkey(datum_rowkey))) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("fail to get next rowkey", KR(ret));
+      } else {
+        ret = OB_SUCCESS;
+        break;
+      }
+    } else if (++count >= BLOCK_COUNT_PER_RANGE) {
+      if (OB_FAIL(datum_rowkey->deep_copy(copied_rowkey, allocator))) {
+        LOG_WARN("fail to deep copy rowkey", KR(ret));
+      } else if (OB_FAIL(rowkey_array.push_back(copied_rowkey))) {
+        LOG_WARN("fail to push back", KR(ret));
+      } else {
+        count = 0;
       }
     }
   }
-  if (nullptr != rowkey_iter) {
+  for (int64_t i = 0; i < rowkey_iters.count(); ++i) {
+    ObIDirectLoadDatumRowkeyIterator *rowkey_iter = rowkey_iters.at(i);
     rowkey_iter->~ObIDirectLoadDatumRowkeyIterator();
     allocator.free(rowkey_iter);
     rowkey_iter = nullptr;
@@ -1036,6 +1073,7 @@ int ObDirectLoadMultipleSSTableRangeSplitter::init(
     LOG_WARN("invalid args", KR(ret), K(sstable_array), K(table_data_desc), KP(datum_utils));
   } else {
     datum_utils_ = datum_utils;
+    allocator_.set_tenant_id(MTL_ID());
     if (OB_FAIL(construct_rowkey_iters(sstable_array, table_data_desc, datum_utils))) {
       LOG_WARN("fail to construct rowkey iters", KR(ret));
     } else if (OB_FAIL(compare_.init(*datum_utils))) {

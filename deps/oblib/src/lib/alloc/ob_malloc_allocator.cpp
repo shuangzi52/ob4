@@ -16,6 +16,7 @@
 #include "lib/alloc/alloc_struct.h"
 #include "lib/alloc/object_set.h"
 #include "lib/alloc/memory_sanity.h"
+#include "lib/alloc/memory_dump.h"
 #include "lib/utility/ob_tracepoint.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
 #include "lib/allocator/ob_page_manager.h"
@@ -90,10 +91,10 @@ void *ObMallocAllocator::alloc(const int64_t size)
   return alloc(size, attr);
 }
 
-void *ObMallocAllocator::alloc(const int64_t size, const oceanbase::lib::ObMemAttr &attr)
+void *ObMallocAllocator::alloc(const int64_t size, const oceanbase::lib::ObMemAttr &_attr)
 {
 #ifdef OB_USE_ASAN
-  UNUSED(attr);
+  UNUSED(_attr);
   return ::malloc(size);
 #else
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
@@ -101,17 +102,25 @@ void *ObMallocAllocator::alloc(const int64_t size, const oceanbase::lib::ObMemAt
   int ret = OB_E(EventTable::EN_4) OB_SUCCESS;
   void *ptr = NULL;
   ObTenantCtxAllocatorGuard allocator = NULL;
-  oceanbase::lib::ObMemAttr inner_attr = attr;
-#ifdef ENABLE_500_FALLBACK
-  const bool do_not_use_me = OB_SERVER_TENANT_ID == attr.tenant_id_ && !attr.use_500() &&
-    mtl_id() != OB_SERVER_TENANT_ID;
-  if (do_not_use_me) {
-    inner_attr.tenant_id_ = mtl_id();
-    inner_attr.ctx_id_ = ObCtxIds::DO_NOT_USE_ME;
+  lib::ObMemAttr attr = _attr;
+  if (OB_INVALID_TENANT_ID == attr.tenant_id_) {
+    LOG_ERROR("invalid tenant id", K(attr.tenant_id_));
+    attr.tenant_id_ = OB_SERVER_TENANT_ID;
   }
-#else
-  const bool do_not_use_me = false;
-#endif
+  if (OB_SERVER_TENANT_ID == attr.tenant_id_ &&
+      attr.use_500() && !attr.expect_500()) {
+    attr.ctx_id_ = ObCtxIds::UNEXPECTED_IN_500;
+  }
+  lib::ObMemAttr inner_attr = attr;
+  bool do_not_use_me = false;
+  if (FORCE_EXPLICT_500_MALLOC()) {
+    do_not_use_me = OB_SERVER_TENANT_ID == attr.tenant_id_ && !attr.use_500() &&
+      ob_thread_tenant_id() != OB_SERVER_TENANT_ID;
+    if (do_not_use_me) {
+      inner_attr.tenant_id_ = ob_thread_tenant_id();
+      inner_attr.ctx_id_ = ObCtxIds::DO_NOT_USE_ME;
+    }
+  }
   if (OB_SUCCESS != ret) {
   } else if (OB_UNLIKELY(0 == inner_attr.tenant_id_)
              || OB_UNLIKELY(INT64_MAX == inner_attr.tenant_id_)) {
@@ -134,13 +143,15 @@ void *ObMallocAllocator::alloc(const int64_t size, const oceanbase::lib::ObMemAt
 
   if (OB_SUCC(ret)) {
     if (do_not_use_me) {
-      if (OB_ISNULL(ptr = allocator->alloc(size, inner_attr))) {
-        inner_attr = attr;
-        allocator = get_tenant_ctx_allocator(inner_attr.tenant_id_, inner_attr.ctx_id_);
-      }
+      ptr = allocator->alloc(size, inner_attr);
     }
     if (!ptr) {
-      ptr = allocator->alloc(size, inner_attr);
+      inner_attr = attr;
+      allocator = get_tenant_ctx_allocator(inner_attr.tenant_id_, inner_attr.ctx_id_);
+      if (OB_ISNULL(allocator)) {
+      } else {
+        ptr = allocator->alloc(size, inner_attr);
+      }
     }
   }
 
@@ -178,7 +189,7 @@ void *ObMallocAllocator::realloc(
   } else if (OB_ISNULL(nptr = allocator->realloc(ptr, size, inner_attr))) {
     // do nothing
   }
-  return nptr;;
+  return nptr;
 #endif
 }
 
@@ -236,7 +247,7 @@ ObTenantCtxAllocatorGuard ObMallocAllocator::get_tenant_ctx_allocator(uint64_t t
 {
   if (OB_LIKELY(tl_ta != NULL && tl_ta->get_tenant_id() == tenant_id)) {
     const bool lock = false;
-    return ObTenantCtxAllocatorGuard(&tl_ta[ctx_id], lock);;
+    return ObTenantCtxAllocatorGuard(&tl_ta[ctx_id], lock);
   }
   return get_tenant_ctx_allocator_without_tlcache(tenant_id, ctx_id);
 }
@@ -312,10 +323,8 @@ int ObMallocAllocator::create_tenant_allocator(uint64_t tenant_id, void *buf,
       ObTenantCtxAllocator(tenant_id, ctx_id);
     if (OB_FAIL(ctx_allocator->set_tenant_memory_mgr())) {
       LOG_ERROR("set_tenant_memory_mgr failed", K(ret));
-#ifdef ENABLE_500_FALLBACK
     } else if (ObCtxIds::DO_NOT_USE_ME == ctx_id) {
-      ctx_allocator->set_limit(50L<<20);
-#endif
+      ctx_allocator->set_limit(256L<<20);
     }
   }
   if (OB_SUCC(ret)) {
@@ -393,6 +402,43 @@ int ObMallocAllocator::with_resource_handle_invoke(uint64_t tenant_id, InvokeFun
   }
   return ret;
 }
+#ifdef ENABLE_500_MEMORY_LIMIT
+int ObMallocAllocator::set_500_tenant_limit(const bool unlimited)
+{
+  int ret = OB_SUCCESS;
+  for (int ctx_id = 0; OB_SUCC(ret) && ctx_id < ObCtxIds::MAX_CTX_ID; ++ctx_id) {
+    if (ObCtxIds::SCHEMA_SERVICE == ctx_id ||
+        ObCtxIds::PKT_NIO == ctx_id ||
+        ObCtxIds::CO_STACK == ctx_id ||
+        ObCtxIds::LIBEASY == ctx_id ||
+        ObCtxIds::GLIBC == ctx_id ||
+        ObCtxIds::LOGGER_CTX_ID== ctx_id ||
+        ObCtxIds::RPC_CTX_ID == ctx_id ||
+        ObCtxIds::UNEXPECTED_IN_500 == ctx_id) {
+      continue;
+    }
+    auto ta = get_tenant_ctx_allocator(OB_SERVER_TENANT_ID, ctx_id);
+    if (OB_NOT_NULL(ta)) {
+      int64_t ctx_limit = ObCtxIds::DEFAULT_CTX_ID == ctx_id ? (4LL<<30) : (50LL<<20);
+      if (unlimited) {
+        ctx_limit = INT64_MAX;
+      }
+      if (OB_FAIL(ta->set_limit(ctx_limit))) {
+        LIB_LOG(WARN, "set limit of 500 tenant failed", K(ret), K(ctx_limit),
+                "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
+      } else {
+        LIB_LOG(INFO, "set limit of 500 tenant succeed", K(ret), K(ctx_limit),
+                "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
+      }
+    } else {
+      ret = OB_INVALID_ARGUMENT;
+      LIB_LOG(WARN, "tenant ctx allocator is not exist", K(ret),
+              "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObMallocAllocator::set_tenant_limit(uint64_t tenant_id, int64_t bytes)
 {
@@ -603,11 +649,6 @@ void ObMallocAllocator::add_tenant_allocator_unrecycled(ObTenantCtxAllocator *al
     modify_tenant_memory_access_permission(allocator, false);
   }
 #endif
-#ifdef ENABLE_500_FALLBACK
-  for (int64_t ctx_id = 0; ctx_id < ObCtxIds::MAX_CTX_ID; ctx_id++) {
-    allocator[ctx_id].set_deleted(true);
-  }
-#endif
   ObDisableDiagnoseGuard disable_diagnose_guard;
   ObLatchWGuard guard(unrecycled_lock_, ObLatchIds::OB_ALLOCATOR_LOCK);
   allocator->get_next() = unrecycled_allocators_;
@@ -633,11 +674,6 @@ ObTenantCtxAllocator *ObMallocAllocator::take_off_tenant_allocator_unrecycled(ui
     }
   }
   if (ta != NULL) {
-#ifdef ENABLE_500_FALLBACK
-    for (int64_t ctx_id = 0; ctx_id < ObCtxIds::MAX_CTX_ID; ctx_id++) {
-      ta[ctx_id].set_deleted(false);
-    }
-#endif
 #ifdef ENABLE_SANITY
     modify_tenant_memory_access_permission(ta, true);
 #endif
@@ -700,10 +736,20 @@ int ObMallocAllocator::recycle_tenant_allocator(uint64_t tenant_id)
       ObTenantCtxAllocator *ctx_allocator = tas[ctx_id];
       if (NULL == ctx_allocator) {
         ctx_allocator = &ta[ctx_id];
-        bool has_unfree = ctx_allocator->check_has_unfree();
+        char first_label[AOBJECT_LABEL_SIZE + 1] = {'\0'};
+        bool has_unfree = ctx_allocator->check_has_unfree(first_label);
         if (has_unfree) {
-          LOG_ERROR("tenant memory leak!!!", K(tenant_id),
-                    K(ctx_id), "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
+          if (ObCtxIds::GLIBC == ctx_id
+              && 0 == strncmp("Pl", first_label, 2)
+              && pl_leaked_times_++ < 10) {
+            LOG_WARN("tenant memory leak!!!", K(tenant_id), K(ctx_id),
+                     "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id),
+                     "label", first_label);
+          } else {
+            LOG_ERROR("tenant memory leak!!!", K(tenant_id), K(ctx_id),
+                      "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id),
+                      "label", first_label);
+          }
           tas[ctx_id] = ctx_allocator;
         }
       }
@@ -759,7 +805,7 @@ void ObMallocAllocator::modify_tenant_memory_access_permission(ObTenantCtxAlloca
 {
   AChunk *chunks[1024] = {nullptr};
   int chunk_cnt = 0;
-  abort_unless(OB_SUCCESS == get_chunks(ta, chunks, sizeof(chunks)/sizeof(chunks[0]), chunk_cnt));
+  get_chunks(ta, chunks, sizeof(chunks)/sizeof(chunks[0]), chunk_cnt);
   for (int i = 0; i < chunk_cnt; i++) {
     AChunk *chunk = chunks[i];
     if (chunk != nullptr) {
@@ -772,52 +818,6 @@ void ObMallocAllocator::modify_tenant_memory_access_permission(ObTenantCtxAlloca
   }
 }
 #endif
-
-#ifdef ENABLE_500_FALLBACK
-int64_t __attribute__((weak)) mtl_id()
-{
-  return OB_SERVER_TENANT_ID;
-}
-#endif
-
-void ObMallocAllocator::print_malloc_sample(uint64_t tenant_id) const
-{
-  UNUSED(tenant_id);
-#ifdef ENABLE_500_FALLBACK
-  int ret = OB_SUCCESS;
-  auto &mem_dump = ObMemoryDump().get_instance();
-  if (OB_UNLIKELY(!mem_dump.is_inited())) {
-    ret = OB_NOT_INIT;
-    SERVER_LOG(WARN, "mem dump not inited", K(ret));
-  } else {
-    ObLatchRGuard guard(mem_dump.iter_lock_, common::ObLatchIds::MEM_DUMP_ITER_LOCK);
-    auto &sample_map = mem_dump.r_stat_->malloc_sample_map_;
-    char buf[4096];
-    int64_t buf_len = sizeof(buf);
-    int64_t pos = 0;
-    for (auto it = sample_map.begin(); OB_SUCC(ret) && it != sample_map.end(); it++) {
-      if (it->first.tenant_id_ == tenant_id) {
-        void **bt[ARRAYSIZEOF(it->first.bt_)];
-        MEMCPY(bt, it->first.bt_, sizeof(bt));
-        char bt_str[512];
-        parray(bt_str, sizeof(bt_str), (int64_t*)bt, ARRAYSIZEOF(bt));
-        ret = databuff_printf(buf, buf_len, pos,
-                              "[MEMORY][LEAK_INFO] tenant=%'10ld ctx=%20s mod=%15s alloc_bytes=%'10ld lbt=%s\n",
-                              it->first.tenant_id_,
-                              get_global_ctx_info().get_ctx_name(it->first.ctx_id_),
-                              it->first.label_, it->second.alloc_bytes_, bt_str);
-        if (OB_SUCC(ret) && pos > sizeof(buf)/2) {
-          _LOG_INFO("\n%.*s", static_cast<int32_t>(pos), buf);
-          pos = 0;
-        }
-      }
-    }
-    if (OB_SUCC(ret) && pos > 0) {
-      _LOG_INFO("\n%.*s", static_cast<int32_t>(pos), buf);
-    }
-  }
-#endif
-}
 
 } // end of namespace lib
 } // end of namespace oceanbase

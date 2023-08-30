@@ -23,6 +23,7 @@
 #include "observer/omt/ob_tenant_config.h"
 #include "observer/omt/ob_tenant_config_mgr.h"
 #include "sql/monitor/flt/ob_flt_control_info_mgr.h"
+#include "share/errsim_module/ob_errsim_module_interface_imp.h"
 
 using namespace oceanbase::common;
 
@@ -300,6 +301,11 @@ int ObTenantConfig::update_local(int64_t expected_version, ObMySQLProxy::MySQLRe
     } else if (OB_FAIL(publish_special_config_after_dump())) {
       LOG_WARN("publish special config after dump failed", K(tenant_id_), K(ret));
     }
+#ifdef ERRSIM
+    else if (OB_FAIL(build_errsim_module_())) {
+      LOG_WARN("failed to build errsim module", K(ret), K(tenant_id_));
+    }
+#endif
     print();
   } else {
     LOG_WARN("Read tenant config from inner table error", K_(tenant_id), K(ret));
@@ -327,8 +333,7 @@ int ObTenantConfig::publish_special_config_after_dump()
 
 int ObTenantConfig::add_extra_config(const char *config_str,
                                      int64_t version /* = 0 */ ,
-                                     bool check_name /* = false */,
-                                     bool check_unit /* = true */)
+                                     bool check_config /* = true */)
 {
   int ret = OB_SUCCESS;
   const int64_t MAX_OPTS_LENGTH = sysconf(_SC_ARG_MAX);
@@ -352,7 +357,7 @@ int ObTenantConfig::add_extra_config(const char *config_str,
     const ObString compatible_cfg(COMPATIBLE);
     while (OB_SUCC(ret) && OB_LIKELY(NULL != token)) {
       char *saveptr_one = NULL;
-      const char *name = NULL;
+      char *name = NULL;
       const char *value = NULL;
       ObConfigItem *const *pp_item = NULL;
       if (OB_ISNULL(name = STRTOK_R(token, "=", &saveptr_one))) {
@@ -361,52 +366,61 @@ int ObTenantConfig::add_extra_config(const char *config_str,
       } else if (OB_ISNULL(saveptr_one) || OB_UNLIKELY('\0' == *(value = saveptr_one))) {
         LOG_INFO("Empty config string", K(token), K(name));
         // ret = OB_INVALID_CONFIG;
-        name = "";
+        name = NULL;
       }
       if (OB_SUCC(ret)) {
-        const int value_len = strlen(value);
-        // hex2cstring -> value_len / 2 + 1
-        // '\0' -> 1
-        const int external_info_val_len = value_len / 2 + 1 + 1;
-        char *external_info_val = (char*)ob_malloc(external_info_val_len, "temp");
-        DEFER(if (external_info_val != nullptr) ob_free(external_info_val););
-        if (OB_ISNULL(external_info_val)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to alloc", K(ret));
-        } else if (FALSE_IT(external_info_val[0] = '\0')) {
-        } else if (OB_ISNULL(pp_item = container_.get(ObConfigStringKey(name)))) {
-          /* make compatible with previous configuration */
-          ret = check_name ? OB_INVALID_CONFIG : OB_SUCCESS;
-          LOG_WARN("Invalid config string, no such config item", K(name), K(value), K(ret));
-        }
-        if (OB_FAIL(ret) || OB_ISNULL(pp_item)) {
-        } else if (compatible_cfg.case_compare(name) == 0) {
-          if (!(*pp_item)->set_dump_value(value)) {
-            ret = OB_INVALID_CONFIG;
-            LOG_WARN("Invalid config value", K(name), K(value), K(ret));
-          } else {
-            (*pp_item)->set_dump_value_updated();
-            (*pp_item)->set_version(version);
-            LOG_INFO("Load tenant config dump value succ", K(name), K((*pp_item)->spfile_str()), K((*pp_item)->str()));
-          }
-        } else if (check_unit && !(*pp_item)->check_unit(value)) {
-          ret = OB_INVALID_CONFIG;
-          LOG_ERROR("Invalid config value", K(name), K(value), K(ret));
+        if (OB_ISNULL(name)) {
+          // do nothing, just skip this parameter
         } else {
-          if (!(*pp_item)->set_value(value)) {
-            ret = OB_INVALID_CONFIG;
-            LOG_WARN("Invalid config value", K(name), K(value), K(ret));
-          } else if (!(*pp_item)->check()) {
-            ret = OB_INVALID_CONFIG;
-            const char* range = (*pp_item)->range();
-            if (OB_ISNULL(range) || strlen(range) == 0) {
-              LOG_ERROR("Invalid config, value out of range", K(name), K(value), K(ret));
-            } else {
-              _LOG_ERROR("Invalid config, value out of %s (for reference only). name=%s, value=%s, ret=%d", range, name, value, ret);
-            }
+          char curr_tid_str[32] = {'\0'}; // 32 is enougth for uint64_t
+          snprintf(curr_tid_str, sizeof(curr_tid_str), "%lu", tenant_id_);
+          char *tid_in_arg = NULL;
+          name = STRTOK_R(name, "@", &tid_in_arg);
+          if (OB_ISNULL(name) || OB_UNLIKELY('\0' == *name)) {
+            // skip this parameter because name is invalid
+          } else if (OB_NOT_NULL(tid_in_arg) && ('\0' != *tid_in_arg) &&
+                     0 != strcmp(tid_in_arg, curr_tid_str)) {
+            // skip this parameter because the tenant_id does bot match
           } else {
-            (*pp_item)->set_version(version);
-            LOG_INFO("Load tenant config succ", K(name), K(value));
+            const int value_len = strlen(value);
+            // hex2cstring -> value_len / 2 + 1
+            // '\0' -> 1
+            const int external_info_val_len = value_len / 2 + 1 + 1;
+            char *external_info_val = (char*)ob_malloc(external_info_val_len, "temp");
+            DEFER(if (external_info_val != nullptr) ob_free(external_info_val););
+            if (OB_ISNULL(external_info_val)) {
+              ret = OB_ALLOCATE_MEMORY_FAILED;
+              LOG_WARN("failed to alloc", K(ret));
+            } else if (FALSE_IT(external_info_val[0] = '\0')) {
+            } else if (OB_ISNULL(pp_item = container_.get(ObConfigStringKey(name)))) {
+              ret = OB_SUCCESS;
+              LOG_WARN("Invalid config string, no such config item", K(name), K(value), K(ret));
+            }
+            if (OB_FAIL(ret) || OB_ISNULL(pp_item)) {
+            } else if (compatible_cfg.case_compare(name) == 0) {
+              if (!(*pp_item)->set_dump_value(value)) {
+                ret = OB_INVALID_CONFIG;
+                LOG_WARN("Invalid config value", K(name), K(value), K(ret));
+              } else {
+                (*pp_item)->set_dump_value_updated();
+                (*pp_item)->set_version(version);
+                LOG_INFO("Load tenant config dump value succ", K(name), K((*pp_item)->spfile_str()), K((*pp_item)->str()));
+              }
+            } else if (!(*pp_item)->set_value(value)) {
+              ret = OB_INVALID_CONFIG;
+              LOG_WARN("Invalid config value", K(name), K(value), K(ret));
+            } else if (check_config && (!(*pp_item)->check_unit(value) || !(*pp_item)->check())) {
+              ret = OB_INVALID_CONFIG;
+              const char* range = (*pp_item)->range();
+              if (OB_ISNULL(range) || strlen(range) == 0) {
+                LOG_ERROR("Invalid config, value out of range", K(name), K(value), K(ret));
+              } else {
+                _LOG_ERROR("Invalid config, value out of %s (for reference only). name=%s, value=%s, ret=%d", range, name, value, ret);
+              }
+            } else {
+              (*pp_item)->set_version(version);
+              LOG_INFO("Load tenant config succ", K(name), K(value));
+            }
           }
         }
         token = STRTOK_R(NULL, ",\n", &saveptr);
@@ -492,6 +506,37 @@ OB_DEF_SERIALIZE_SIZE(ObTenantConfig)
   len += ObCommonConfig::get_serialize_size();
   return len;
 }
+
+#ifdef ERRSIM
+int ObTenantConfig::build_errsim_module_()
+{
+  int ret = OB_SUCCESS;
+  char buf[ObErrsimModuleTypeHelper::MAX_TYPE_NAME_LENGTH] = "";
+  ObTenantErrsimModuleMgr::ModuleArray module_array;
+  ObTenantErrsimModuleMgr::ErrsimModuleString string;
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < this->errsim_module_types.size(); ++i) {
+    if (OB_FAIL(this->errsim_module_types.get(
+        static_cast<int>(i), buf, sizeof(buf)))) {
+      LOG_WARN("get rs failed", K(ret), K(i));
+    } else if (OB_FAIL(string.assign(buf))) {
+      LOG_WARN("failed to assign buffer", K(ret));
+    } else if (OB_FAIL(module_array.push_back(string))) {
+      LOG_WARN("failed to push string into array", K(ret), K(string));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    const int64_t percentage = this->errsim_module_error_percentage;
+
+    if (build_tenant_errsim_moulde(tenant_id_, current_version_, module_array, percentage)) {
+      LOG_WARN("failed to build tenant module", K(ret), K(tenant_id_));
+    }
+  }
+  return ret;
+}
+#endif
+
 
 } // omt
 } // oceanbase

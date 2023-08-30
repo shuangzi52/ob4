@@ -24,7 +24,7 @@ namespace common
 bool USE_CO_LATCH = false;
 thread_local uint32_t* ObLatch::current_locks[16];
 thread_local uint32_t* ObLatch::current_wait = nullptr;
-thread_local int8_t ObLatch::max_lock_slot_idx = 0;
+thread_local uint8_t ObLatch::max_lock_slot_idx = 0;
 
 class ObLatchWaitEventGuard : public ObWaitEventGuard
 {
@@ -119,7 +119,7 @@ int ObLatchMutex::lock(
         waited = true;
         // latch mutex wait is an atomic wait event
         ObLatchWaitEventGuard wait_guard(
-            OB_LATCHES[latch_id].wait_event_idx_,
+            ObLatchDesc::wait_event_idx(latch_id),
             abs_timeout_us / 1000,
             reinterpret_cast<uint64_t>(this),
             (uint32_t*)&lock_.val(),
@@ -805,7 +805,7 @@ OB_INLINE int ObLatch::low_lock(
         //wait
         waited = true;
         ObLatchWaitEventGuard wait_guard(
-          OB_LATCHES[latch_id].wait_event_idx_,
+          ObLatchDesc::wait_event_idx(latch_id),
           abs_timeout_us / 1000,
           reinterpret_cast<uint64_t>(this),
           (uint32_t*)&lock_,

@@ -586,7 +586,7 @@ int ObTableApiInsertUpExecutor::get_next_row()
 
   while (OB_SUCC(ret) && !is_iter_end) {
     int64_t insert_rows = 0;
-    int64_t savepoint_no = 0;
+    transaction::ObTxSEQ savepoint_no;
     // must set conflict_row fetch flag
     set_need_fetch_conflict();
     if (OB_FAIL(ObSqlTransControl::create_anonymous_savepoint(exec_ctx_, savepoint_no))) {
@@ -611,8 +611,11 @@ int ObTableApiInsertUpExecutor::get_next_row()
 
   if (OB_SUCC(ret)) {
     affected_rows_ += insert_rows_ + insert_up_rtdef_.upd_rtdef_.found_rows_;
+    // auto inc 操作中, 同步全局自增值value
+    if (tb_ctx_.has_auto_inc() && OB_FAIL(tb_ctx_.update_auto_inc_value())) {
+      LOG_WARN("fail to update auto inc value", K(ret));
+    }
   }
-
   return ret;
 }
 

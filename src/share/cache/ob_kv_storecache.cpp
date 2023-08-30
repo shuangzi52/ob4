@@ -135,10 +135,10 @@ const int64_t ObKVGlobalCache::bucket_num_array_[MAX_BUCKET_NUM_LEVEL] =
       6291469l,     // more than 16G, 50M kvcache meta
       12582917l,    // more than 32G, 100M kvcache meta
       25165843l,    // more than 64G, 200M kvcache meta
-      100663319l,   // more than 128G, 1G kvcache meta
-      402653189l,   // more than 256G, 3.2G kvcache meta
-      805306457l,   // more than 512G, 6.4G kvcache meta
-      1610612741l   // more than 1024G, 12.8G kvcache meta
+      50331653l,   // more than 128G, 500M kvcache meta
+      100663319l,   // more than 256G, 1G kvcache meta
+      201326611l,   // more than 512G, 2G kvcache meta
+      402653189ll   // more than 1024G, 4G kvcache meta
     };
 
 ObKVGlobalCache::ObKVGlobalCache()
@@ -151,7 +151,7 @@ ObKVGlobalCache::ObKVGlobalCache()
       map_replace_pos_(0),
       map_once_replace_num_(0),
       map_replace_skip_count_(0),
-      start_destory_(false),
+      stopped_(true),
       cache_wash_interval_(0)
 {
 }
@@ -229,7 +229,7 @@ int ObKVGlobalCache::init(
     COMMON_LOG(WARN, "failed to reload wash interval", K(ret));
   } else {
     cache_num_ = 0;
-    start_destory_ = false;
+    stopped_ = false;
     mem_limit_getter_ = mem_limit_getter;
     map_once_clean_num_ = min(MAX_MAP_ONCE_CLEAN_NUM, bucket_num / MAP_ONCE_CLEAN_RATIO);
     map_once_replace_num_ = min(MAX_MAP_ONCE_REPLACE_NUM, bucket_num / MAP_ONCE_REPLACE_RATIO);
@@ -252,17 +252,31 @@ int ObKVGlobalCache::init(
   return ret;
 }
 
+void ObKVGlobalCache::stop()
+{
+  if (inited_) {
+    stopped_ = true;
+    TG_STOP(lib::TGDefIDs::KVCacheWash);
+    TG_STOP(lib::TGDefIDs::KVCacheRep);
+  }
+}
+
+void ObKVGlobalCache::wait()
+{
+  if (inited_) {
+    TG_WAIT(lib::TGDefIDs::KVCacheWash);
+    TG_WAIT(lib::TGDefIDs::KVCacheRep);
+  }
+}
+
 void ObKVGlobalCache::destroy()
 {
-  if (!start_destory_) {
+  if (inited_) {
     COMMON_LOG(INFO, "Begin destroy the ObKVGlobalCache!");
     // should destroy store_ before timer threads exit, before some mb_handles may
     // cache in wash thread.
-    start_destory_ = true;
-    TG_CANCEL(lib::TGDefIDs::KVCacheWash, wash_task_);
-    TG_CANCEL(lib::TGDefIDs::KVCacheRep, replace_task_);
-    TG_WAIT(lib::TGDefIDs::KVCacheWash);
-    TG_WAIT(lib::TGDefIDs::KVCacheRep);
+    stop();
+    wait();
     ws_mgr_.destroy();
     map_.destroy();
     store_.destroy();
@@ -702,7 +716,7 @@ int ObKVGlobalCache::set_priority(const int64_t cache_id, const int64_t priority
 
 void ObKVGlobalCache::wash()
 {
-  if (OB_LIKELY(inited_ && !start_destory_)) {
+  if (OB_LIKELY(inited_ && !stopped_)) {
     DEBUG_SYNC(BEFORE_BACKGROUND_WASH);
     static int64_t wash_count = 0;
     if (store_.wash() || (++wash_count >= MAP_WASH_CLEAN_INTERNAL)) {
@@ -714,7 +728,7 @@ void ObKVGlobalCache::wash()
 
 void ObKVGlobalCache::replace_map()
 {
-  if (inited_ && !start_destory_) {
+  if (inited_ && !stopped_) {
     int ret = OB_SUCCESS;
     int64_t replace_node_count = 0;
     if (map_replace_skip_count_ <= 0) {
@@ -781,31 +795,31 @@ int ObKVGlobalCache::reload_wash_interval()
     const int64_t wash_interval = GCONF._cache_wash_interval;
     bool is_exist = false;
     if (OB_FAIL(TG_TASK_EXIST(lib::TGDefIDs::KVCacheWash, wash_task_, is_exist))) {
-      COMMON_LOG(ERROR, "failed to check wash task exist", K(ret));
+      COMMON_LOG(WARN, "failed to check wash task exist", K(ret));
     } else if (is_exist && OB_FAIL(TG_CANCEL_R(lib::TGDefIDs::KVCacheWash, wash_task_))) {
       COMMON_LOG(WARN, "failed to cancel wash task", K(ret));
     } else if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::KVCacheWash, wash_task_, wash_interval, true))) {
-      COMMON_LOG(ERROR, "failed to schedule wash task", K(ret));
+      COMMON_LOG(WARN, "failed to schedule wash task", K(ret));
     }
 
     is_exist = false;
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(TG_TASK_EXIST(lib::TGDefIDs::KVCacheRep, replace_task_, is_exist))) {
-      COMMON_LOG(ERROR, "failed to check replace task exist", K(ret));
+      COMMON_LOG(WARN, "failed to check replace task exist", K(ret));
     } else if (is_exist && OB_FAIL(TG_CANCEL_R(lib::TGDefIDs::KVCacheRep, replace_task_))) {
       COMMON_LOG(WARN, "failed to cancel replace task", K(ret));
     } else if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::KVCacheRep, replace_task_, wash_interval, true))) {
-      COMMON_LOG(ERROR, "failed to schedule replace task", K(ret));
+      COMMON_LOG(WARN, "failed to schedule replace task", K(ret));
     }
     if (OB_SUCC(ret)) {
       COMMON_LOG(INFO, "success to reload_wash_interval", K(wash_interval));
     }
   } else if (!inited_) {
     if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::KVCacheWash, wash_task_, cache_wash_interval_, true))) {
-      COMMON_LOG(ERROR, "failed to schedule wash task", K(ret));
+      COMMON_LOG(WARN, "failed to schedule wash task", K(ret));
     } else if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::KVCacheRep, replace_task_,
                                    cache_wash_interval_, true))) {
-      COMMON_LOG(ERROR, "failed to schedule replace task", K(ret));
+      COMMON_LOG(WARN, "failed to schedule replace task", K(ret));
     }
   }
   return ret;
@@ -891,7 +905,9 @@ int ObKVGlobalCache::sync_wash_mbs(const uint64_t tenant_id, const int64_t wash_
     ret = OB_INVALID_ARGUMENT;
     COMMON_LOG(WARN, "invalid arguments", K(ret), K(tenant_id), K(wash_size));
   } else if (OB_FAIL(store_.sync_wash_mbs(tenant_id, wash_size, wash_single_mb, wash_blocks))) {
-    COMMON_LOG(WARN, "sync_wash_mbs failed", K(ret), K(tenant_id), K(wash_size), K(wash_single_mb));
+    if (ret != OB_CACHE_FREE_BLOCK_NOT_ENOUGH) {
+      COMMON_LOG(WARN, "sync_wash_mbs failed", K(ret), K(tenant_id), K(wash_size), K(wash_single_mb));
+    }
   }
   return ret;
 }

@@ -23,6 +23,7 @@
 #include "storage/tx/ob_timestamp_service.h"
 #include "storage/tx/ob_trans_id_service.h"
 #include "storage/tablelock/ob_lock_memtable.h"
+#include "logservice/replayservice/ob_tablet_replay_executor.h"
 #include "storage/tablet/ob_tablet.h"
 
 namespace oceanbase
@@ -248,7 +249,8 @@ int ObTxReplayExecutor::try_get_tx_ctx_(int64_t tx_id, int64_t tenant_id, const 
       ret = OB_SUCCESS;
       bool tx_ctx_existed = false;
       common::ObAddr scheduler = log_block_header_.get_scheduler();
-      ObTxCreateArg arg(true,  /* for_replay */
+      ObTxCreateArg arg(true, /* for_replay */
+                        false, /* for_special_tx */
                         tenant_id,
                         tx_id,
                         ls_id,
@@ -256,7 +258,7 @@ int ObTxReplayExecutor::try_get_tx_ctx_(int64_t tx_id, int64_t tenant_id, const 
                         GET_MIN_CLUSTER_VERSION(),
                         0, /*session_id*/
                         scheduler,
-                        INT64_MAX, /*trans_expired_time_*/
+                        INT64_MAX,         /*trans_expired_time_*/
                         ls_tx_srv_->get_trans_service());
       if (OB_FAIL(ls_tx_srv_->create_tx_ctx(arg, tx_ctx_existed, ctx_))) {
         TRANS_LOG(WARN, "get_tx_ctx error", K(ret), K(tx_id), KP(ctx_));
@@ -294,7 +296,7 @@ void ObTxReplayExecutor::finish_replay_(const int retcode)
     if (OB_SUCCESS != retcode) {
       mt_ctx_->replay_end(false, /*is_replay_succ*/
                           log_ts_ns_);
-      TRANS_LOG_RET(WARN, OB_ERR_UNEXPECTED, "[Replay Tx]Tx Redo replay error, rollback to start", K(*this));
+      TRANS_LOG_RET(WARN, OB_EAGAIN, "[Replay Tx]Tx Redo replay error, rollback to start", K(*this));
     } else {
       mt_ctx_->replay_end(true, /*is_replay_succ*/
                           log_ts_ns_);
@@ -546,6 +548,10 @@ int ObTxReplayExecutor::replay_redo_in_memtable_(ObTxRedoLog &redo)
                                            pos, encrypt_info))
              || redo.get_mutator_size() != pos) {
     TRANS_LOG(WARN, "[Replay Tx] deserialize fail or pos does not match data_len", K(ret));
+#ifdef OB_BUILD_TDE_SECURITY
+  } else if (OB_FAIL(encrypt_info.decrypt_table_key())) {
+    TRANS_LOG(WARN, "[Replay Tx] failed to decrypt table key", K(ret));
+#endif
   } else {
     meta_flag = mmi_ptr_->get_meta().get_flags();
     ObEncryptRowBuf row_buf;
@@ -557,8 +563,6 @@ int ObTxReplayExecutor::replay_redo_in_memtable_(ObTxRedoLog &redo)
         }
       } else if (FALSE_IT(row_head = mmi_ptr_->get_row_head())) {
         // do nothing
-      } else if (OB_NOT_NULL(ctx_) && OB_FAIL(ctx_->merge_tablet_modify_record(row_head.tablet_id_))) {
-        TRANS_LOG(WARN, "record tablet_id in redo failed", K(ret), K(row_head));
       } else if (OB_FAIL(replay_one_row_in_memtable_(row_head, mmi_ptr_))) {
         if (OB_MINOR_FREEZE_NOT_ALLOW == ret) {
           if (TC_REACH_TIME_INTERVAL(1000 * 1000)) {
@@ -604,7 +608,7 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
   ObTabletHandle tablet_handle;
 
   if (OB_FAIL(ls_->replay_get_tablet(row_head.tablet_id_, log_ts_ns_, tablet_handle))) {
-    if (OB_TABLET_NOT_EXIST == ret) {
+    if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
       ctx_->force_no_need_replay_checksum();
       ret = OB_SUCCESS;
       TRANS_LOG(WARN, "[Replay Tx] tablet gc, skip this log entry", K(ret), K(row_head.tablet_id_),
@@ -616,6 +620,23 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
       TRANS_LOG(INFO, "[Replay Tx] get tablet failed, retry this log entry", K(ret), K(row_head.tablet_id_),
                 KP(ls_), K(log_ts_ns_), K(tx_part_log_no_), K(ctx_));
       ret = OB_EAGAIN;
+    }
+  } else if (OB_FAIL(logservice::ObTabletReplayExecutor::replay_check_restore_status(tablet_handle, false/*update_tx_data*/))) {
+    if (OB_NO_NEED_UPDATE == ret) {
+      ctx_->check_no_need_replay_checksum(log_ts_ns_);
+      ret = OB_SUCCESS;
+      if (REACH_TIME_INTERVAL(1000 * 1000)) {
+        TRANS_LOG(INFO, "[Replay Tx] Not need replay, skip this log entry", K(row_head.tablet_id_),
+                  K(log_ts_ns_), K(tx_part_log_no_));
+      }
+    } else if (OB_EAGAIN == ret) {
+      if (REACH_TIME_INTERVAL(1000 * 1000)) {
+        TRANS_LOG(INFO, "[Replay Tx] tablet not ready, retry this log entry", K(ret), K(row_head.tablet_id_),
+                  K(log_ts_ns_), K(tx_part_log_no_));
+      }
+    } else {
+      TRANS_LOG(WARN, "[Replay Tx] replay check restore status error", K(ret), K(row_head.tablet_id_),
+                K(log_ts_ns_), K(tx_part_log_no_));
     }
   } else if (OB_FAIL(get_compat_mode_(row_head.tablet_id_, mode))) {
     TRANS_LOG(WARN, "[Replay Tx] get compat mode error", K(ret), K(mode));

@@ -29,8 +29,6 @@ namespace share
 // Initial round id for new round.
 const int64_t OB_START_LOG_ARCHIVE_ROUND_ID = 0;
 
-// TODO: replace to real scn type later.
-
 // archive state machine
 struct ObArchiveRoundState
 {
@@ -872,6 +870,8 @@ struct ObLSDestRoundSummary
   int64_t get_piece_idx(const int64_t piece_id) const;
   int64_t min_piece_id() const;
   int64_t max_piece_id() const;
+  // Return true if ls is deleted and the piece_id is the biggest piece id.
+  int check_is_last_piece_for_deleted_ls(const int64_t piece_id, bool &last_piece) const;
 
   TO_STRING_KV(K_(tenant_id), K_(dest_id), K_(round_id), K_(ls_id), K_(is_deleted), K_(state),
     K_(start_scn), K_(checkpoint_scn), K_(piece_list));

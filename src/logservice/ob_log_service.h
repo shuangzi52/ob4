@@ -25,7 +25,11 @@
 #include "rcservice/ob_role_change_service.h"
 #include "restoreservice/ob_log_restore_service.h"     // ObLogRestoreService
 #include "replayservice/ob_log_replay_service.h"
+#ifndef OB_BUILD_ARBITRATION
 #include "ob_net_keepalive_adapter.h"
+#else
+#include "logservice/ob_arbitration_service.h"
+#endif
 #include "ob_reporter_adapter.h"
 #include "ob_ls_adapter.h"
 #include "ob_location_adapter.h"
@@ -143,7 +147,17 @@ public:
 
   int update_replayable_point(const share::SCN &replayable_point);
   int get_replayable_point(share::SCN &replayable_point);
+
+  // @brief get palf disk usage
+  // @param [out] used_size_byte
+  // @param [out] total_size_byte, if in shrinking status, total_size_byte is the value after shrinking.
+  // NB: total_size_byte may be smaller than used_size_byte.
   int get_palf_disk_usage(int64_t &used_size_byte, int64_t &total_size_byte);
+
+  // @brief get palf disk usage
+  // @param [out] used_size_byte
+  // @param [out] total_size_byte, if in shrinking status, total_size_byte is the value before shrinking.
+  int get_palf_stable_disk_usage(int64_t &used_size_byte, int64_t &total_size_byte);
   // why we need update 'log_disk_size_' and 'log_disk_util_threshold' separately.
   //
   // 'log_disk_size' is a member of unit config.
@@ -190,6 +204,9 @@ public:
   int diagnose_role_change(RCDiagnoseInfo &diagnose_info);
   int diagnose_replay(const share::ObLSID &id, ReplayDiagnoseInfo &diagnose_info);
   int diagnose_apply(const share::ObLSID &id, ApplyDiagnoseInfo &diagnose_info);
+#ifdef OB_BUILD_ARBITRATION
+  int diagnose_arb_srv(const share::ObLSID &id, LogArbSrvDiagnoseInfo &diagnose_info);
+#endif
   int get_io_start_time(int64_t &last_working_time);
   int check_disk_space_enough(bool &is_disk_enough);
 
@@ -199,6 +216,9 @@ public:
   cdc::ObCdcService *get_cdc_service() { return &cdc_service_; }
   ObLogRestoreService *get_log_restore_service() { return &restore_service_; }
   ObLogReplayService *get_log_replay_service()  { return &replay_service_; }
+#ifdef OB_BUILD_ARBITRATION
+  ObArbitrationService *get_arbitration_service() { return &arb_service_; }
+#endif
   obrpc::ObLogServiceRpcProxy *get_rpc_proxy() { return &rpc_proxy_; }
   ObLogFlashbackService *get_flashback_service() { return &flashback_service_; }
 private:
@@ -225,6 +245,9 @@ private:
   obrpc::ObLogServiceRpcProxy rpc_proxy_;
   ObLogReporterAdapter reporter_;
   cdc::ObCdcService cdc_service_;
+#ifdef OB_BUILD_ARBITRATION
+  ObArbitrationService arb_service_;
+#endif
   ObLogRestoreService restore_service_;
   ObLogFlashbackService flashback_service_;
   ObLogMonitor monitor_;

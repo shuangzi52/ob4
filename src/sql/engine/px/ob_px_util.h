@@ -43,6 +43,7 @@ public:
   virtual int on_root_data_channel_setup() = 0;
 };
 
+
 struct ObExprExtraSerializeInfo
 {
   OB_UNIS_VERSION(1);
@@ -201,7 +202,8 @@ private:
                                        int64_t base_table_location_key,
                                        ObDfo &dfo,
                                        common::ObIArray<const ObTableScanSpec *> &scan_ops,
-                                       const ObTableModifySpec* dml_op);
+                                       const ObTableModifySpec* dml_op,
+                                       ObDASTableLoc *dml_loc);
   /**
    * Add the partition information (table_loc) involved in the
    * current phy_op to the corresponding SQC access location
@@ -570,6 +572,73 @@ public:
   static bool is_in_blacklist(const common::ObAddr &addr, int64_t server_start_time);
 };
 
+class ObPxErrorUtil
+{
+public:
+  static inline void update_qc_error_code(int &current_error_code,
+                                           const int new_error_code,
+                                           const ObPxUserErrorMsg &from)
+  {
+    int ret = OB_SUCCESS;
+    // **replace** error code & error msg
+    if (new_error_code != ObPxTask::TASK_DEFAULT_RET_VALUE) {
+      if ((OB_SUCCESS == current_error_code ||
+           OB_ERR_SIGNALED_IN_PARALLEL_QUERY_SERVER == current_error_code ||
+           OB_GOT_SIGNAL_ABORTING == current_error_code) &&
+           OB_SUCCESS != new_error_code) {
+        current_error_code = new_error_code;
+        FORWARD_USER_ERROR(new_error_code, from.msg_);
+      }
+    }
+    // **append** warning msg
+    for (int i = 0; i < from.warnings_.count(); ++i) {
+      const common::ObWarningBuffer::WarningItem &warning_item = from.warnings_.at(i);
+      if (ObLogger::USER_WARN == warning_item.log_level_) {
+        FORWARD_USER_WARN(warning_item.code_, warning_item.msg_);
+      } else if (ObLogger::USER_NOTE == warning_item.log_level_) {
+        FORWARD_USER_NOTE(warning_item.code_, warning_item.msg_);
+      }
+    }
+  }
+
+  static inline void update_sqc_error_code(int &current_error_code,
+                                           const int new_error_code,
+                                           const ObPxUserErrorMsg &from,
+                                           ObPxUserErrorMsg &to)
+  {
+    int ret = OB_SUCCESS;
+    // **replace** error code & error msg
+    if (new_error_code != ObPxTask::TASK_DEFAULT_RET_VALUE) {
+      if ((OB_SUCCESS == current_error_code) ||
+          ((OB_ERR_SIGNALED_IN_PARALLEL_QUERY_SERVER == current_error_code ||
+            OB_GOT_SIGNAL_ABORTING == current_error_code) &&
+           OB_SUCCESS != new_error_code)) {
+        current_error_code = new_error_code;
+        (void)snprintf(to.msg_, common::OB_MAX_ERROR_MSG_LEN, "%s", from.msg_);
+      }
+    }
+    // **append** warning msg
+    for (int i = 0; i < from.warnings_.count(); ++i) {
+      if (OB_FAIL(to.warnings_.push_back(from.warnings_.at(i)))) {
+        SQL_LOG(WARN, "Failed to add warning. ignore error & continue", K(ret));
+      }
+    }
+  }
+
+  //update the error code if it is OB_HASH_NOT_EXIST or OB_ERR_SIGNALED_IN_PARALLEL_QUERY_SERVER
+  static inline void update_error_code(int &current_error_code, const int new_error_code)
+  {
+    if (new_error_code != ObPxTask::TASK_DEFAULT_RET_VALUE) {
+      if ((OB_SUCCESS == current_error_code) ||
+          ((OB_ERR_SIGNALED_IN_PARALLEL_QUERY_SERVER == current_error_code ||
+            OB_GOT_SIGNAL_ABORTING == current_error_code) &&
+           OB_SUCCESS != new_error_code)) {
+        current_error_code = new_error_code;
+      }
+    }
+  }
+};
+
 template<class T>
 static int get_location_addrs(const T &locations,
                               ObIArray<ObAddr> &addrs)
@@ -596,6 +665,14 @@ static int get_location_addrs(const T &locations,
   (void)addr_set.destroy();
   return ret;
 }
+
+class LowestCommonAncestorFinder
+{
+public:
+  static int find_op_common_ancestor(
+      const ObOpSpec *left, const ObOpSpec *right, const ObOpSpec *&ancestor);
+  static int get_op_dfo(const ObOpSpec *op, ObDfo *root_dfo, ObDfo *&op_dfo);
+};
 
 }
 }

@@ -424,10 +424,14 @@ public:
   void set_id(int64_t id) { id_ = id; }
   AtomicOperator &get_op() { return op_; }
   void set_running() { running_ = true; }
-  int fill_comment(char *buf,const int64_t size) const {
+  virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param,
+      ObIAllocator &allocator) const override
+  {
     int ret = OB_SUCCESS;
-    if (OB_ISNULL(buf) || size <0) {
-      COMMON_LOG(INFO,"buf is NULL",K(ret),K(size));
+    if (!is_inited_) {
+      ret = OB_NOT_INIT;
+    } else if (OB_FAIL(ADD_DAG_WARN_INFO_PARAM(out_param, allocator, get_type(), 1, 1, "table_id", 10))) {
+      COMMON_LOG(WARN, "fail to add dag warning info param", K(ret));
     }
     return ret;
   }
@@ -440,6 +444,7 @@ public:
   { return lib::Worker::CompatMode::MYSQL; }
   virtual uint64_t get_consumer_group_id() const override
   { return consumer_group_id_; }
+  virtual bool is_ha_dag() const override { return false; }
   VIRTUAL_TO_STRING_KV(K_(is_inited), K_(type), K_(id), K(task_list_.get_size()));
 protected:
   int64_t id_;
@@ -479,7 +484,7 @@ private:
 class TestHALowDag : public TestDag
 {
 public:
-  TestHALowDag() : TestDag(ObDagType::DAG_TYPE_BACKUP) {}
+  TestHALowDag() : TestDag(ObDagType::DAG_TYPE_BACKUP_PREPARE) {}
 private:
   DISALLOW_COPY_AND_ASSIGN(TestHALowDag);
 };
@@ -800,6 +805,7 @@ public:
   TestDagScheduler()
     : tenant_id_(500),
       scheduler_(nullptr),
+      dag_history_mgr_(nullptr),
       tenant_base_(500),
       allocator_("DagScheduler")
   { }
@@ -809,18 +815,29 @@ public:
     scheduler_ = OB_NEW(ObTenantDagScheduler, ObModIds::TEST);
     tenant_base_.set(scheduler_);
 
+    dag_history_mgr_ = OB_NEW(ObDagWarningHistoryManager, ObModIds::TEST);
+    tenant_base_.set(dag_history_mgr_);
+
     ObTenantEnv::set_tenant(&tenant_base_);
     ASSERT_EQ(OB_SUCCESS, tenant_base_.init());
+
+    ObMallocAllocator *ma = ObMallocAllocator::get_instance();
+    ASSERT_EQ(OB_SUCCESS, ma->create_and_add_tenant_allocator(tenant_id_));
+    ASSERT_EQ(OB_SUCCESS, ma->set_tenant_limit(tenant_id_, 1LL << 30));
   }
   void TearDown()
   {
     scheduler_->destroy();
+    scheduler_ = nullptr;
+    dag_history_mgr_->~ObDagWarningHistoryManager();
+    dag_history_mgr_ = nullptr;
     tenant_base_.destroy();
     ObTenantEnv::set_tenant(nullptr);
   }
 private:
   const uint64_t tenant_id_;
   ObTenantDagScheduler *scheduler_;
+  ObDagWarningHistoryManager *dag_history_mgr_;
   ObTenantBase tenant_base_;
   ObArenaAllocator allocator_;
   DISALLOW_COPY_AND_ASSIGN(TestDagScheduler);
@@ -1495,6 +1512,63 @@ TEST_F(TestDagScheduler, test_emergency_task)
 
   EXPECT_EQ(3, op.value());
 }
+
+class TestCompMidCancelDag : public compaction::ObTabletMergeDag
+{
+public:
+  TestCompMidCancelDag()
+    : compaction::ObTabletMergeDag(ObDagType::DAG_TYPE_MERGE_EXECUTE){}
+  virtual const share::ObLSID & get_ls_id() const override { return ls_id_; }
+  virtual lib::Worker::CompatMode get_compat_mode() const override
+  { return lib::Worker::CompatMode::MYSQL; }
+private:
+  DISALLOW_COPY_AND_ASSIGN(TestCompMidCancelDag);
+};
+
+TEST_F(TestDagScheduler, test_check_ls_compaction_dag_exist_with_cancel)
+{
+  ObTenantDagScheduler *scheduler = MTL(ObTenantDagScheduler*);
+  ASSERT_TRUE(nullptr != scheduler);
+  ASSERT_EQ(OB_SUCCESS, scheduler->init(MTL_ID(), time_slice, 64));
+  EXPECT_EQ(OB_SUCCESS, scheduler->set_thread_score(ObDagPrio::DAG_PRIO_COMPACTION_MID, 1));
+  EXPECT_EQ(1, scheduler->up_limits_[ObDagPrio::DAG_PRIO_COMPACTION_MID]);
+
+  LoopWaitTask *wait_task = nullptr;
+  const int64_t dag_cnt = 6;
+  // add 6 dag at prio = DAG_PRIO_COMPACTION_MID
+  ObLSID ls_ids[2] = {ObLSID(1), ObLSID(2)};
+  bool finish_flag[2] = {false, false};
+  for (int64_t i = 0; i < dag_cnt; ++i) {
+    const int64_t idx = i % 2;
+    TestCompMidCancelDag *dag = NULL;
+    EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag));
+    dag->ls_id_ = ls_ids[idx];
+    dag->tablet_id_ = ObTabletID(i);
+    EXPECT_EQ(OB_SUCCESS, alloc_task(*dag, wait_task));
+    EXPECT_EQ(OB_SUCCESS, wait_task->init(1, 2, finish_flag[idx]));
+    EXPECT_EQ(OB_SUCCESS, dag->add_task(*wait_task));
+    EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag));
+  }
+  EXPECT_EQ(dag_cnt, scheduler->dag_cnts_[ObDagType::DAG_TYPE_MERGE_EXECUTE]);
+  CHECK_EQ_UTIL_TIMEOUT(1, scheduler->running_task_cnts_[ObDagPrio::DAG_PRIO_COMPACTION_MID]);
+
+  // cancel two waiting dag of ls_ids[0]
+  bool exist = false;
+  EXPECT_EQ(OB_SUCCESS, scheduler->check_ls_compaction_dag_exist_with_cancel(ls_ids[0], exist));
+  EXPECT_EQ(exist, true);
+  EXPECT_EQ(4, scheduler->dag_cnts_[ObDagType::DAG_TYPE_MERGE_EXECUTE]);
+
+  EXPECT_EQ(OB_SUCCESS, scheduler->check_ls_compaction_dag_exist_with_cancel(ls_ids[1], exist));
+  EXPECT_EQ(exist, false);
+  EXPECT_EQ(1, scheduler->dag_cnts_[ObDagType::DAG_TYPE_MERGE_EXECUTE]);
+
+  finish_flag[0] = true;
+  wait_scheduler();
+
+  EXPECT_EQ(OB_SUCCESS, scheduler->check_ls_compaction_dag_exist_with_cancel(ls_ids[0], exist));
+  EXPECT_EQ(exist, false);
+}
+
 /*
 TEST_F(TestDagScheduler, test_large_thread_cnt)
 {

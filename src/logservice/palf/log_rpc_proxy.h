@@ -41,6 +41,9 @@ public:
                                   LogFetchReq,
                                   OB_LOG_FETCH_REQ);
   DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
+                                  LogBatchFetchResp,
+                                  OB_LOG_BATCH_FETCH_RESP);
+  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
                                   LogPrepareReq,
                                   OB_LOG_PREPARE_REQ);
   DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
@@ -102,6 +105,13 @@ public:
                                        LogGetStatReq,
                                        LogGetStatResp,
                                        OB_LOG_GET_STAT);
+#ifdef OB_BUILD_ARBITRATION
+  DECLARE_SYNC_RPC_PROXY_POST_FUNCTION(PR5,
+                                       get_remote_arb_member_info,
+                                       LogGetArbMemberInfoReq,
+                                       LogGetArbMemberInfoResp,
+                                       OB_LOG_GET_ARB_MEMBER_INFO);
+#endif
 };
 } // end namespace obrpc
 } // end namespace oceanbase

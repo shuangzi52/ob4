@@ -109,7 +109,7 @@ int ObArchiveService::init(logservice::ObLogService *log_service,
 int ObArchiveService::start()
 {
   int ret = OB_SUCCESS;
-  ObThreadPool::set_run_wrapper(MTL_CTX(), lib::ThreadCGroup::BACK_CGROUP);
+  ObThreadPool::set_run_wrapper(MTL_CTX());
   if (OB_UNLIKELY(! inited_)) {
     ret = OB_NOT_INIT;
     ARCHIVE_LOG(ERROR, "archive service not init", K(ret));
@@ -169,6 +169,7 @@ void ObArchiveService::destroy()
   ls_meta_recorder_.destroy();
   timer_.destroy();
   allocator_.destroy();
+  ObThreadPool::destroy();
   log_service_ = NULL;
   ls_svr_ = NULL;
 }
@@ -195,12 +196,7 @@ int ObArchiveService::get_ls_archive_speed(const ObLSID &id,
   return persist_mgr_.get_ls_archive_speed(id, speed, force_wait, ignore);
 }
 
-void ObArchiveService::process_start_archive()
-{
-  cond_.signal();
-}
-
-void ObArchiveService::process_stop_archive()
+void ObArchiveService::wakeup()
 {
   cond_.signal();
 }

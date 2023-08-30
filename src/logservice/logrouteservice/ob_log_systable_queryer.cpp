@@ -17,6 +17,7 @@
 #include "lib/mysqlclient/ob_mysql_result.h" // ObMySQLResult
 #include "lib/string/ob_sql_string.h"      // ObSqlString
 #include "share/inner_table/ob_inner_table_schema_constants.h" // OB_***_TNAME
+#include "lib/utility/ob_tracepoint.h"
 
 using namespace oceanbase::share;
 namespace oceanbase
@@ -27,7 +28,8 @@ ObLogSysTableQueryer::ObLogSysTableQueryer() :
     is_inited_(false),
     is_across_cluster_(false),
     cluster_id_(OB_INVALID_CLUSTER_ID),
-    sql_proxy_(NULL)
+    sql_proxy_(NULL),
+    err_handler_(NULL)
 {
 
 }
@@ -39,7 +41,8 @@ ObLogSysTableQueryer::~ObLogSysTableQueryer()
 
 int ObLogSysTableQueryer::init(const int64_t cluster_id,
     const bool is_across_cluster,
-    common::ObISQLClient &sql_proxy)
+    common::ObISQLClient &sql_proxy,
+    logfetcher::IObLogErrHandler *err_handler)
 {
   int ret = OB_SUCCESS;
 
@@ -51,6 +54,7 @@ int ObLogSysTableQueryer::init(const int64_t cluster_id,
     cluster_id_ = cluster_id;
     sql_proxy_ = &sql_proxy;
     is_inited_ = true;
+    err_handler_ = err_handler;
   }
 
   return ret;
@@ -62,6 +66,7 @@ void ObLogSysTableQueryer::destroy()
   is_across_cluster_ = false;
   cluster_id_ = OB_INVALID_CLUSTER_ID;
   sql_proxy_ = NULL;
+  err_handler_ = NULL;
 }
 
 int ObLogSysTableQueryer::get_ls_log_info(
@@ -95,7 +100,7 @@ int ObLogSysTableQueryer::get_ls_log_info(
           tenant_id, ls_id.id()))) {
         LOG_WARN("assign sql string failed", KR(ret), K(tenant_id),
                 K(ls_id));
-      // Use OB_SYS_TENANT_ID to query GV$OB_LOG_STAT
+      // Use OB_SYS_TENANT_ID to query the GV$OB_LOG_STAT
       } else if (OB_FAIL(do_query_(OB_SYS_TENANT_ID, sql, result))) {
         LOG_WARN("do_query_ failed", KR(ret), K(cluster_id_), K(tenant_id), "sql", sql.ptr());
       } else if (OB_ISNULL(result.get_result())) {
@@ -113,6 +118,46 @@ int ObLogSysTableQueryer::get_ls_log_info(
 
   return ret;
 }
+
+////////////////////////////////////// QueryAllUnitsInfo /////////////////////////////////
+int ObLogSysTableQueryer::get_all_units_info(
+    const uint64_t tenant_id,
+    ObUnitsRecordInfo &units_record_info)
+{
+  int ret = OB_SUCCESS;
+  const char *select_fields = "SVR_IP, SVR_PORT, ZONE, ZONE_TYPE, REGION";
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObLogSysTableQueryer not init", KR(ret));
+  } else if (OB_FAIL(units_record_info.init(cluster_id_))) {
+    LOG_WARN("fail to init units_record_info", KR(ret), K(cluster_id_));
+  } else {
+    ObSqlString sql;
+    int64_t record_count;
+
+    SMART_VAR(ObISQLClient::ReadResult, result) {
+      if (OB_FAIL(sql.assign_fmt(
+          "SELECT %s FROM %s"
+          " WHERE tenant_id = %lu",
+          select_fields, OB_GV_OB_UNITS_TNAME, tenant_id))) {
+        LOG_WARN("assign sql string failed", KR(ret), K(cluster_id_), K(tenant_id));
+      // Use OB_SYS_TENANT_ID to query the GV$OB_UNITS
+      } else if (OB_FAIL(do_query_(OB_SYS_TENANT_ID, sql, result))) {
+        LOG_WARN("do_query_ failed", KR(ret), K(cluster_id_), K(tenant_id), "sql", sql.ptr());
+      } else if (OB_ISNULL(result.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get mysql result failed", KR(ret));
+      } else if (OB_FAIL(get_records_template_(*result.get_result(), units_record_info,
+          "ObUnitsRecordInfo", record_count))) {
+        LOG_WARN("construct units record info failed", KR(ret), K(units_record_info));
+      }
+    }
+  }
+
+  return ret;
+}
+
 
 ////////////////////////////////////// QueryAllServerInfo /////////////////////////////////
 int ObLogSysTableQueryer::get_all_server_info(
@@ -232,11 +277,13 @@ int ObLogSysTableQueryer::get_all_zone_type_info(
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_FETCH_LOG_SYS_QUERY_FAILED);
 int ObLogSysTableQueryer::do_query_(const uint64_t tenant_id,
     ObSqlString &sql,
     ObISQLClient::ReadResult &result)
 {
   int ret = OB_SUCCESS;
+  ObTaskId trace_id(*ObCurTraceId::get_trace_id());
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -252,6 +299,15 @@ int ObLogSysTableQueryer::do_query_(const uint64_t tenant_id,
     if (OB_FAIL(sql_proxy_->read(result, tenant_id, sql.ptr()))) {
       LOG_WARN("execute sql failed", KR(ret), K(tenant_id), "sql", sql.ptr());
     }
+  }
+  if (OB_SUCC(ret) && ERRSIM_FETCH_LOG_SYS_QUERY_FAILED) {
+    ret = ERRSIM_FETCH_LOG_SYS_QUERY_FAILED;
+    LOG_WARN("errsim do query error", K(ERRSIM_FETCH_LOG_SYS_QUERY_FAILED));
+  }
+  if (OB_NOT_NULL(err_handler_) && (-ER_CONNECT_FAILED == ret || -ER_ACCESS_DENIED_ERROR == ret
+    || OB_SERVER_IS_INIT == ret || OB_TENANT_NOT_EXIST == ret || OB_TENANT_NOT_IN_SERVER == ret)) {
+    err_handler_->handle_error(share::SYS_LS, logfetcher::IObLogErrHandler::ErrType::FETCH_LOG, trace_id,
+      palf::LSN(palf::LOG_INVALID_LSN_VAL)/*no need to pass lsn*/, ret, "%s");
   }
 
   return ret;
@@ -287,6 +343,49 @@ int ObLogSysTableQueryer::get_records_template_(common::sqlclient::ObMySQLResult
 
     if (OB_ITER_END == ret) {
       ret = OB_SUCCESS;
+    }
+  }
+
+  return ret;
+}
+
+////////////////////////////////////// QueryAllUnitsInfo - parse /////////////////////////////////
+int ObLogSysTableQueryer::parse_record_from_row_(common::sqlclient::ObMySQLResult &res,
+    ObUnitsRecordInfo &units_record_info)
+{
+  int ret = OB_SUCCESS;
+  ObUnitsRecord units_record;
+  ObString ip;
+  int64_t port = 0;
+  common::ObAddr server;
+  ObString zone;
+  ObString region;
+  ObString zone_type_str;
+
+  (void)GET_COL_IGNORE_NULL(res.get_varchar, "SVR_IP", ip);
+  (void)GET_COL_IGNORE_NULL(res.get_int, "SVR_PORT", port);
+  (void)GET_COL_IGNORE_NULL(res.get_varchar, "ZONE", zone);
+  (void)GET_COL_IGNORE_NULL(res.get_varchar, "ZONE_TYPE", zone_type_str);
+  (void)GET_COL_IGNORE_NULL(res.get_varchar, "REGION", region);
+
+  if (false == server.set_ip_addr(ip, static_cast<uint32_t>(port))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid server address", K(ip), K(port));
+  } else {
+    common::ObZoneType zone_type;
+    if (nullptr == zone_type_str.ptr()) {
+      // After the ObServer of the primary database crashes and restarts, the Zone Type may become an invalid value.
+      // It can be ignored to avoid errors.
+    } else {
+      zone_type = str_to_zone_type(zone_type_str.ptr());
+    }
+
+    if (OB_FAIL(units_record.init(server, zone, zone_type, region))) {
+      LOG_ERROR("units_record init failed", KR(ret), K(server), K(zone), K(zone_type), K(region));
+    } else if (OB_FAIL(units_record_info.add(units_record))) {
+      LOG_WARN("units_record_info add failed", KR(ret), K(units_record));
+    } else {
+      LOG_TRACE("units_record_info add success", K(units_record));
     }
   }
 

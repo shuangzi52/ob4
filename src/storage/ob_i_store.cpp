@@ -76,6 +76,7 @@ void ObStoreCtx::reset()
   mvcc_acc_ctx_.reset();
   tablet_stat_.reset();
   replay_log_scn_.set_max();
+  is_read_store_ctx_ = false;
 }
 
 int ObStoreCtx::init_for_read(const ObLSID &ls_id,
@@ -107,7 +108,7 @@ int ObStoreCtx::init_for_read(const ObLSHandle &ls_handle,
     STORAGE_LOG(WARN, "get invalid arguments", K(ret), K(ls_handle), K(timeout), K(tx_lock_timeout), K(snapshot_version));
   } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
-    STORAGE_LOG(WARN, "ls is null", K(ret), K(ls_id));
+    STORAGE_LOG(WARN, "ls is null", K(ret), K(ls_id_));
   } else if (OB_FAIL(ls->get_tx_table_guard(tx_table_guard))) {
     STORAGE_LOG(WARN, "get_tx_table_guard from log stream fail.", K(ret), K(*ls));
   } else {
@@ -133,10 +134,11 @@ void ObStoreRowLockState::reset()
   is_locked_ = false;
   trans_version_ = SCN::min_scn();
   lock_trans_id_.reset();
-  lock_data_sequence_ = 0;
+  lock_data_sequence_.reset();
   lock_dml_flag_ = blocksstable::ObDmlFlag::DF_NOT_EXIST;
   is_delayed_cleanout_ = false;
   mvcc_row_ = NULL;
+  trans_scn_ = SCN::max_scn();
 }
 
 OB_DEF_SERIALIZE(ObStoreRow)
@@ -321,7 +323,7 @@ int ObLockRowChecker::check_lock_row_valid(
 
 int ObLockRowChecker::check_lock_row_valid(
   const blocksstable::ObDatumRow &row,
-  const ObTableReadInfo &read_info)
+  const ObITableReadInfo &read_info)
 {
   int ret = OB_SUCCESS;
   int64_t rowkey_read_cnt = MIN(read_info.get_seq_read_column_count(), read_info.get_rowkey_count());
@@ -329,7 +331,7 @@ int ObLockRowChecker::check_lock_row_valid(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(read_info), K(row));
   } else if (row.is_uncommitted_row()) {
-    const common::ObIArray<int32_t> &col_index = read_info.get_columns_index();
+    const ObColumnIndexArray &col_index = read_info.get_columns_index();
     for (int i = rowkey_read_cnt; i < row.get_column_count(); ++i) {
       if (col_index.at(i) < read_info.get_rowkey_count()) {
         // not checking rowkey col

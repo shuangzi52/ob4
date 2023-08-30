@@ -13,12 +13,17 @@
 #ifndef OCEANBASE_SHARE_OB_SHARE_UTIL_H_
 #define OCEANBASE_SHARE_OB_SHARE_UTIL_H_
 #include "share/ob_define.h"
+#include "share/scn.h"
 namespace oceanbase
 {
 namespace common
 {
 class ObTimeoutCtx;
 class ObISQLClient;
+}
+namespace storage
+{
+  class ObLS;
 }
 namespace share
 {
@@ -29,6 +34,7 @@ public:
   static int set_default_timeout_ctx(common::ObTimeoutCtx &ctx, const int64_t default_timeout);
   // priority to get timeout: ctx > worker > default_timeout
   static int get_abs_timeout(const int64_t default_timeout, int64_t &abs_timeout);
+  static int get_ctx_timeout(const int64_t default_timeout, int64_t &timeout);
   // data version must up to 4.1 with arbitration service
   // params[in]  tenant_id, which tenant to check
   // params[out] is_compatible, whether it is up to 4.1
@@ -59,6 +65,29 @@ public:
              common::ObISQLClient &client,
              const uint64_t tenant_id,
              uint64_t &data_version);
+
+  // parse GCONF.all_server_list
+  // @params[in]  excluded_server_list, servers which will not be included in the output
+  // @params[out] config_all_server_list, servers in (GCONF.all_server_list - excluded_server_list)
+  static int parse_all_server_list(
+    const ObArray<ObAddr> &excluded_server_list,
+    ObArray<ObAddr> &config_all_server_list);
+  // get ora_rowscn from one row
+  // @params[in]: tenant_id, the table owner
+  // @params[in]: sql, the sql should be "select ORA_ROWSCN from xxx", where count() is 1
+  // @params[out]: the ORA_ROWSCN
+  static int get_ora_rowscn(
+    common::ObISQLClient &client,
+    const uint64_t tenant_id,
+    const ObSqlString &sql,
+    SCN &ora_rowscn);
+  // wait the given ls's end_scn be larger than or equal to sys_ls_target_scn
+  // @params[in]: sys_ls_target_scn
+  // @params[in]: ls
+  static int wait_user_ls_sync_scn_locally(const share::SCN &sys_ls_target_scn, storage::ObLS &ls);
+
+  static bool is_tenant_enable_rebalance(const uint64_t tenant_id);
+  static bool is_tenant_enable_transfer(const uint64_t tenant_id);
 };
 }//end namespace share
 }//end namespace oceanbase

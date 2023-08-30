@@ -304,10 +304,9 @@ int ObLogSet::compute_sharding_info()
                                     get_child_list(),
                                     get_plan()->get_allocator(),
                                     dup_table_pos_,
-                                    strong_sharding_))) {
+                                    strong_sharding_,
+                                    inherit_sharding_index_))) {
       LOG_WARN("failed to compute basic sharding info", K(ret));
-    } else {
-      inherit_sharding_index_ = 0;
     }
   } else if (DistAlgo::DIST_PULL_TO_LOCAL == set_dist_algo_) {
     strong_sharding_ = get_plan()->get_optimizer_context().get_local_sharding();
@@ -429,7 +428,7 @@ int ObLogSet::get_re_est_cost_infos(const EstimateCostInfo &param,
     if (OB_ISNULL(child)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("set operator i-th child is null", K(ret), K(i));
-    } else if (cur_param.assign(param)) {
+    } else if (OB_FAIL(cur_param.assign(param))) {
       LOG_WARN("failed to assign param", K(ret));
     } else if (OB_FALSE_IT(cur_param.need_row_count_ = need_row_count)) {
     } else if (OB_FAIL(get_child(i)->re_est_cost(cur_param, cur_child_card, cur_child_cost))) {
@@ -724,7 +723,7 @@ int ObLogSet::print_outline_data(PlanText &plan_text)
   } else if (hint.get_dist_methods().empty() && hint.get_left_branch().empty()) {
     /*do nothing*/
   } else if (OB_FALSE_IT(hint.set_qb_name(qb_name))) {
-  } else if (hint.print_hint(plan_text)) {
+  } else if (OB_FAIL(hint.print_hint(plan_text))) {
     LOG_WARN("fail to print buffer", K(ret), K(buf), K(buf_len), K(pos));
   } else { /*do nothing*/ }
   return ret;

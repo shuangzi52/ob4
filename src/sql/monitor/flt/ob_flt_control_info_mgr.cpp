@@ -45,11 +45,12 @@ bool ObFLTResetSessOp::operator()(sql::ObSQLSessionMgr::Key key, ObSQLSessionInf
         }
       } else if (sess_info->is_coninfo_set_by_sess()) {
         // already has, do nothing
+        (void)sess_info->unlock_thread_data();
       } else {
         sess_info->set_send_control_info(false);
         sess_info->get_control_info().reset();
+        (void)sess_info->unlock_thread_data();
       }
-      (void)sess_info->unlock_thread_data();
       (void)sess_info->unlock_query();
     }
   }
@@ -268,7 +269,7 @@ int ObFLTControlInfoManager::set_control_info(sql::ObExecContext &ctx)
       if (OB_ISNULL(sql_proxy)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("sql_proxy is null", K(ret));
-      } else if (sql.assign_fmt("ALTER SYSTEM SET `_trace_control_info` = '%s'", trace_info.ptr())) {
+      } else if (OB_FAIL(sql.assign_fmt("ALTER SYSTEM SET `_trace_control_info` = '%s'", trace_info.ptr()))) {
         LOG_WARN("failed to set trace control info", K(ret));
       } else if (OB_FAIL(sql_proxy->write(tenant_id_, sql.ptr(), affected_rows))) {
         LOG_WARN("execute sql failed", K(ret), K(sql));
@@ -1054,6 +1055,45 @@ int ObFLTControlInfoManager::find_appropriate_con_info(sql::ObSQLSessionInfo &se
     sess.set_flt_control_info(con_info);
   }
   LOG_TRACE("control info manager get constrol info end", K(con_info), K(con));
+  return ret;
+}
+
+int ObFLTControlInfoManager::get_all_flt_config(common::ObIArray<ObFLTConfRec> &rec_list, ObIAllocator &alloc) {
+  int ret = OB_SUCCESS;
+  // teannt_level
+  ObFLTConfRec rec;
+  rec.tenant_id_ = tenant_id_;
+  rec.type_ = FLT_TENANT_TYPE;
+  rec.control_info_ = tenant_info_;
+  if (OB_FAIL(rec_list.push_back(rec))) {
+    LOG_WARN("failed to push back flt config rec", K(ret));
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < mod_infos_.count(); i++) {
+    ObFLTConfRec rec;
+    rec.tenant_id_ = tenant_id_;
+    rec.type_ = FLT_MOD_ACT_TYPE;
+    rec.control_info_ = mod_infos_.at(i).control_info_;
+    if (OB_FAIL(ob_write_string(alloc, mod_infos_.at(i).mod_name_, rec.mod_name_))) {
+      LOG_WARN("failed to write string", K(mod_infos_.at(i).mod_name_), K(ret));
+    } else if (OB_FAIL(ob_write_string(alloc, mod_infos_.at(i).act_name_, rec.act_name_))) {
+      LOG_WARN("failed to write string", K(mod_infos_.at(i).act_name_), K(ret));
+    } else if (OB_FAIL(rec_list.push_back(rec))) {
+      LOG_WARN("failed to push back flt config rec", K(ret));
+    }
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < identifier_infos_.count(); i++) {
+    ObFLTConfRec rec;
+    rec.tenant_id_ = tenant_id_;
+    rec.type_ = FLT_CLIENT_ID_TYPE;
+    rec.control_info_ = identifier_infos_.at(i).control_info_;
+    if (OB_FAIL(ob_write_string(alloc, identifier_infos_.at(i).identifier_name_, rec.identifier_name_))) {
+      LOG_WARN("failed to write string", K(mod_infos_.at(i).mod_name_), K(ret));
+    } else if (OB_FAIL(rec_list.push_back(rec))) {
+      LOG_WARN("failed to push back flt config rec", K(ret));
+    }
+  }
   return ret;
 }
 

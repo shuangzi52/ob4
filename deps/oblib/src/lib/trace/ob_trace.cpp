@@ -113,7 +113,7 @@ void flush_trace()
         span = next;
       }
     };
-    PRINT_WITH_TRACE_MODE(FLT, INFO, func());
+    func();
     trace.offset_ = trace.buffer_size_ / 2;
   }
 }
@@ -397,7 +397,9 @@ void ObTrace::end()
   #ifndef NDEBUG
   check_leak_span();
   #endif
-  reset();
+  if (trace_id_.is_inited()) {
+    reset();
+  }
 }
 
 ObSpanCtx* ObTrace::begin_span(uint32_t span_type, uint8_t level, bool is_follow)

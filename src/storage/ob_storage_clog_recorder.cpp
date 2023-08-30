@@ -217,9 +217,13 @@ int ObIStorageClogRecorder::replay_clog(
 {
   int ret = OB_SUCCESS;
   if (update_version <= ATOMIC_LOAD(&max_saved_version_)) {
-    LOG_INFO("skip clog with smaller version", K(update_version), K(max_saved_version_));
+    LOG_INFO("skip clog with smaller version", K(update_version), K(max_saved_version_), KPC(this));
   } else if (OB_FAIL(inner_replay_clog(update_version, scn, buf, size, pos))) {
-    LOG_WARN("fail to replay clog", K(ret), KPC(this));
+    if (OB_NO_NEED_UPDATE == ret) { // not update max_saved_version_
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to replay clog", K(ret), KPC(this));
+    }
   } else {
     ATOMIC_STORE(&max_saved_version_, update_version);
     LOG_DEBUG("success to replay clog", K(ret), KPC(this), K(max_saved_version_));
@@ -307,7 +311,15 @@ int ObIStorageClogRecorder::replay_get_tablet_handle(
   if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
     LOG_WARN("failed to get log stream", K(ret), K(ls_id));
   } else if (OB_FAIL(ls_handle.get_ls()->replay_get_tablet(tablet_id, scn, tablet_handle))) {
-    LOG_WARN("failed to get tablet", K(ret), K(ls_id), K(tablet_id), K(scn));
+    if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
+      LOG_INFO("clog is obsolete, should skip replay", K(ret), K(ls_id), K(tablet_id), K(scn));
+      ret = OB_SUCCESS;
+    } else if (OB_TIMEOUT == ret) {
+      ret = OB_EAGAIN;
+      LOG_INFO("retry get tablet for timeout error", K(ret), K(ls_id), K(tablet_id), K(scn));
+    } else {
+      LOG_WARN("failed to get tablet", K(ret), K(ls_id), K(tablet_id), K(scn));
+    }
   }
   return ret;
 }

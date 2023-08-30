@@ -58,7 +58,9 @@ public:
   virtual int get_access_mode(AccessMode &access_mode) const;
   virtual int get_mode_version(int64_t &mode_version) const;
   virtual int get_access_mode(int64_t &mode_version, AccessMode &access_mode) const;
-  virtual int get_ref_scn(int64_t &mode_version, share::SCN &ref_scn) const;
+  virtual int get_access_mode_ref_scn(int64_t &mode_version,
+                                      AccessMode &access_mode,
+                                      share::SCN &ref_scn) const;
   bool can_append() const;
   bool can_raw_write() const;
   bool can_receive_log() const;
@@ -93,7 +95,8 @@ public:
   TO_STRING_KV(K_(palf_id), K_(self), K_(applied_mode_meta), K_(accepted_mode_meta),
       K_(last_submit_mode_meta), "state", state2str_(state_), K_(new_proposal_id), K_(local_max_lsn),
       K_(local_max_log_pid), K_(max_majority_accepted_pid), K_(max_majority_lsn),
-      K_(max_majority_accepted_mode_meta), K_(follower_list), K_(ack_list), K_(majority_cnt));
+      K_(max_majority_accepted_mode_meta), K_(follower_list), K_(ack_list), K_(majority_cnt),
+      K_(last_submit_req_ts), K_(resend_mode_meta_list));
 
 private:
   void reset_status_();
@@ -147,6 +150,7 @@ private:
   // NB: protected by SpinLock
   // log_mode_meta has been submitted to I/O Worker
   LogModeMeta last_submit_mode_meta_;
+  // above LogModeMetas are protected by lock_ in PalfHandleImpl
   // =========access_mode changing state============
   // mode change state
   ModeChangeState state_;

@@ -322,7 +322,7 @@ public:
 //  const common::ObInterruptibleTaskID &get_interrupt_id() { return interrupt_id_;}
 //  void set_interrupt_id(const common::ObInterruptibleTaskID &int_id) { interrupt_id_ = int_id; }
 
-  void set_sql_ctx(ObSqlCtx *ctx) { sql_ctx_ = ctx; }
+  void set_sql_ctx(ObSqlCtx *ctx) { sql_ctx_ = ctx; das_ctx_.set_sql_ctx(ctx); }
   ObSqlCtx *get_sql_ctx() { return sql_ctx_; }
   const ObSqlCtx *get_sql_ctx() const { return sql_ctx_; }
   pl::ObPLContext *get_pl_stack_ctx() { return pl_stack_ctx_; }
@@ -427,9 +427,9 @@ public:
   PartitionIdCalcType get_partition_id_calc_type() { return calc_type_; }
   void set_fixed_id(ObObjectID fixed_id) { fixed_id_ = fixed_id; }
   ObObjectID get_fixed_id() { return fixed_id_; }
-  const ObIArray<ObPxTabletRange> &get_partition_ranges() const { return part_ranges_; }
-  int set_partition_ranges(const ObIArray<ObPxTabletRange> &part_ranges);
-  int add_partition_range(ObPxTabletRange &part_range);
+  const Ob2DArray<ObPxTabletRange> &get_partition_ranges() const { return part_ranges_; }
+  int set_partition_ranges(const Ob2DArray<ObPxTabletRange> &part_ranges,
+                           char *buf = NULL, int64_t max_size = 0);
   int fill_px_batch_info(
       ObBatchRescanParams &params,
       int64_t batch_id,
@@ -467,6 +467,9 @@ public:
   int get_errcode() const { return ATOMIC_LOAD(&errcode_); }
   hash::ObHashMap<uint64_t, void*> &get_dblink_snapshot_map() { return dblink_snapshot_map_; }
   ObExecFeedbackInfo &get_feedback_info() { return fb_info_; };
+  void set_cur_rownum(int64_t cur_rownum) { cur_row_num_ = cur_rownum; }
+  int64_t get_cur_rownum() { return cur_row_num_; }
+  bool use_temp_expr_ctx_cache() const { return use_temp_expr_ctx_cache_; }
 private:
   int build_temp_expr_ctx(const ObTempExpr &temp_expr, ObTempExprCtx *&temp_expr_ctx);
   int set_phy_op_ctx_ptr(uint64_t index, void *phy_op);
@@ -602,7 +605,7 @@ protected:
   ObObjectID fixed_id_;    // fixed part id or fixed subpart ids
 
   // sample result
-  ObSEArray<ObPxTabletRange, 1> part_ranges_;
+  Ob2DArray<ObPxTabletRange> part_ranges_;
   int64_t check_status_times_;
   ObIVirtualTableIteratorFactory *vt_ift_;
 
@@ -644,6 +647,8 @@ protected:
   hash::ObHashMap<uint64_t, void*> dblink_snapshot_map_;
   // for feedback
   ObExecFeedbackInfo fb_info_;
+  // for dml report user warning/error at specific row
+  int64_t cur_row_num_;
   //---------------
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExecContext);

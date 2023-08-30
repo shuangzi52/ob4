@@ -86,6 +86,28 @@ int PalfHandle::set_initial_member_list(const common::ObMemberList &member_list,
   return palf_handle_impl_->set_initial_member_list(member_list, paxos_replica_num, learner_list);
 }
 
+#ifdef OB_BUILD_ARBITRATION
+int PalfHandle::set_initial_member_list(const common::ObMemberList &member_list,
+                                        const common::ObMember &arb_member,
+                                        const int64_t paxos_replica_num,
+                                        const common::GlobalLearnerList &learner_list)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->set_initial_member_list(member_list, arb_member, paxos_replica_num, learner_list);
+}
+
+int PalfHandle::get_remote_arb_member_info(ArbMemberInfo &arb_member_info) const
+{
+  CHECK_VALID;
+  return palf_handle_impl_->get_remote_arb_member_info(arb_member_info);
+}
+
+int PalfHandle::get_arbitration_member(common::ObMember &arb_member) const
+{
+  CHECK_VALID;
+  return palf_handle_impl_->get_arbitration_member(arb_member);
+}
+#endif
 
 int PalfHandle::set_region(const common::ObRegion &region)
 {
@@ -264,6 +286,12 @@ int PalfHandle::get_max_scn(SCN &scn) const
   return ret;
 }
 
+int PalfHandle::get_config_version(LogConfigVersion &config_version) const
+{
+  CHECK_VALID;
+  return palf_handle_impl_->get_config_version(config_version);
+}
+
 int PalfHandle::get_role(common::ObRole &role, int64_t &proposal_id, bool &is_pending_state) const
 {
   CHECK_VALID;
@@ -332,10 +360,11 @@ int PalfHandle::get_ack_info_array(LogMemberAckInfoList &ack_info_array,
 
 int PalfHandle::add_member(const common::ObMember &member,
                            const int64_t new_replica_num,
+                           const LogConfigVersion &config_version,
                            const int64_t timeout_us)
 {
   CHECK_VALID;
-  return palf_handle_impl_->add_member(member, new_replica_num, timeout_us);
+  return palf_handle_impl_->add_member(member, new_replica_num, config_version, timeout_us);
 }
 
 int PalfHandle::remove_member(const common::ObMember &member,
@@ -348,10 +377,11 @@ int PalfHandle::remove_member(const common::ObMember &member,
 
 int PalfHandle::replace_member(const common::ObMember &added_member,
                                const common::ObMember &removed_member,
+                               const LogConfigVersion &config_version,
                                const int64_t timeout_us)
 {
   CHECK_VALID;
-  return palf_handle_impl_->replace_member(added_member, removed_member, timeout_us);
+  return palf_handle_impl_->replace_member(added_member, removed_member, config_version, timeout_us);
 }
 
 int PalfHandle::add_learner(const common::ObMember &added_learner, const int64_t timeout_us)
@@ -368,10 +398,11 @@ int PalfHandle::remove_learner(const common::ObMember &removed_learner, const in
 
 int PalfHandle::switch_learner_to_acceptor(const common::ObMember &learner,
                                            const int64_t new_replica_num,
+                                           const LogConfigVersion &config_version,
                                            const int64_t timeout_us)
 {
   CHECK_VALID;
-  return palf_handle_impl_->switch_learner_to_acceptor(learner, new_replica_num, timeout_us);
+  return palf_handle_impl_->switch_learner_to_acceptor(learner, new_replica_num, config_version, timeout_us);
 }
 
 int PalfHandle::switch_acceptor_to_learner(const common::ObMember &member,
@@ -382,6 +413,52 @@ int PalfHandle::switch_acceptor_to_learner(const common::ObMember &member,
   return palf_handle_impl_->switch_acceptor_to_learner(member, new_replica_num, timeout_us);
 }
 
+int PalfHandle::replace_learners(const common::ObMemberList &added_learners,
+                                 const common::ObMemberList &removed_learners,
+                                 const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->replace_learners(added_learners, removed_learners, timeout_us);
+}
+
+int PalfHandle::replace_member_with_learner(const common::ObMember &added_member,
+                                            const common::ObMember &removed_member,
+                                            const LogConfigVersion &config_version,
+                                            const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->replace_member_with_learner(added_member, removed_member, config_version, timeout_us);
+}
+
+#ifdef OB_BUILD_ARBITRATION
+int PalfHandle::add_arb_member(const common::ObMember &member,
+                               const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->add_arb_member(member, timeout_us);
+}
+
+int PalfHandle::remove_arb_member(const common::ObMember &member,
+                                  const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->remove_arb_member(member, timeout_us);
+}
+
+int PalfHandle::degrade_acceptor_to_learner(const LogMemberAckInfoList &degrade_servers,
+                                            const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->degrade_acceptor_to_learner(degrade_servers, timeout_us);
+}
+
+int PalfHandle::upgrade_learner_to_acceptor(const LogMemberAckInfoList &upgrade_servers,
+                                            const int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->upgrade_learner_to_acceptor(upgrade_servers, timeout_us);
+}
+#endif
 
 int PalfHandle::change_leader_to(const common::ObAddr &dst_addr)
 {
@@ -415,6 +492,16 @@ int PalfHandle::get_access_mode(AccessMode &access_mode) const
   int ret = OB_SUCCESS;
   CHECK_VALID;
   ret = palf_handle_impl_->get_access_mode(access_mode);
+  return ret;
+}
+
+int PalfHandle::get_access_mode_ref_scn(int64_t &mode_version,
+                                        AccessMode &access_mode,
+                                        SCN &ref_scn) const
+{
+  int ret = OB_SUCCESS;
+  CHECK_VALID;
+  ret = palf_handle_impl_->get_access_mode_ref_scn(mode_version, access_mode, ref_scn);
   return ret;
 }
 
@@ -626,6 +713,25 @@ int PalfHandle::stat(PalfStat &palf_stat) const
 {
   CHECK_VALID;
   return palf_handle_impl_->stat(palf_stat);
+}
+
+int PalfHandle::try_lock_config_change(int64_t lock_owner,
+                                       int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->try_lock_config_change(lock_owner, timeout_us);
+}
+
+int PalfHandle::unlock_config_change(int64_t lock_owner, int64_t timeout_us)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->unlock_config_change(lock_owner, timeout_us);
+}
+
+int PalfHandle::get_config_change_lock_stat(int64_t &lock_owner, bool &is_locked)
+{
+  CHECK_VALID;
+  return palf_handle_impl_->get_config_change_lock_stat(lock_owner, is_locked);
 }
 
 int PalfHandle::diagnose(PalfDiagnoseInfo &diagnose_info) const

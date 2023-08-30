@@ -115,6 +115,8 @@ public:
 
   int update_manifest_used_for_meta_storage(const block_id_t expected_max_block_id);
 
+  int get_logical_block_size(int64_t &logical_block_size) const;
+
   TO_STRING_KV(K_(log_tail),
                K_(readable_log_tail),
                K_(log_block_header),
@@ -197,6 +199,8 @@ private:
   LogPlugins *plugins_;
   char block_header_serialize_buf_[MAX_INFO_BLOCK_SIZE];
   LogHotCache *hot_cache_;
+  int64_t last_accum_read_statistic_time_;
+  int64_t accum_read_log_size_;
   bool is_inited_;
 };
 

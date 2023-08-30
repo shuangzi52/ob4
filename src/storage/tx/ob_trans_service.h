@@ -36,6 +36,7 @@
 #include "ob_gts_rpc.h"
 #include "ob_gti_source.h"
 #include "ob_tx_version_mgr.h"
+#include "ob_tx_standby_cleanup.h"
 #include "lib/utility/ob_tracepoint.h"
 #include "lib/container/ob_iarray.h"
 #include "observer/ob_server_struct.h"
@@ -173,6 +174,7 @@ public:
   int calculate_trans_cost(const ObTransID &tid, uint64_t &cost);
   int get_ls_min_uncommit_prepare_version(const share::ObLSID &ls_id, share::SCN &min_prepare_version);
   int get_min_undecided_log_ts(const share::ObLSID &ls_id, share::SCN &log_ts);
+  int check_dup_table_lease_valid(const ObLSID ls_id, bool &is_dup_ls, bool &is_lease_valid);
   //get the memory used condition of transaction module
   int iterate_trans_memory_stat(ObTransMemStatIterator &mem_stat_iter);
   int dump_elr_statistic();
@@ -199,12 +201,8 @@ public:
                            const ObTxDataSourceType &type,
                            const char *buf,
                            const int64_t buf_len,
-                           const int64_t request_id = 0);
-  int register_mds_into_ctx(ObTxDesc &tx_desc,
-                       const share::ObLSID &ls_id,
-                       const ObTxDataSourceType &type,
-                       const char *buf,
-                       const int64_t buf_len);
+                           const int64_t request_id = 0,
+                           const ObRegisterMdsFlag &register_flag = ObRegisterMdsFlag());
   ObTxELRUtil &get_tx_elr_util() { return elr_util_; }
 #ifdef ENABLE_DEBUG_LOG
   transaction::ObDefensiveCheckMgr *get_defensive_check_mgr() { return defensive_check_mgr_; }
@@ -212,6 +210,12 @@ public:
 private:
   void check_env_();
   bool can_create_ctx_(const int64_t trx_start_ts, const common::ObTsWindows &changing_leader_windows);
+  int register_mds_into_ctx_(ObTxDesc &tx_desc,
+                             const share::ObLSID &ls_id,
+                             const ObTxDataSourceType &type,
+                             const char *buf,
+                             const int64_t buf_len,
+                             const ObRegisterMdsFlag &register_flag);
 private:
   int handle_redo_sync_task_(ObDupTableRedoSyncTask *task, bool &need_release_task);
   int handle_dup_pre_commit_task_(ObPreCommitTask *task, bool &need_release_task);
